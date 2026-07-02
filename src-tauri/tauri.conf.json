@@ -1,35 +1,40 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "AgendaKontakte",
-  "version": "1.0.0",
-  "identifier": "de.dmh.agendakontakte",
-  "build": {
-    "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
-    "frontendDist": "../dist"
-  },
   "app": {
-    "windows": [
-      {
-        "title": "AgendaKontakte",
-        "width": 1280,
-        "height": 820,
-        "minWidth": 980,
-        "minHeight": 680
-      }
-    ],
     "security": {
       "csp": null
-    }
+    },
+    "windows": [
+      {
+        "height": 820,
+        "minHeight": 680,
+        "minWidth": 980,
+        "title": "AgendaKontakte",
+        "width": 1280
+      }
+    ]
+  },
+  "build": {
+    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
   },
   "bundle": {
     "active": true,
-    "targets": ["msi", "nsis"],
-    "icon": ["icons/icon.ico"],
-    "publisher": "Diakonissenmutterhaus Aidlingen e.V.",
     "category": "Productivity",
+    "icon": [
+      "icons/icon.ico"
+    ],
+    "longDescription": "AgendaKontakte verwaltet Kontakte und Gruppen lokal auf dem Windows-PC.",
+    "publisher": "Diakonissenmutterhaus Aidlingen e.V.",
     "shortDescription": "Lokale Kontaktverwaltung",
-    "longDescription": "AgendaKontakte verwaltet Kontakte und Gruppen lokal auf dem Windows-PC."
-  }
+    "targets": [
+      "msi",
+      "nsis"
+    ]
+  },
+  "identifier": "de.dmh.agendakontakte",
+  "productName": "AgendaKontakte",
+  "version": "0.0.1"
 }
