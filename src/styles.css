@@ -614,6 +614,17 @@ td input[type="checkbox"] {
   outline-offset: 2px;
 }
 
+.group-drop.drag-over {
+  outline: 3px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.group-drop.drag-over .group-filter {
+  background: var(--soft);
+  border-color: var(--primary);
+  color: var(--primary-dark);
+}
+
 .drop-hint {
   color: var(--accent);
   font-size: 0.9rem;
@@ -1042,6 +1053,14 @@ table {
 .contacts-table tbody tr {
   cursor: default;
   outline: none;
+}
+
+.contacts-table tbody tr[draggable="true"] {
+  cursor: grab;
+}
+
+.contacts-table tbody tr[draggable="true"]:active {
+  cursor: grabbing;
 }
 
 .contacts-table tbody tr:hover td {

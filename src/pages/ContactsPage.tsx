@@ -1,5 +1,6 @@
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Download, Ellipsis, Mail, Plus, Search, Trash2, Upload, X } from "lucide-react";
+import type { DragEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { ContactForm } from "../components/ContactForm";
 import { ContactTable } from "../components/ContactTable";
@@ -14,6 +15,7 @@ import {
   getAppSetting,
   openNewOutlookEmail,
   openOutlookClassicEmail,
+  moveContactToGroup,
   saveContact,
   saveGroup,
   setAppSetting
@@ -43,6 +45,8 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
   const [emailRecipient, setEmailRecipient] = useState("");
   const [selectedEmailApp, setSelectedEmailApp] = useState<EmailApp>("outlook-classic");
   const [rememberEmailApp, setRememberEmailApp] = useState(false);
+  const [draggedContactId, setDraggedContactId] = useState<number | null>(null);
+  const [dragOverGroupId, setDragOverGroupId] = useState<number | null>(null);
 
   const selectedGroup = useMemo(() => groups.find((group) => group.id === selectedGroupId), [groups, selectedGroupId]);
 
@@ -155,6 +159,31 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
     }
   };
 
+  const moveDraggedContact = async (event: DragEvent, group: Group) => {
+    event.preventDefault();
+    setDragOverGroupId(null);
+    const contactId = Number(event.dataTransfer.getData("application/x-agendakontakte-contact-id") || event.dataTransfer.getData("text/plain") || draggedContactId);
+    if (!contactId || !group.id) return;
+    try {
+      await moveContactToGroup(contactId, group.id);
+      setMessage("Kontakt wurde in die Gruppe verschoben.");
+      setMessageType("success");
+      await refresh();
+    } catch (error) {
+      setMessage(`Kontakt konnte nicht verschoben werden: ${error}`);
+      setMessageType("error");
+    } finally {
+      setDraggedContactId(null);
+    }
+  };
+
+  const dragOverGroup = (event: DragEvent, groupId?: number) => {
+    if (!groupId || !draggedContactId) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    setDragOverGroupId(groupId);
+  };
+
   return (
     <div className="page contacts-page">
       <header className="contacts-commandbar">
@@ -253,8 +282,15 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
           </button>
           {groups.map((group) => (
             <div
-              className={selectedGroupId === group.id ? "group-drop active" : "group-drop"}
+              className={[
+                "group-drop",
+                selectedGroupId === group.id ? "active" : "",
+                dragOverGroupId === group.id ? "drag-over" : ""
+              ].filter(Boolean).join(" ")}
               key={group.id}
+              onDragOver={(event) => dragOverGroup(event, group.id)}
+              onDragLeave={() => setDragOverGroupId((current) => current === group.id ? null : current)}
+              onDrop={(event) => moveDraggedContact(event, group)}
             >
               <button type="button" className="group-filter" onClick={() => setSelectedGroupId(group.id)}>
                 {group.name}
@@ -274,6 +310,11 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
             onCopyEmail={copyEmail}
             onEmail={chooseEmailApp}
             onPrint={() => window.print()}
+            onDragStart={setDraggedContactId}
+            onDragEnd={() => {
+              setDraggedContactId(null);
+              setDragOverGroupId(null);
+            }}
           />
         </div>
       </section>

@@ -907,6 +907,45 @@ fn add_contact_to_group(app: AppHandle, contact_id: i64, group_id: i64) -> Resul
 }
 
 #[tauri::command]
+fn move_contact_to_group(app: AppHandle, contact_id: i64, group_id: i64) -> Result<(), String> {
+    let mut conn = open_db(&app)?;
+    let contact_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM contacts WHERE id = ? AND deleted_at IS NULL)",
+            params![contact_id],
+            |row| row.get(0),
+        )
+        .map_err(|err| err.to_string())?;
+    if !contact_exists {
+        return Err("Kontakt wurde nicht gefunden oder ist gelöscht.".to_string());
+    }
+
+    let group_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM groups WHERE id = ? AND deleted_at IS NULL)",
+            params![group_id],
+            |row| row.get(0),
+        )
+        .map_err(|err| err.to_string())?;
+    if !group_exists {
+        return Err("Gruppe wurde nicht gefunden oder ist gelöscht.".to_string());
+    }
+
+    let tx = conn.transaction().map_err(|err| err.to_string())?;
+    tx.execute(
+        "DELETE FROM contact_groups WHERE contact_id = ?",
+        params![contact_id],
+    )
+    .map_err(|err| err.to_string())?;
+    tx.execute(
+        "INSERT OR IGNORE INTO contact_groups (contact_id, group_id) VALUES (?, ?)",
+        params![contact_id, group_id],
+    )
+    .map_err(|err| err.to_string())?;
+    tx.commit().map_err(|err| err.to_string())
+}
+
+#[tauri::command]
 fn open_outlook_classic_email(email: String) -> Result<(), String> {
     let shortcut = r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Outlook (classic).lnk";
     let status = hidden_command("cmd")
@@ -1091,6 +1130,7 @@ pub fn run() {
             write_export_file,
             delete_all_contacts,
             add_contact_to_group,
+            move_contact_to_group,
             open_outlook_classic_email,
             open_new_outlook_email,
             get_app_setting,

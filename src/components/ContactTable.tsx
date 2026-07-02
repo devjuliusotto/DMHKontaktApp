@@ -1,4 +1,5 @@
 import { Copy, Edit, Mail, Printer, Trash2 } from "lucide-react";
+import type { DragEvent } from "react";
 import { useState } from "react";
 import type { Contact } from "../types/contact";
 import { displayName } from "../utils/contact";
@@ -11,10 +12,23 @@ interface ContactTableProps {
   onCopyEmail: (email: string) => void;
   onEmail: (email: string) => void;
   onPrint: () => void;
+  onDragStart: (contactId: number) => void;
+  onDragEnd: () => void;
 }
 
-export function ContactTable({ contacts, onEdit, onDelete, onCopyEmail, onEmail, onPrint }: ContactTableProps) {
+export function ContactTable({ contacts, onEdit, onDelete, onCopyEmail, onEmail, onPrint, onDragStart, onDragEnd }: ContactTableProps) {
   const [selectedContactId, setSelectedContactId] = useState<number | undefined>();
+
+  const startDrag = (event: DragEvent<HTMLTableRowElement>, contact: Contact) => {
+    if (!contact.id) {
+      event.preventDefault();
+      return;
+    }
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", String(contact.id));
+    event.dataTransfer.setData("application/x-agendakontakte-contact-id", String(contact.id));
+    onDragStart(contact.id);
+  };
 
   return (
     <section className="table-panel contacts-list-panel">
@@ -43,7 +57,10 @@ export function ContactTable({ contacts, onEdit, onDelete, onCopyEmail, onEmail,
               <tr
                 key={contact.id}
                 className={selectedContactId === contact.id ? "selected" : ""}
+                draggable={Boolean(contact.id)}
                 tabIndex={0}
+                onDragStart={(event) => startDrag(event, contact)}
+                onDragEnd={onDragEnd}
                 onClick={() => setSelectedContactId(contact.id)}
                 onDoubleClick={() => onEdit(contact)}
                 onFocus={() => setSelectedContactId(contact.id)}

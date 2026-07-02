@@ -70,6 +70,10 @@ export function addContactToGroup(contactId: number, groupId: number): Promise<v
   return invoke("add_contact_to_group", { contactId, groupId });
 }
 
+export function moveContactToGroup(contactId: number, groupId: number): Promise<void> {
+  return invoke("move_contact_to_group", { contactId, groupId });
+}
+
 export function openOutlookClassicEmail(email: string): Promise<void> {
   return invoke("open_outlook_classic_email", { email });
 }

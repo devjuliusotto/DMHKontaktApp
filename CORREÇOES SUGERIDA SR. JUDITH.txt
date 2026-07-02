@@ -8,13 +8,13 @@ App pra celular
 
 sincronização entre celular e Outlook seria massa.
 
-cores no calendario. 
+ 
 
-categorizar compromissos pra filtrar futuramente.
 
-add campo de Kurz-info em cima de Notizen.
 
-poder exportar somente alguns grupos expecificos e não precisar exportar tudo.
 
-flex-grid pra nada ficar atravessado quando movimentar ou modificar o tamanho da aba. ou tamanho de tela diferente.
+
+
+
+
 
