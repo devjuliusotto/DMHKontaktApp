@@ -2,8 +2,13 @@ name: Release Windows App
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version, for example 0.0.2"
+        required: true
   push:
     tags:
+      - "v*"
       - "app-v*"
 
 jobs:
@@ -15,10 +20,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v4
         with:
           node-version: lts/*
           cache: npm
@@ -39,8 +44,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: app-v__VERSION__
-          releaseName: "AgendaKontakte v__VERSION__"
+          tagName: ${{ github.event_name == 'workflow_dispatch' && format('app-v{0}', inputs.version) || github.ref_name }}
+          releaseName: ${{ github.event_name == 'workflow_dispatch' && format('AgendaKontakte v{0}', inputs.version) || format('AgendaKontakte {0}', github.ref_name) }}
           releaseBody: "Windows installer for AgendaKontakte."
           releaseDraft: true
           prerelease: false
