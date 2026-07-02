@@ -5,5 +5,7 @@ export interface CalendarEvent {
   endsAt: string;
   location: string;
   description: string;
+  color: string;
+  category: string;
   source: string;
 }

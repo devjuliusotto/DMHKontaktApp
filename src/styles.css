@@ -17,7 +17,7 @@
 
 body {
   margin: 0;
-  min-width: 960px;
+  min-width: 0;
   min-height: 100vh;
   background: var(--page);
 }
@@ -40,6 +40,7 @@ button {
   gap: 0.5rem;
   justify-content: center;
   min-height: 46px;
+  min-width: 0;
   padding: 0.6rem 0.9rem;
 }
 
@@ -71,7 +72,7 @@ button:disabled {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 290px 1fr;
+  grid-template-columns: 290px minmax(0, 1fr);
   min-height: 100vh;
 }
 
@@ -136,6 +137,7 @@ button:disabled {
 }
 
 .content {
+  min-width: 0;
   overflow: auto;
   padding: 1.4rem;
 }
@@ -150,8 +152,13 @@ button:disabled {
 .page-header {
   align-items: center;
   display: flex;
+  flex-wrap: wrap;
   gap: 1rem;
   justify-content: space-between;
+}
+
+.page-header > div {
+  min-width: 0;
 }
 
 .page-header h2 {
@@ -181,6 +188,7 @@ button:disabled {
   display: flex;
   gap: 0.6rem;
   min-width: 360px;
+  max-width: 100%;
   padding: 0 0.8rem;
 }
 
@@ -241,7 +249,7 @@ textarea {
 .form-grid {
   display: grid;
   gap: 0.8rem;
-  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
 .mapping-grid {
@@ -386,7 +394,8 @@ td input[type="checkbox"] {
   align-items: center;
   display: grid;
   gap: 0.6rem;
-  grid-template-columns: auto minmax(220px, 1fr) auto;
+  grid-template-columns: auto minmax(220px, 1fr) minmax(0, auto);
+  min-width: 0;
 }
 
 .contacts-title {
@@ -415,7 +424,8 @@ td input[type="checkbox"] {
 }
 
 .contacts-page .contacts-actions {
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .contacts-page .contacts-actions button {
@@ -469,6 +479,7 @@ td input[type="checkbox"] {
 .modal-card {
   box-shadow: 0 18px 42px rgba(138, 4, 63, 0.22);
   max-width: 980px;
+  min-width: 0;
   width: min(980px, 100%);
 }
 
@@ -631,6 +642,7 @@ td input[type="checkbox"] {
 .panel-heading {
   align-items: center;
   display: flex;
+  flex-wrap: wrap;
   gap: 1rem;
   justify-content: space-between;
   margin-bottom: 0.8rem;
@@ -643,7 +655,7 @@ td input[type="checkbox"] {
 table {
   border-collapse: collapse;
   table-layout: fixed;
-  min-width: 1480px;
+  min-width: 760px;
   width: 100%;
 }
 
@@ -711,6 +723,7 @@ table {
   border: 1px solid var(--border);
   border-radius: 8px;
   display: flex;
+  flex-wrap: wrap;
   gap: 1rem;
   justify-content: space-between;
   padding: 0.6rem;
@@ -720,12 +733,31 @@ table {
 .calendar-view-switch {
   align-items: center;
   display: flex;
+  flex-wrap: wrap;
   gap: 0.4rem;
+  min-width: 0;
 }
 
 .calendar-navigation h3 {
   margin: 0 0 0 0.5rem;
+  min-width: 0;
   text-transform: capitalize;
+}
+
+.calendar-category-filter {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+  min-width: min(280px, 100%);
+}
+
+.calendar-category-filter span {
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.calendar-category-filter select {
+  min-height: 38px;
 }
 
 .calendar-toolbar button {
@@ -751,7 +783,8 @@ table {
   border-radius: 8px;
   display: grid;
   gap: 1px;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .month-view {
@@ -806,9 +839,9 @@ table {
 
 .calendar-event-chip {
   align-items: baseline;
-  background: var(--soft);
+  background: var(--event-bg, var(--soft));
   border: 0;
-  border-left: 3px solid var(--primary);
+  border-left: 3px solid var(--event-border, var(--primary));
   border-radius: 4px;
   color: inherit;
   display: block;
@@ -823,8 +856,7 @@ table {
 }
 
 .calendar-event-chip:hover {
-  background: #e8bfd0;
-  border-color: var(--primary-dark);
+  filter: brightness(0.97);
 }
 
 .calendar-event-chip time {
@@ -866,9 +898,9 @@ table {
 
 .calendar-week-event {
   align-items: stretch;
-  background: var(--soft);
+  background: var(--event-bg, var(--soft));
   border: 0;
-  border-left: 4px solid var(--primary);
+  border-left: 4px solid var(--event-border, var(--primary));
   border-radius: 5px;
   color: inherit;
   display: grid;
@@ -880,8 +912,7 @@ table {
 }
 
 .calendar-week-event:hover {
-  background: #e8bfd0;
-  border-color: var(--primary-dark);
+  filter: brightness(0.97);
 }
 
 .calendar-week-event time,
@@ -917,12 +948,32 @@ table {
   width: 19%;
 }
 
+.calendar-list-table .calendar-category-column {
+  width: 13%;
+}
+
 .calendar-list-table .calendar-location-column {
-  width: 20%;
+  width: 17%;
 }
 
 .calendar-list-table .calendar-actions-column {
-  width: 10%;
+  width: 8%;
+}
+
+.calendar-list-table td:first-child {
+  align-items: center;
+  display: flex;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.calendar-color-dot {
+  background: var(--event-border, var(--primary));
+  border-radius: 999px;
+  display: inline-block;
+  flex: 0 0 auto;
+  height: 0.7rem;
+  width: 0.7rem;
 }
 
 .calendar-list-table th,
@@ -967,11 +1018,15 @@ table {
   .week-view {
     min-width: 980px;
   }
+
+  .calendar-category-filter {
+    width: 100%;
+  }
 }
 
 .contacts-table th,
 .contacts-table td {
-  height: 30px;
+  min-height: 30px;
   padding: 0.15rem 0.4rem;
   vertical-align: middle;
 }
@@ -1007,6 +1062,12 @@ table {
 
 .contacts-table .contact-primary,
 .contacts-table .contact-email-content > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.contacts-table .contact-primary small {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1060,6 +1121,67 @@ table {
 
   .contacts-page .contacts-actions {
     grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 860px) {
+  .app-shell {
+    display: block;
+  }
+
+  .sidebar {
+    border-bottom: 1px solid var(--border);
+    border-right: 0;
+  }
+
+  .nav-list {
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  }
+
+  .content {
+    padding: 1rem;
+  }
+
+  .contacts-commandbar,
+  .contacts-workspace,
+  .trash-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .contacts-title,
+  .contacts-page .search-field,
+  .search-field,
+  .import-group-select {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .modal-backdrop {
+    padding: 0.75rem;
+  }
+
+  .form-panel,
+  .table-panel,
+  .groups-panel,
+  .trash-panel,
+  .export-options {
+    padding: 0.75rem;
+  }
+
+  .button-row,
+  .contacts-page .contacts-actions,
+  .action-panel,
+  .import-summary,
+  .readme-actions {
+    align-items: stretch;
+  }
+
+  .button-row > button,
+  .contacts-page .contacts-actions > button,
+  .contacts-page .contacts-actions .more-menu-wrap,
+  .action-panel > button {
+    width: 100%;
   }
 }
 
@@ -1113,7 +1235,34 @@ td small {
 .export-grid {
   display: grid;
   gap: 0.9rem;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
+}
+
+.export-options {
+  align-items: flex-start;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  justify-content: space-between;
+  padding: 1rem;
+}
+
+.export-options h3,
+.export-options p {
+  margin: 0;
+}
+
+.export-options p,
+.empty-inline {
+  color: var(--accent);
+}
+
+.export-group-picker {
+  display: flex;
+  flex: 1 1 360px;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.8rem;
+  min-width: 0;
 }
 
 .simple-card,

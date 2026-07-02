@@ -6,11 +6,12 @@ import { CalendarEventForm } from "../components/CalendarEventForm";
 import { StatusMessage } from "../components/StatusMessage";
 import { importOutlookStore, writeExportFile } from "../services/db";
 import type { CalendarEvent } from "../types/calendar";
-import { exportCalendarIcs, formatCalendarDate, parseCalendarDate, parseCalendarFile } from "../utils/calendar";
+import { calendarColorStyle, calendarColorValue, defaultCalendarColor, exportCalendarIcs, formatCalendarDate, parseCalendarDate, parseCalendarFile } from "../utils/calendar";
 
 const storageKey = "agendakontakte.calendarEvents";
 const weekdays = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
 type CalendarView = "month" | "week" | "list";
+const allCategoriesValue = "__all__";
 
 function startOfDay(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate());
@@ -58,7 +59,17 @@ function blankEvent(date = new Date()): CalendarEvent {
     endsAt: toLocalDateTime(ends.toISOString()),
     location: "",
     description: "",
+    color: defaultCalendarColor,
+    category: "",
     source: "AgendaKontakte"
+  };
+}
+
+function normalizeEvent(event: CalendarEvent): CalendarEvent {
+  return {
+    ...event,
+    color: calendarColorValue(event.color),
+    category: event.category ?? ""
   };
 }
 
@@ -69,11 +80,12 @@ export function CalendarPage() {
   const [cursor, setCursor] = useState(() => startOfDay(new Date()));
   const [editingEvent, setEditingEvent] = useState<CalendarEvent | null>(null);
   const [editingIsNew, setEditingIsNew] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState(allCategoriesValue);
 
   useEffect(() => {
     const saved = localStorage.getItem(storageKey);
     if (saved) {
-      const storedEvents = JSON.parse(saved) as CalendarEvent[];
+      const storedEvents = (JSON.parse(saved) as CalendarEvent[]).map(normalizeEvent);
       setEvents(storedEvents);
       const datedEvents = storedEvents.map(eventDate).filter((date): date is Date => Boolean(date)).sort((a, b) => a.getTime() - b.getTime());
       const nextEvent = datedEvents.find((date) => date >= startOfDay(new Date())) ?? datedEvents[0];
@@ -81,9 +93,17 @@ export function CalendarPage() {
     }
   }, []);
 
-  const sortedEvents = useMemo(
+  const allSortedEvents = useMemo(
     () => [...events].sort((left, right) => left.startsAt.localeCompare(right.startsAt)),
     [events]
+  );
+  const categoryOptions = useMemo(
+    () => Array.from(new Set(events.map((event) => event.category.trim()).filter(Boolean))).sort((left, right) => left.localeCompare(right, "de")),
+    [events]
+  );
+  const sortedEvents = useMemo(
+    () => categoryFilter === allCategoriesValue ? allSortedEvents : allSortedEvents.filter((event) => event.category.trim() === categoryFilter),
+    [allSortedEvents, categoryFilter]
   );
 
   const monthDays = useMemo(() => {
@@ -109,7 +129,7 @@ export function CalendarPage() {
       : `${sortedEvents.length} Termine`;
 
   const persist = (nextEvents: CalendarEvent[]) => {
-    const sorted = [...nextEvents].sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+    const sorted = nextEvents.map(normalizeEvent).sort((a, b) => a.startsAt.localeCompare(b.startsAt));
     setEvents(sorted);
     localStorage.setItem(storageKey, JSON.stringify(sorted));
   };
@@ -122,7 +142,7 @@ export function CalendarPage() {
       });
       if (!path || Array.isArray(path)) return;
       const lower = path.toLowerCase();
-      const imported = lower.endsWith(".pst") || lower.endsWith(".ost") ? (await importOutlookStore(path)).events : parseCalendarFile(await readFile(path), path);
+      const imported = (lower.endsWith(".pst") || lower.endsWith(".ost") ? (await importOutlookStore(path)).events : parseCalendarFile(await readFile(path), path)).map(normalizeEvent);
       if (!imported.length) {
         setMessage("Keine Kalendertermine gefunden. Bitte exportieren Sie aus Thunderbird als .ics oder wählen Sie eine E-Mail mit iCalendar-Inhalt.");
         return;
@@ -145,8 +165,8 @@ export function CalendarPage() {
         filters: [{ name: "iCalendar", extensions: ["ics"] }]
       });
       if (!path) return;
-      await writeExportFile(path, exportCalendarIcs(sortedEvents));
-      setMessage(`${sortedEvents.length} Termine als ICS exportiert.`);
+      await writeExportFile(path, exportCalendarIcs(allSortedEvents));
+      setMessage(`${allSortedEvents.length} Termine als ICS exportiert.`);
     } catch (error) {
       setMessage(`Kalenderexport fehlgeschlagen: ${error}`);
     }
@@ -163,14 +183,14 @@ export function CalendarPage() {
   };
 
   const openEvent = (event: CalendarEvent) => {
-    setEditingEvent({ ...event, startsAt: toLocalDateTime(event.startsAt), endsAt: toLocalDateTime(event.endsAt) });
+    setEditingEvent({ ...normalizeEvent(event), startsAt: toLocalDateTime(event.startsAt), endsAt: toLocalDateTime(event.endsAt) });
     setEditingIsNew(false);
   };
 
   const saveEvent = () => {
     if (!editingEvent) return;
     const next = events.filter((event) => event.id !== editingEvent.id);
-    persist([...next, { ...editingEvent, source: editingEvent.source || "AgendaKontakte" }]);
+    persist([...next, normalizeEvent({ ...editingEvent, source: editingEvent.source || "AgendaKontakte" })]);
     const date = eventDate(editingEvent);
     if (date) setCursor(startOfDay(date));
     setEditingEvent(null);
@@ -236,6 +256,13 @@ export function CalendarPage() {
           <button className={view === "week" ? "active" : ""} type="button" onClick={() => setView("week")}><Rows3 size={18} /> Woche</button>
           <button className={view === "list" ? "active" : ""} type="button" onClick={() => setView("list")}><List size={18} /> Liste</button>
         </div>
+        <label className="calendar-category-filter">
+          <span>Kategorie</span>
+          <select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}>
+            <option value={allCategoriesValue}>Alle Kategorien</option>
+            {categoryOptions.map((category) => <option value={category} key={category}>{category}</option>)}
+          </select>
+        </label>
       </section>
 
       {view === "month" && (
@@ -248,7 +275,7 @@ export function CalendarPage() {
               <div className={classes} key={day.toISOString()} onDoubleClick={() => openNewEvent(day)}>
                 <span className="calendar-day-number">{day.getDate()}</span>
                 <div className="calendar-day-events">
-                  {dayEvents.slice(0, 3).map((event) => <button className="calendar-event-chip" type="button" title={`${event.title} - ${event.location}`} key={event.id} onClick={(click) => { click.stopPropagation(); openEvent(event); }}><time>{eventTime(event)}</time> {event.title}</button>)}
+                  {dayEvents.slice(0, 3).map((event) => <button className="calendar-event-chip" style={calendarColorStyle(event.color)} type="button" title={`${event.title} - ${event.location}`} key={event.id} onClick={(click) => { click.stopPropagation(); openEvent(event); }}><time>{eventTime(event)}</time> {event.title}</button>)}
                   {dayEvents.length > 3 && <small>+ {dayEvents.length - 3} weitere</small>}
                 </div>
               </div>
@@ -264,9 +291,10 @@ export function CalendarPage() {
               <header><span>{weekdays[(day.getDay() || 7) - 1]}</span><strong>{day.getDate()}</strong></header>
               <div className="calendar-week-events">
                 {eventsForDay(day).map((event) => (
-                  <button className="calendar-week-event" type="button" key={event.id} onClick={() => openEvent(event)}>
+                  <button className="calendar-week-event" style={calendarColorStyle(event.color)} type="button" key={event.id} onClick={() => openEvent(event)}>
                     <time>{eventTime(event)}</time>
                     <strong>{event.title}</strong>
+                    {event.category && <small>{event.category}</small>}
                     {event.location && <small>{event.location}</small>}
                   </button>
                 ))}
@@ -281,19 +309,20 @@ export function CalendarPage() {
         <section className="table-panel calendar-list-panel">
           <div className="table-wrap">
             <table className="calendar-list-table">
-              <colgroup><col className="calendar-title-column" /><col className="calendar-date-column" /><col className="calendar-date-column" /><col className="calendar-location-column" /><col className="calendar-actions-column" /></colgroup>
-              <thead><tr><th>Termin</th><th>Beginn</th><th>Ende</th><th>Ort</th><th>Aktionen</th></tr></thead>
+              <colgroup><col className="calendar-title-column" /><col className="calendar-date-column" /><col className="calendar-date-column" /><col className="calendar-category-column" /><col className="calendar-location-column" /><col className="calendar-actions-column" /></colgroup>
+              <thead><tr><th>Termin</th><th>Beginn</th><th>Ende</th><th>Kategorie</th><th>Ort</th><th>Aktionen</th></tr></thead>
               <tbody>
                 {sortedEvents.map((event) => (
                   <tr key={event.id} tabIndex={0} onDoubleClick={() => openEvent(event)}>
-                    <td title={event.description}><strong>{event.title}</strong></td>
+                    <td title={event.description}><span className="calendar-color-dot" style={calendarColorStyle(event.color)} /><strong>{event.title}</strong></td>
                     <td>{formatCalendarDate(event.startsAt)}</td>
                     <td>{formatCalendarDate(event.endsAt)}</td>
+                    <td>{event.category}</td>
                     <td>{event.location}</td>
                     <td><div className="inline-actions"><button title="Termin bearbeiten" type="button" onClick={() => openEvent(event)}><Edit size={16} /></button><button title="Termin löschen" type="button" onClick={() => deleteEvent(event)}><Trash2 size={16} /></button></div></td>
                   </tr>
                 ))}
-                {sortedEvents.length === 0 && <tr><td colSpan={5} className="empty-row">Keine Termine importiert.</td></tr>}
+                {sortedEvents.length === 0 && <tr><td colSpan={6} className="empty-row">Keine Termine importiert.</td></tr>}
               </tbody>
             </table>
           </div>

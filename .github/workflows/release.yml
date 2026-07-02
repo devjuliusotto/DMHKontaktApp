@@ -1,0 +1,46 @@
+name: Release Windows App
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "app-v*"
+
+jobs:
+  release-windows:
+    permissions:
+      contents: write
+
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and publish Tauri app
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: app-v__VERSION__
+          releaseName: "AgendaKontakte v__VERSION__"
+          releaseBody: "Windows installer for AgendaKontakte."
+          releaseDraft: true
+          prerelease: false

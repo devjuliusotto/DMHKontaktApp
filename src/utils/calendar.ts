@@ -1,4 +1,28 @@
+import type { CSSProperties } from "react";
 import type { CalendarEvent } from "../types/calendar";
+
+export const defaultCalendarColor = "blue";
+
+export const calendarColorOptions = [
+  { value: "blue", label: "Blau", chip: "#dceafe", border: "#2563eb" },
+  { value: "green", label: "Grün", chip: "#dff5e8", border: "#15803d" },
+  { value: "yellow", label: "Gelb", chip: "#fff4c2", border: "#ca8a04" },
+  { value: "red", label: "Rot", chip: "#ffe1e1", border: "#dc2626" },
+  { value: "purple", label: "Lila", chip: "#eadcff", border: "#7c3aed" },
+  { value: "gray", label: "Grau", chip: "#eceff3", border: "#64748b" }
+];
+
+export function calendarColorValue(value?: string): string {
+  return value && calendarColorOptions.some((color) => color.value === value) ? value : defaultCalendarColor;
+}
+
+export function calendarColorStyle(value?: string) {
+  const color = calendarColorOptions.find((option) => option.value === calendarColorValue(value)) ?? calendarColorOptions[0];
+  return {
+    "--event-bg": color.chip,
+    "--event-border": color.border
+  } as CSSProperties;
+}
 
 function unfoldIcs(text: string): string {
   return text.replace(/\r?\n[ \t]/g, "");
@@ -54,9 +78,10 @@ export function exportCalendarIcs(events: CalendarEvent[]): string {
     `DTEND:${toIcsDate(event.endsAt || event.startsAt)}`,
     `SUMMARY:${escapeIcs(event.title)}`,
     `LOCATION:${escapeIcs(event.location)}`,
+    event.category ? `CATEGORIES:${escapeIcs(event.category)}` : "",
     `DESCRIPTION:${escapeIcs(event.description)}`,
     "END:VEVENT"
-  ].join("\r\n"));
+  ].filter(Boolean).join("\r\n"));
   return ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//DMH//AgendaKontakte//DE", "CALSCALE:GREGORIAN", ...entries, "END:VCALENDAR", ""].join("\r\n");
 }
 
@@ -76,6 +101,8 @@ export function parseCalendarFile(bytes: Uint8Array, source: string): CalendarEv
       endsAt: parseIcsDate(value(lines, "DTEND")),
       location: value(lines, "LOCATION:"),
       description: value(lines, "DESCRIPTION:"),
+      color: defaultCalendarColor,
+      category: value(lines, "CATEGORIES:"),
       source
     };
   });

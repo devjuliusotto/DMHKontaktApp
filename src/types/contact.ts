@@ -19,6 +19,7 @@ export interface Contact {
   postalCode: string;
   city: string;
   country: string;
+  shortInfo: string;
   notes: string;
   groups: Group[];
   createdAt: string;
@@ -38,6 +39,7 @@ export interface ContactInput {
   postalCode: string;
   city: string;
   country: string;
+  shortInfo: string;
   notes: string;
   groupIds: number[];
 }

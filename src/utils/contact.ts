@@ -11,6 +11,7 @@ export const emptyContact: ContactInput = {
   postalCode: "",
   city: "",
   country: "Deutschland",
+  shortInfo: "",
   notes: "",
   groupIds: []
 };
@@ -28,6 +29,7 @@ export function toContactInput(contact: Contact): ContactInput {
     postalCode: contact.postalCode,
     city: contact.city,
     country: contact.country,
+    shortInfo: contact.shortInfo ?? "",
     notes: contact.notes,
     groupIds: contact.groups.map((group) => group.id).filter((id): id is number => Boolean(id))
   };

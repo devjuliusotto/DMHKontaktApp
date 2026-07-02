@@ -38,6 +38,8 @@ pub struct Contact {
     pub postal_code: String,
     pub city: String,
     pub country: String,
+    #[serde(default)]
+    pub short_info: String,
     pub notes: String,
     pub groups: Vec<Group>,
     pub created_at: String,
@@ -59,6 +61,8 @@ pub struct ContactInput {
     pub postal_code: String,
     pub city: String,
     pub country: String,
+    #[serde(default)]
+    pub short_info: String,
     pub notes: String,
     pub group_ids: Vec<i64>,
 }
@@ -115,7 +119,15 @@ pub struct CalendarEvent {
     pub ends_at: String,
     pub location: String,
     pub description: String,
+    #[serde(default = "default_calendar_color")]
+    pub color: String,
+    #[serde(default)]
+    pub category: String,
     pub source: String,
+}
+
+fn default_calendar_color() -> String {
+    "blue".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -152,7 +164,8 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
         *state
             .db_path
             .lock()
-            .map_err(|_| "Datenbankpfad konnte nicht gesetzt werden.".to_string())? = db_path.clone();
+            .map_err(|_| "Datenbankpfad konnte nicht gesetzt werden.".to_string())? =
+            db_path.clone();
     }
 
     let conn = Connection::open(db_path).map_err(|err| err.to_string())?;
@@ -171,6 +184,7 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
             postal_code TEXT NOT NULL DEFAULT '',
             city TEXT NOT NULL DEFAULT '',
             country TEXT NOT NULL DEFAULT '',
+            short_info TEXT NOT NULL DEFAULT '',
             notes TEXT NOT NULL DEFAULT '',
             import_batch_id TEXT,
             created_at TEXT NOT NULL,
@@ -210,6 +224,7 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
     .map_err(|err| err.to_string())?;
 
     ensure_column(&conn, "contacts", "deleted_at", "TEXT")?;
+    ensure_column(&conn, "contacts", "short_info", "TEXT NOT NULL DEFAULT ''")?;
     ensure_column(&conn, "groups", "deleted_at", "TEXT")?;
     conn.execute_batch(
         "
@@ -222,7 +237,12 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn ensure_column(conn: &Connection, table: &str, column: &str, column_type: &str) -> Result<(), String> {
+fn ensure_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    column_type: &str,
+) -> Result<(), String> {
     let mut stmt = conn
         .prepare(&format!("PRAGMA table_info({table})"))
         .map_err(|err| err.to_string())?;
@@ -232,8 +252,11 @@ fn ensure_column(conn: &Connection, table: &str, column: &str, column_type: &str
         .collect::<Result<Vec<_>, _>>()
         .map_err(|err| err.to_string())?;
     if !columns.iter().any(|name| name == column) {
-        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {column_type}"), [])
-            .map_err(|err| err.to_string())?;
+        conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {column_type}"),
+            [],
+        )
+        .map_err(|err| err.to_string())?;
     }
     Ok(())
 }
@@ -296,21 +319,25 @@ fn set_contact_groups(conn: &Connection, contact_id: i64, group_ids: &[i64]) -> 
 }
 
 #[tauri::command]
-fn list_contacts(app: AppHandle, search: Option<String>, group_id: Option<i64>) -> Result<Vec<Contact>, String> {
+fn list_contacts(
+    app: AppHandle,
+    search: Option<String>,
+    group_id: Option<i64>,
+) -> Result<Vec<Contact>, String> {
     let conn = open_db(&app)?;
     let query = format!("%{}%", search.unwrap_or_default().to_lowercase());
     let mut stmt = conn
         .prepare(
             "
             SELECT DISTINCT c.id, c.first_name, c.last_name, c.display_name, c.email, c.phone,
-                   c.mobile_phone, c.street, c.postal_code, c.city, c.country, c.notes,
+                   c.mobile_phone, c.street, c.postal_code, c.city, c.country, c.short_info, c.notes,
                    c.created_at, c.updated_at
             FROM contacts c
             LEFT JOIN contact_groups cg ON cg.contact_id = c.id
             WHERE (?2 IS NULL OR cg.group_id = ?2)
               AND c.deleted_at IS NULL
               AND (
-                lower(c.first_name || ' ' || c.last_name || ' ' || c.display_name || ' ' || c.email || ' ' || c.phone || ' ' || c.mobile_phone || ' ' || c.city)
+                lower(c.first_name || ' ' || c.last_name || ' ' || c.display_name || ' ' || c.email || ' ' || c.phone || ' ' || c.mobile_phone || ' ' || c.city || ' ' || c.short_info)
                 LIKE ?1
               )
             ORDER BY c.last_name COLLATE NOCASE, c.first_name COLLATE NOCASE, c.display_name COLLATE NOCASE
@@ -332,10 +359,11 @@ fn list_contacts(app: AppHandle, search: Option<String>, group_id: Option<i64>) 
                 postal_code: row.get(8)?,
                 city: row.get(9)?,
                 country: row.get(10)?,
-                notes: row.get(11)?,
+                short_info: row.get(11)?,
+                notes: row.get(12)?,
                 groups: Vec::new(),
-                created_at: row.get(12)?,
-                updated_at: row.get(13)?,
+                created_at: row.get(13)?,
+                updated_at: row.get(14)?,
                 deleted_at: None,
             })
         })
@@ -370,7 +398,7 @@ fn save_contact(app: AppHandle, contact: ContactInput) -> Result<i64, String> {
             UPDATE contacts
             SET first_name = ?, last_name = ?, display_name = ?, email = ?, phone = ?,
                 mobile_phone = ?, street = ?, postal_code = ?, city = ?, country = ?,
-                notes = ?, updated_at = ?
+                short_info = ?, notes = ?, updated_at = ?
             WHERE id = ?
             ",
             params![
@@ -384,6 +412,7 @@ fn save_contact(app: AppHandle, contact: ContactInput) -> Result<i64, String> {
                 contact.postal_code,
                 contact.city,
                 contact.country,
+                contact.short_info,
                 contact.notes,
                 timestamp,
                 id
@@ -396,9 +425,9 @@ fn save_contact(app: AppHandle, contact: ContactInput) -> Result<i64, String> {
             "
             INSERT INTO contacts (
                 first_name, last_name, display_name, email, phone, mobile_phone, street,
-                postal_code, city, country, notes, created_at, updated_at
+                postal_code, city, country, short_info, notes, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ",
             params![
                 contact.first_name,
@@ -411,6 +440,7 @@ fn save_contact(app: AppHandle, contact: ContactInput) -> Result<i64, String> {
                 contact.postal_code,
                 contact.city,
                 contact.country,
+                contact.short_info,
                 contact.notes,
                 timestamp,
                 timestamp
@@ -427,16 +457,22 @@ fn save_contact(app: AppHandle, contact: ContactInput) -> Result<i64, String> {
 #[tauri::command]
 fn delete_contact(app: AppHandle, id: i64) -> Result<(), String> {
     let conn = open_db(&app)?;
-    conn.execute("UPDATE contacts SET deleted_at = ?, updated_at = ? WHERE id = ?", params![now(), now(), id])
-        .map_err(|err| err.to_string())?;
+    conn.execute(
+        "UPDATE contacts SET deleted_at = ?, updated_at = ? WHERE id = ?",
+        params![now(), now(), id],
+    )
+    .map_err(|err| err.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
 fn restore_contact(app: AppHandle, id: i64) -> Result<(), String> {
     let conn = open_db(&app)?;
-    conn.execute("UPDATE contacts SET deleted_at = NULL, updated_at = ? WHERE id = ?", params![now(), id])
-        .map_err(|err| err.to_string())?;
+    conn.execute(
+        "UPDATE contacts SET deleted_at = NULL, updated_at = ? WHERE id = ?",
+        params![now(), id],
+    )
+    .map_err(|err| err.to_string())?;
     Ok(())
 }
 
@@ -447,7 +483,7 @@ fn list_deleted_contacts(app: AppHandle) -> Result<Vec<Contact>, String> {
         .prepare(
             "
             SELECT id, first_name, last_name, display_name, email, phone, mobile_phone,
-                   street, postal_code, city, country, notes, created_at, updated_at, deleted_at
+                   street, postal_code, city, country, short_info, notes, created_at, updated_at, deleted_at
             FROM contacts
             WHERE deleted_at IS NOT NULL
             ORDER BY deleted_at DESC
@@ -468,11 +504,12 @@ fn list_deleted_contacts(app: AppHandle) -> Result<Vec<Contact>, String> {
                 postal_code: row.get(8)?,
                 city: row.get(9)?,
                 country: row.get(10)?,
-                notes: row.get(11)?,
+                short_info: row.get(11)?,
+                notes: row.get(12)?,
                 groups: Vec::new(),
-                created_at: row.get(12)?,
-                updated_at: row.get(13)?,
-                deleted_at: row.get(14)?,
+                created_at: row.get(13)?,
+                updated_at: row.get(14)?,
+                deleted_at: row.get(15)?,
             })
         })
         .map_err(|err| err.to_string())?;
@@ -526,16 +563,22 @@ fn save_group(app: AppHandle, group: Group) -> Result<i64, String> {
 #[tauri::command]
 fn delete_group(app: AppHandle, id: i64) -> Result<(), String> {
     let conn = open_db(&app)?;
-    conn.execute("UPDATE groups SET deleted_at = ?, updated_at = ? WHERE id = ?", params![now(), now(), id])
-        .map_err(|err| err.to_string())?;
+    conn.execute(
+        "UPDATE groups SET deleted_at = ?, updated_at = ? WHERE id = ?",
+        params![now(), now(), id],
+    )
+    .map_err(|err| err.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
 fn restore_group(app: AppHandle, id: i64) -> Result<(), String> {
     let conn = open_db(&app)?;
-    conn.execute("UPDATE groups SET deleted_at = NULL, updated_at = ? WHERE id = ?", params![now(), id])
-        .map_err(|err| err.to_string())?;
+    conn.execute(
+        "UPDATE groups SET deleted_at = NULL, updated_at = ? WHERE id = ?",
+        params![now(), id],
+    )
+    .map_err(|err| err.to_string())?;
     Ok(())
 }
 
@@ -583,9 +626,9 @@ fn import_contacts(app: AppHandle, payload: ImportPayload) -> Result<ImportResul
             "
             INSERT INTO contacts (
                 first_name, last_name, display_name, email, phone, mobile_phone, street,
-                postal_code, city, country, notes, import_batch_id, created_at, updated_at
+                postal_code, city, country, short_info, notes, import_batch_id, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ",
             params![
                 contact.first_name,
@@ -598,6 +641,7 @@ fn import_contacts(app: AppHandle, payload: ImportPayload) -> Result<ImportResul
                 contact.postal_code,
                 contact.city,
                 contact.country,
+                contact.short_info,
                 contact.notes,
                 batch_id,
                 timestamp,
@@ -647,10 +691,16 @@ fn undo_last_import(app: AppHandle) -> Result<usize, String> {
     };
 
     let deleted = conn
-        .execute("DELETE FROM contacts WHERE import_batch_id = ?", params![batch_id])
+        .execute(
+            "DELETE FROM contacts WHERE import_batch_id = ?",
+            params![batch_id],
+        )
         .map_err(|err| err.to_string())?;
-    conn.execute("DELETE FROM import_history WHERE batch_id = ?", params![batch_id])
-        .map_err(|err| err.to_string())?;
+    conn.execute(
+        "DELETE FROM import_history WHERE batch_id = ?",
+        params![batch_id],
+    )
+    .map_err(|err| err.to_string())?;
     Ok(deleted)
 }
 
@@ -660,7 +710,7 @@ fn load_backup_data(conn: &Connection) -> Result<BackupData, String> {
             .prepare(
                 "
                 SELECT id, first_name, last_name, display_name, email, phone, mobile_phone,
-                       street, postal_code, city, country, notes, created_at, updated_at, deleted_at
+                       street, postal_code, city, country, short_info, notes, created_at, updated_at, deleted_at
                 FROM contacts
                 ORDER BY last_name COLLATE NOCASE, first_name COLLATE NOCASE
                 ",
@@ -680,11 +730,12 @@ fn load_backup_data(conn: &Connection) -> Result<BackupData, String> {
                     postal_code: row.get(8)?,
                     city: row.get(9)?,
                     country: row.get(10)?,
-                    notes: row.get(11)?,
+                    short_info: row.get(11)?,
+                    notes: row.get(12)?,
                     groups: Vec::new(),
-                    created_at: row.get(12)?,
-                    updated_at: row.get(13)?,
-                    deleted_at: row.get(14)?,
+                    created_at: row.get(13)?,
+                    updated_at: row.get(14)?,
+                    deleted_at: row.get(15)?,
                 })
             })
             .map_err(|err| err.to_string())?;
@@ -779,9 +830,9 @@ fn restore_backup(app: AppHandle, backup: BackupData) -> Result<(), String> {
             "
             INSERT INTO contacts (
                 first_name, last_name, display_name, email, phone, mobile_phone, street,
-                postal_code, city, country, notes, created_at, updated_at, deleted_at
+                postal_code, city, country, short_info, notes, created_at, updated_at, deleted_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ",
             params![
                 contact.first_name,
@@ -794,6 +845,7 @@ fn restore_backup(app: AppHandle, backup: BackupData) -> Result<(), String> {
                 contact.postal_code,
                 contact.city,
                 contact.country,
+                contact.short_info,
                 contact.notes,
                 contact.created_at,
                 contact.updated_at,
@@ -804,7 +856,9 @@ fn restore_backup(app: AppHandle, backup: BackupData) -> Result<(), String> {
         let new_contact_id = tx.last_insert_rowid();
         for group in contact.groups {
             if let Some(old_group_id) = group.id {
-                if let Some((_, new_group_id)) = group_id_map.iter().find(|(old, _)| *old == old_group_id) {
+                if let Some((_, new_group_id)) =
+                    group_id_map.iter().find(|(old, _)| *old == old_group_id)
+                {
                     tx.execute(
                         "INSERT OR IGNORE INTO contact_groups (contact_id, group_id) VALUES (?, ?)",
                         params![new_contact_id, new_group_id],
@@ -834,8 +888,11 @@ fn write_export_file(path: String, content: String) -> Result<(), String> {
 #[tauri::command]
 fn delete_all_contacts(app: AppHandle) -> Result<usize, String> {
     let conn = open_db(&app)?;
-    conn.execute("UPDATE contacts SET deleted_at = ?, updated_at = ? WHERE deleted_at IS NULL", params![now(), now()])
-        .map_err(|err| err.to_string())
+    conn.execute(
+        "UPDATE contacts SET deleted_at = ?, updated_at = ? WHERE deleted_at IS NULL",
+        params![now(), now()],
+    )
+    .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -853,7 +910,16 @@ fn add_contact_to_group(app: AppHandle, contact_id: i64, group_id: i64) -> Resul
 fn open_outlook_classic_email(email: String) -> Result<(), String> {
     let shortcut = r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Outlook (classic).lnk";
     let status = hidden_command("cmd")
-        .args(["/C", "start", "", shortcut, "/c", "ipm.note", "/m", email.as_str()])
+        .args([
+            "/C",
+            "start",
+            "",
+            shortcut,
+            "/c",
+            "ipm.note",
+            "/m",
+            email.as_str(),
+        ])
         .status()
         .map_err(|err| format!("Outlook Classic konnte nicht geöffnet werden: {err}"))?;
     if status.success() {
@@ -937,6 +1003,7 @@ function Read-Folders($folder) {{
             postalCode = [string]$item.BusinessAddressPostalCode
             city = [string]$item.BusinessAddressCity
             country = [string]$item.BusinessAddressCountry
+            shortInfo = ''
             notes = [string]$item.Body
             groupIds = @()
           }}) | Out-Null
@@ -949,6 +1016,8 @@ function Read-Folders($folder) {{
             endsAt = if ($item.End) {{ ([datetime]$item.End).ToString('o') }} else {{ '' }}
             location = [string]$item.Location
             description = [string]$item.Body
+            color = 'blue'
+            category = ''
             source = $path
           }}) | Out-Null
         }}
@@ -964,18 +1033,27 @@ try {{ $namespace.RemoveStore($root) }} catch {{}}
     );
 
     let output = hidden_command("powershell")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script.as_str()])
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script.as_str(),
+        ])
         .output()
         .map_err(|err| format!("Outlook-Import konnte nicht gestartet werden: {err}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("PST/OST konnte nicht gelesen werden. Outlook Classic muss installiert sein. {stderr}"));
+        return Err(format!(
+            "PST/OST konnte nicht gelesen werden. Outlook Classic muss installiert sein. {stderr}"
+        ));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let data = serde_json::from_str::<OutlookImportData>(stdout.trim())
-        .map_err(|err| format!("Outlook-Daten konnten nicht ausgewertet werden: {err}. Ausgabe: {stdout}"))?;
+    let data = serde_json::from_str::<OutlookImportData>(stdout.trim()).map_err(|err| {
+        format!("Outlook-Daten konnten nicht ausgewertet werden: {err}. Ausgabe: {stdout}")
+    })?;
     if data.contacts.is_empty() && data.events.is_empty() {
         return Err("Outlook-Datendatei wurde geöffnet, aber es wurden keine Kontakte oder Kalendertermine gefunden. Prüfen Sie, ob die PST/OST Kontakte oder Kalender enthält und ob Outlook Classic Zugriff auf diese Datei hat.".to_string());
     }

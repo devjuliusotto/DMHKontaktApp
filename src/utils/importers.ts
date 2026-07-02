@@ -69,6 +69,7 @@ const aliases: Record<ImportField, string[]> = {
   postalCode: ["plz", "plz geschaeftlich", "plz geschäftlich", "plz privat", "postal code", "zip", "postleitzahl", "business postal code"],
   city: ["stadt", "ort", "ort geschaeftlich", "ort geschäftlich", "ort privat", "city", "business city", "home city"],
   country: ["land", "land/region", "country", "country/region", "business country/region"],
+  shortInfo: ["kurz-info", "kurzinfo", "kurzinformation", "short info", "shortinfo"],
   notes: ["notizen", "notes", "bemerkungen"]
 };
 

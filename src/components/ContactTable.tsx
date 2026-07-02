@@ -50,6 +50,7 @@ export function ContactTable({ contacts, onEdit, onDelete, onCopyEmail, onEmail,
               >
                 <td className="contact-primary" title={displayName(contact)}>
                   <strong>{displayName(contact)}</strong>
+                  {contact.shortInfo && <small>{contact.shortInfo}</small>}
                 </td>
                 <td className="contact-value" title={contact.email}>
                   <div className="contact-email-content">

@@ -1,4 +1,5 @@
 import type { CalendarEvent } from "../types/calendar";
+import { calendarColorOptions, calendarColorValue } from "../utils/calendar";
 
 interface CalendarEventFormProps {
   value: CalendarEvent;
@@ -31,6 +32,18 @@ export function CalendarEventForm({ value, isNew, onChange, onSave, onDelete, on
         <label className="field wide">
           <span>Ort</span>
           <input value={value.location} onChange={(event) => update("location", event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Farbe</span>
+          <select value={calendarColorValue(value.color)} onChange={(event) => update("color", event.target.value)}>
+            {calendarColorOptions.map((color) => (
+              <option value={color.value} key={color.value}>{color.label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Kategorie</span>
+          <input value={value.category} onChange={(event) => update("category", event.target.value)} placeholder="z. B. Sitzung" />
         </label>
         <label className="field wide">
           <span>Beschreibung</span>

@@ -12,7 +12,7 @@ const toCsv = (headers: string[], rows: Array<Array<unknown>>) => {
 
 export function exportGeneralCsv(contacts: Contact[]): string {
   return toCsv(
-    ["Vorname", "Nachname", "Anzeigename", "E-Mail", "Telefon", "Mobiltelefon", "Straße", "PLZ", "Stadt", "Land", "Notizen", "Gruppen"],
+    ["Vorname", "Nachname", "Anzeigename", "E-Mail", "Telefon", "Mobiltelefon", "Straße", "PLZ", "Stadt", "Land", "Kurz-info", "Notizen", "Gruppen"],
     contacts.map((contact) => [
       contact.firstName,
       contact.lastName,
@@ -24,6 +24,7 @@ export function exportGeneralCsv(contacts: Contact[]): string {
       contact.postalCode,
       contact.city,
       contact.country,
+      contact.shortInfo,
       contact.notes,
       contact.groups.map((group) => group.name).join(", ")
     ])

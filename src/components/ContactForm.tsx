@@ -50,6 +50,10 @@ export function ContactForm({ value, groups, onChange, onSubmit, onCancel }: Con
           </label>
         ))}
         <label className="field wide">
+          <span>Kurz-info</span>
+          <input value={value.shortInfo} onChange={(event) => update("shortInfo", event.target.value)} />
+        </label>
+        <label className="field wide">
           <span>Notizen</span>
           <textarea value={value.notes} onChange={(event) => update("notes", event.target.value)} rows={4} />
         </label>
