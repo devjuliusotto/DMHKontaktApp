@@ -1,0 +1,1180 @@
+:root {
+  color: #202124;
+  background: #f3f3f5;
+  --primary: #aa074f;
+  --primary-dark: #8a043f;
+  --soft: #f4d6e0;
+  --page: #f3f3f5;
+  --accent: #3f6b6b;
+  --border: #d8c1ca;
+  font-family: "Segoe UI", Arial, sans-serif;
+  font-size: 18px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 960px;
+  min-height: 100vh;
+  background: var(--page);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  align-items: center;
+  background: #ffffff;
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  color: #202124;
+  cursor: pointer;
+  display: inline-flex;
+  gap: 0.5rem;
+  justify-content: center;
+  min-height: 46px;
+  padding: 0.6rem 0.9rem;
+}
+
+button:hover {
+  border-color: var(--primary);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.primary:hover {
+  background: var(--primary-dark);
+  border-color: var(--primary-dark);
+}
+
+.large {
+  min-height: 56px;
+  padding: 0.8rem 1.1rem;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 290px 1fr;
+  min-height: 100vh;
+}
+
+.sidebar {
+  background: #ffffff;
+  border-right: 1px solid var(--border);
+  padding: 1.2rem;
+}
+
+.brand {
+  align-items: center;
+  display: flex;
+  gap: 0.8rem;
+  margin-bottom: 1.4rem;
+}
+
+.brand-mark {
+  align-items: center;
+  background: var(--primary);
+  border-radius: 8px;
+  color: #ffffff;
+  display: flex;
+  font-weight: 800;
+  height: 54px;
+  justify-content: center;
+  width: 54px;
+}
+
+.brand-logo {
+  border-radius: 8px;
+  height: 54px;
+  object-fit: contain;
+  width: 54px;
+}
+
+.brand h1 {
+  font-size: 1.25rem;
+  margin: 0;
+}
+
+.brand p {
+  color: var(--accent);
+  font-size: 0.86rem;
+  margin: 0.2rem 0 0;
+}
+
+.nav-list {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.nav-button {
+  justify-content: flex-start;
+  width: 100%;
+}
+
+.nav-button.active {
+  background: var(--soft);
+  border-color: var(--primary);
+  color: var(--primary-dark);
+  font-weight: 800;
+}
+
+.content {
+  overflow: auto;
+  padding: 1.4rem;
+}
+
+.page {
+  display: grid;
+  gap: 1rem;
+  margin: 0 auto;
+  max-width: 1380px;
+}
+
+.page-header {
+  align-items: center;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.page-header h2 {
+  font-size: 2rem;
+  line-height: 1.1;
+  margin: 0;
+}
+
+.page-header p {
+  color: var(--accent);
+  margin: 0.35rem 0 0;
+}
+
+.toolbar,
+.action-panel {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+}
+
+.search-field {
+  align-items: center;
+  background: #ffffff;
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  gap: 0.6rem;
+  min-width: 360px;
+  padding: 0 0.8rem;
+}
+
+.search-field input {
+  border: 0;
+  min-height: 52px;
+  outline: 0;
+  width: 100%;
+}
+
+select,
+input,
+textarea {
+  background: #ffffff;
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  min-height: 48px;
+  padding: 0.55rem 0.7rem;
+  width: 100%;
+}
+
+textarea {
+  resize: vertical;
+}
+
+.status {
+  border-radius: 8px;
+  border: 2px solid var(--border);
+  background: #ffffff;
+  padding: 0.8rem 1rem;
+}
+
+.status.success {
+  background: #eef7f7;
+  border-color: var(--accent);
+}
+
+.status.error {
+  background: #fff0f0;
+  border-color: #b3261e;
+}
+
+.form-panel,
+.table-panel {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.form-panel h2,
+.form-panel h3,
+.table-panel h2,
+.table-panel h3 {
+  margin: 0 0 0.85rem;
+}
+
+.form-grid {
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+}
+
+.mapping-grid {
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.readme-page {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  line-height: 1.6;
+  max-width: 980px;
+  padding: 2rem;
+}
+
+.readme-page h1 {
+  border-bottom: 1px solid var(--border);
+  font-size: 2.2rem;
+  margin: 0 0 1rem;
+  padding-bottom: 0.8rem;
+}
+
+.readme-page h2 {
+  border-bottom: 1px solid var(--border);
+  font-size: 1.45rem;
+  margin: 1.6rem 0 0.8rem;
+  padding-bottom: 0.35rem;
+}
+
+.readme-lead,
+.readme-page p,
+.readme-page li {
+  color: var(--accent);
+}
+
+.readme-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 0.8rem;
+}
+
+.field {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.field span,
+.group-picker legend {
+  font-weight: 700;
+}
+
+.field.wide {
+  grid-column: 1 / -1;
+}
+
+.invalid {
+  border-color: #b3261e;
+}
+
+.field-error {
+  color: #9a1b15;
+  font-weight: 700;
+}
+
+.import-log {
+  background: var(--page);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-top: 1rem;
+  padding: 0.8rem;
+}
+
+.import-log p {
+  margin: 0.25rem 0;
+}
+
+.import-summary {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+}
+
+.import-summary span,
+.import-summary strong {
+  background: var(--page);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.55rem 0.75rem;
+}
+
+.import-group-select {
+  min-width: 280px;
+}
+
+.import-warning {
+  color: var(--primary-dark);
+  font-weight: 700;
+}
+
+.group-picker {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 1rem 0;
+  padding: 0.8rem;
+}
+
+.checkbox-row {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.5rem;
+  margin: 0.3rem 1rem 0.3rem 0;
+}
+
+.checkbox-row input,
+td input[type="checkbox"] {
+  height: 24px;
+  min-height: 24px;
+  width: 24px;
+}
+
+.button-row,
+.inline-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.contacts-actions {
+  justify-content: flex-start;
+}
+
+.contacts-page {
+  gap: 0.45rem;
+}
+
+.contacts-commandbar {
+  align-items: center;
+  display: grid;
+  gap: 0.6rem;
+  grid-template-columns: auto minmax(220px, 1fr) auto;
+}
+
+.contacts-title {
+  align-items: baseline;
+  display: flex;
+  gap: 0.5rem;
+  white-space: nowrap;
+}
+
+.contacts-title h2 {
+  font-size: 1.4rem;
+  margin: 0;
+}
+
+.contacts-title span {
+  color: var(--accent);
+  font-size: 0.78rem;
+}
+
+.contacts-page .search-field {
+  min-width: 320px;
+}
+
+.contacts-page .search-field input {
+  min-height: 36px;
+}
+
+.contacts-page .contacts-actions {
+  flex-wrap: nowrap;
+}
+
+.contacts-page .contacts-actions button {
+  min-height: 38px;
+  padding: 0.4rem 0.6rem;
+}
+
+.icon-only {
+  min-width: 56px;
+  padding-left: 0.8rem;
+  padding-right: 0.8rem;
+}
+
+.more-menu-wrap {
+  position: relative;
+}
+
+.more-menu {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 12px 28px rgba(138, 4, 63, 0.16);
+  min-width: 230px;
+  padding: 0.4rem;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.4rem);
+  z-index: 8;
+}
+
+.more-menu button {
+  justify-content: flex-start;
+  width: 100%;
+}
+
+.modal-backdrop {
+  align-items: flex-start;
+  background: rgba(32, 33, 36, 0.42);
+  bottom: 0;
+  display: flex;
+  justify-content: center;
+  left: 0;
+  overflow: auto;
+  padding: 2rem;
+  position: fixed;
+  right: 0;
+  top: 0;
+  z-index: 20;
+}
+
+.modal-card {
+  box-shadow: 0 18px 42px rgba(138, 4, 63, 0.22);
+  max-width: 980px;
+  width: min(980px, 100%);
+}
+
+.email-app-dialog {
+  max-width: 640px;
+}
+
+.email-recipient {
+  color: var(--accent);
+  margin: 0.25rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.email-app-options {
+  display: grid;
+  gap: 0.7rem;
+  margin: 1rem 0;
+}
+
+.email-app-option {
+  align-items: center;
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: auto auto 1fr;
+  padding: 0.9rem;
+}
+
+.email-app-option.selected {
+  background: var(--soft);
+  border-color: var(--primary);
+}
+
+.email-app-option input {
+  height: 22px;
+  min-height: 22px;
+  width: 22px;
+}
+
+.email-app-option span,
+.email-app-option small {
+  display: block;
+}
+
+.email-app-option small {
+  color: var(--accent);
+  margin-top: 0.2rem;
+}
+
+.email-default-option {
+  display: flex;
+  margin-bottom: 1rem;
+}
+
+.contacts-workspace {
+  align-items: start;
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: 250px minmax(0, 1fr);
+}
+
+.groups-panel,
+.trash-panel {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.contacts-page .groups-panel {
+  padding: 0.7rem;
+}
+
+.contacts-page .groups-panel h3 {
+  margin-bottom: 0.5rem;
+}
+
+.contacts-page .group-create {
+  gap: 0.35rem;
+  margin-bottom: 0.5rem;
+}
+
+.contacts-page .group-create input,
+.contacts-page .group-create button,
+.contacts-page .group-filter,
+.contacts-page .group-drop > button {
+  min-height: 36px;
+  padding: 0.35rem 0.55rem;
+}
+
+.groups-panel h3,
+.trash-panel h3,
+.trash-panel h4 {
+  margin: 0 0 0.8rem;
+}
+
+.group-create {
+  display: grid;
+  gap: 0.55rem;
+  margin-bottom: 0.8rem;
+}
+
+.group-filter,
+.group-drop {
+  width: 100%;
+}
+
+.group-filter {
+  justify-content: flex-start;
+}
+
+.group-filter.active,
+.group-drop.active .group-filter {
+  background: var(--soft);
+  border-color: var(--primary);
+  color: var(--primary-dark);
+  font-weight: 800;
+}
+
+.group-drop {
+  align-items: stretch;
+  display: grid;
+  gap: 0.4rem;
+  grid-template-columns: 1fr auto;
+  margin-top: 0.45rem;
+}
+
+.group-drop:hover {
+  outline: 3px solid var(--soft);
+  outline-offset: 2px;
+}
+
+.drop-hint {
+  color: var(--accent);
+  font-size: 0.9rem;
+  margin: 0.9rem 0 0;
+}
+
+.contacts-main {
+  min-width: 0;
+}
+
+.trash-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(2, minmax(260px, 1fr));
+}
+
+.trash-row {
+  align-items: center;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 0.7rem;
+  justify-content: space-between;
+  padding: 0.6rem 0;
+}
+
+.panel-heading {
+  align-items: center;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  margin-bottom: 0.8rem;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+table {
+  border-collapse: collapse;
+  table-layout: fixed;
+  min-width: 1480px;
+  width: 100%;
+}
+
+.contacts-table {
+  min-width: 0;
+}
+
+.contacts-table .contact-name-column {
+  width: 32%;
+}
+
+.contacts-table .contact-email-column {
+  width: 44%;
+}
+
+.contacts-table .contact-actions-column {
+  width: 24%;
+}
+
+.contacts-table td {
+  overflow-wrap: anywhere;
+}
+
+.contacts-table .inline-actions {
+  flex-wrap: nowrap;
+}
+
+.contacts-table button {
+  min-height: 28px;
+  min-width: 28px;
+  padding: 0.25rem;
+}
+
+.contacts-list-panel {
+  padding: 0.6rem;
+}
+
+.contacts-list-panel .panel-heading {
+  margin-bottom: 0.4rem;
+}
+
+.contacts-list-panel .panel-heading h2 {
+  font-size: 1.1rem;
+  margin: 0;
+}
+
+.contact-count {
+  background: var(--soft);
+  border-radius: 999px;
+  color: var(--primary-dark);
+  display: inline-block;
+  font-size: 0.78rem;
+  margin-left: 0.35rem;
+  padding: 0.15rem 0.45rem;
+  vertical-align: middle;
+}
+
+.calendar-page {
+  max-width: 1600px;
+}
+
+.calendar-toolbar {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  padding: 0.6rem;
+}
+
+.calendar-navigation,
+.calendar-view-switch {
+  align-items: center;
+  display: flex;
+  gap: 0.4rem;
+}
+
+.calendar-navigation h3 {
+  margin: 0 0 0 0.5rem;
+  text-transform: capitalize;
+}
+
+.calendar-toolbar button {
+  min-height: 38px;
+  padding: 0.4rem 0.65rem;
+}
+
+.calendar-toolbar .icon-only.compact {
+  min-width: 38px;
+  width: 38px;
+}
+
+.calendar-view-switch .active {
+  background: var(--soft);
+  border-color: var(--primary);
+  color: var(--primary-dark);
+  font-weight: 700;
+}
+
+.calendar-grid {
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 1px;
+  overflow: hidden;
+}
+
+.month-view {
+  grid-template-columns: repeat(7, minmax(110px, 1fr));
+}
+
+.calendar-weekday {
+  background: var(--soft);
+  font-size: 0.82rem;
+  font-weight: 800;
+  padding: 0.45rem;
+  text-align: center;
+}
+
+.calendar-day {
+  background: #ffffff;
+  min-height: 112px;
+  padding: 0.4rem;
+}
+
+.calendar-day.outside {
+  background: #f7f7f8;
+  color: #8a8a8a;
+}
+
+.calendar-day.today,
+.calendar-week-column.today {
+  box-shadow: inset 0 0 0 2px var(--primary);
+}
+
+.calendar-day-number {
+  align-items: center;
+  display: flex;
+  font-size: 0.85rem;
+  font-weight: 800;
+  height: 24px;
+  justify-content: center;
+  width: 24px;
+}
+
+.calendar-day.today .calendar-day-number {
+  background: var(--primary);
+  border-radius: 50%;
+  color: #ffffff;
+}
+
+.calendar-day-events {
+  display: grid;
+  gap: 0.22rem;
+  margin-top: 0.25rem;
+}
+
+.calendar-event-chip {
+  align-items: baseline;
+  background: var(--soft);
+  border: 0;
+  border-left: 3px solid var(--primary);
+  border-radius: 4px;
+  color: inherit;
+  display: block;
+  font-size: 0.72rem;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0.2rem 0.3rem;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+
+.calendar-event-chip:hover {
+  background: #e8bfd0;
+  border-color: var(--primary-dark);
+}
+
+.calendar-event-chip time {
+  font-weight: 800;
+}
+
+.calendar-day-events small {
+  color: var(--accent);
+  font-size: 0.7rem;
+}
+
+.week-view {
+  grid-template-columns: repeat(7, minmax(130px, 1fr));
+  min-height: 560px;
+}
+
+.calendar-week-column {
+  background: #ffffff;
+  min-width: 0;
+}
+
+.calendar-week-column > header {
+  align-items: center;
+  background: var(--soft);
+  display: flex;
+  justify-content: space-between;
+  padding: 0.55rem;
+}
+
+.calendar-week-column > header strong {
+  font-size: 1.25rem;
+}
+
+.calendar-week-events {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.5rem;
+}
+
+.calendar-week-event {
+  align-items: stretch;
+  background: var(--soft);
+  border: 0;
+  border-left: 4px solid var(--primary);
+  border-radius: 5px;
+  color: inherit;
+  display: grid;
+  gap: 0.2rem;
+  justify-content: stretch;
+  padding: 0.55rem;
+  text-align: left;
+  width: 100%;
+}
+
+.calendar-week-event:hover {
+  background: #e8bfd0;
+  border-color: var(--primary-dark);
+}
+
+.calendar-week-event time,
+.calendar-week-event small,
+.calendar-empty-day {
+  color: var(--accent);
+  font-size: 0.75rem;
+}
+
+.calendar-event-dialog {
+  max-width: 760px;
+}
+
+.calendar-form-actions .danger-button {
+  border-color: #b3261e;
+  color: #9a1b15;
+  margin-left: auto;
+}
+
+.calendar-list-panel {
+  padding: 0.6rem;
+}
+
+.calendar-list-panel table {
+  min-width: 900px;
+}
+
+.calendar-list-table .calendar-title-column {
+  width: 32%;
+}
+
+.calendar-list-table .calendar-date-column {
+  width: 19%;
+}
+
+.calendar-list-table .calendar-location-column {
+  width: 20%;
+}
+
+.calendar-list-table .calendar-actions-column {
+  width: 10%;
+}
+
+.calendar-list-table th,
+.calendar-list-table td {
+  font-size: 0.82rem;
+  height: 30px;
+  line-height: 20px;
+  overflow: hidden;
+  padding: 0.15rem 0.4rem;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.calendar-list-table tbody tr {
+  cursor: default;
+  outline: none;
+}
+
+.calendar-list-table tbody tr:hover td,
+.calendar-list-table tbody tr:focus td {
+  background: #e8f1fb;
+}
+
+.calendar-list-table button {
+  min-height: 28px;
+  min-width: 28px;
+  padding: 0.25rem;
+}
+
+@media (max-width: 1150px) {
+  .calendar-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .calendar-grid {
+    overflow-x: auto;
+  }
+
+  .month-view,
+  .week-view {
+    min-width: 980px;
+  }
+}
+
+.contacts-table th,
+.contacts-table td {
+  height: 30px;
+  padding: 0.15rem 0.4rem;
+  vertical-align: middle;
+}
+
+.contacts-table th {
+  font-size: 0.82rem;
+}
+
+.contacts-table td {
+  font-size: 0.82rem;
+}
+
+.contacts-table tbody tr {
+  cursor: default;
+  outline: none;
+}
+
+.contacts-table tbody tr:hover td {
+  background: #e8f1fb;
+}
+
+.contacts-table tbody tr.selected td,
+.contacts-table tbody tr:focus td {
+  background: #0078d4;
+  border-bottom-color: #006cbe;
+  color: #ffffff;
+}
+
+.contacts-table tbody tr.selected button,
+.contacts-table tbody tr:focus button {
+  border-color: #ffffff;
+}
+
+.contacts-table .contact-primary,
+.contacts-table .contact-email-content > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.contacts-table .contact-email-content {
+  align-items: center;
+  display: flex;
+  gap: 0.3rem;
+  min-width: 0;
+  width: 100%;
+}
+
+.contacts-table .contact-email-content > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.contacts-table tbody tr,
+.contacts-table tbody td {
+  box-sizing: border-box;
+}
+
+.contacts-table tbody td {
+  display: table-cell;
+  line-height: 20px;
+}
+
+.contacts-table .inline-actions {
+  gap: 0.2rem;
+}
+
+@media (max-width: 1400px) {
+  .app-shell {
+    grid-template-columns: 240px minmax(0, 1fr);
+  }
+
+  .sidebar {
+    padding: 1rem;
+  }
+
+  .contacts-workspace {
+    grid-template-columns: 240px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 1150px) {
+  .contacts-commandbar {
+    grid-template-columns: auto minmax(200px, 1fr);
+  }
+
+  .contacts-page .contacts-actions {
+    grid-column: 1 / -1;
+  }
+}
+
+th,
+td {
+  border-bottom: 1px solid var(--border);
+  padding: 0.75rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  background: var(--soft);
+  color: #1f2a37;
+  position: relative;
+  user-select: none;
+}
+
+.column-resizer {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  cursor: col-resize;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  position: absolute;
+  right: -5px;
+  top: 0;
+  width: 10px;
+  z-index: 2;
+}
+
+.column-resizer:hover {
+  background: var(--primary);
+  border: 0;
+}
+
+td small {
+  color: var(--accent);
+  display: block;
+  margin-top: 0.2rem;
+}
+
+.empty-row {
+  color: var(--accent);
+  text-align: center;
+}
+
+.card-grid,
+.export-grid {
+  display: grid;
+  gap: 0.9rem;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.simple-card,
+.export-card {
+  align-items: flex-start;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  gap: 0.8rem;
+  justify-content: space-between;
+  padding: 1rem;
+  text-align: left;
+}
+
+.simple-card h3,
+.simple-card p {
+  margin: 0;
+}
+
+.simple-card p,
+.export-card span {
+  color: var(--accent);
+}
+
+.export-card {
+  flex-direction: column;
+  min-height: 170px;
+}
+
+.export-card strong {
+  font-size: 1.1rem;
+}
+
+.schema {
+  background: var(--page);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: auto;
+  padding: 0.8rem;
+}
+
+@media print {
+  .sidebar,
+  .page-header,
+  .toolbar,
+  .form-panel,
+  button,
+  .status {
+    display: none !important;
+  }
+
+  .app-shell {
+    display: block;
+  }
+
+  .content {
+    padding: 0;
+  }
+
+  .table-panel {
+    border: 0;
+  }
+}

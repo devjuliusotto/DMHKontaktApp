@@ -1,0 +1,35 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AgendaKontakte",
+  "version": "1.0.0",
+  "identifier": "de.dmh.agendakontakte",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "AgendaKontakte",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 980,
+        "minHeight": 680
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi", "nsis"],
+    "icon": ["icons/icon.ico"],
+    "publisher": "Diakonissenmutterhaus Aidlingen e.V.",
+    "category": "Productivity",
+    "shortDescription": "Lokale Kontaktverwaltung",
+    "longDescription": "AgendaKontakte verwaltet Kontakte und Gruppen lokal auf dem Windows-PC."
+  }
+}
