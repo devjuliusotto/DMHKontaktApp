@@ -14,7 +14,6 @@ interface CalendarEventFormProps {
 export function CalendarEventForm({ value, isNew, categories, onChange, onSave, onDelete, onCancel }: CalendarEventFormProps) {
   const update = (key: keyof CalendarEvent, fieldValue: string) => onChange({ ...value, [key]: fieldValue });
   const categoryNames = categories.map((category) => category.name);
-  const categoryValue = value.category && !categoryNames.includes(value.category) ? value.category : value.category;
 
   const updateCategory = (categoryName: string) => {
     const category = categories.find((entry) => entry.name === categoryName);
@@ -52,7 +51,7 @@ export function CalendarEventForm({ value, isNew, categories, onChange, onSave, 
         <label className="field">
           <span>Kategorie</span>
           {categories.length > 0 ? (
-            <select value={categoryValue} onChange={(event) => updateCategory(event.target.value)}>
+            <select value={value.category} onChange={(event) => updateCategory(event.target.value)}>
               <option value="">Keine Kategorie</option>
               {value.category && !categoryNames.includes(value.category) && <option value={value.category}>{value.category}</option>}
               {categories.map((category) => <option value={category.name} key={category.name}>{category.name}</option>)}

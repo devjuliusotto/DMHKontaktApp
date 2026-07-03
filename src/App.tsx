@@ -5,6 +5,7 @@ import { ExportPage } from "./pages/ExportPage";
 import { ImportPage } from "./pages/ImportPage";
 import { CalendarPage } from "./pages/CalendarPage";
 import { TrashPage } from "./pages/TrashPage";
+import { UpdateNotifier } from "./components/UpdateNotifier";
 
 export default function App() {
   const [page, setPage] = useState<Page>("contacts");
@@ -19,6 +20,7 @@ export default function App() {
         {page === "export" && <ExportPage />}
         {page === "trash" && <TrashPage />}
       </main>
+      <UpdateNotifier />
     </div>
   );
 }

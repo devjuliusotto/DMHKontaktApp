@@ -43,9 +43,12 @@ jobs:
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.event_name == 'workflow_dispatch' && format('app-v{0}', inputs.version) || github.ref_name }}
           releaseName: ${{ github.event_name == 'workflow_dispatch' && format('AgendaKontakte v{0}', inputs.version) || format('AgendaKontakte {0}', github.ref_name) }}
           releaseBody: "Windows installer for AgendaKontakte."
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
+          updaterJsonPreferNsis: true
