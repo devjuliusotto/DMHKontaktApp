@@ -1,5 +1,5 @@
-import { Copy, Edit, Mail, Printer, Trash2 } from "lucide-react";
-import type { DragEvent } from "react";
+import { Copy, Edit, GripVertical, Mail, Printer, Trash2 } from "lucide-react";
+import type { PointerEvent } from "react";
 import { useState } from "react";
 import type { Contact } from "../types/contact";
 import { displayName } from "../utils/contact";
@@ -12,22 +12,44 @@ interface ContactTableProps {
   onCopyEmail: (email: string) => void;
   onEmail: (email: string) => void;
   onPrint: () => void;
-  onDragStart: (contactId: number) => void;
-  onDragEnd: () => void;
+  selectionMode: boolean;
+  selectedContactIds: Set<number>;
+  onToggleSelection: (contact: Contact) => void;
+  onPointerDragStart: (contact: Contact, position: { x: number; y: number }) => void;
+  dragEnabled?: boolean;
 }
 
-export function ContactTable({ contacts, onEdit, onDelete, onCopyEmail, onEmail, onPrint, onDragStart, onDragEnd }: ContactTableProps) {
+export function ContactTable({
+  contacts,
+  onEdit,
+  onDelete,
+  onCopyEmail,
+  onEmail,
+  onPrint,
+  selectionMode,
+  selectedContactIds,
+  onToggleSelection,
+  onPointerDragStart,
+  dragEnabled = true
+}: ContactTableProps) {
   const [selectedContactId, setSelectedContactId] = useState<number | undefined>();
 
-  const startDrag = (event: DragEvent<HTMLTableRowElement>, contact: Contact) => {
-    if (!contact.id) {
-      event.preventDefault();
+  const startPointerDrag = (event: PointerEvent<HTMLTableRowElement>, contact: Contact) => {
+    if (!dragEnabled || event.button !== 0 || !contact.id) return;
+    const target = event.target as HTMLElement;
+    if (target.closest("button")) return;
+    if (selectionMode && !selectedContactIds.has(contact.id)) return;
+    event.preventDefault();
+    setSelectedContactId(contact.id);
+    onPointerDragStart(contact, { x: event.clientX, y: event.clientY });
+  };
+
+  const selectRow = (contact: Contact) => {
+    if (selectionMode) {
+      onToggleSelection(contact);
       return;
     }
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData("text/plain", String(contact.id));
-    event.dataTransfer.setData("application/x-agendakontakte-contact-id", String(contact.id));
-    onDragStart(contact.id);
+    setSelectedContactId(contact.id);
   };
 
   return (
@@ -39,7 +61,7 @@ export function ContactTable({ contacts, onEdit, onDelete, onCopyEmail, onEmail,
         </button>
       </div>
       <div className="table-wrap">
-        <table className="contacts-table">
+        <table className={dragEnabled ? "contacts-table" : "contacts-table drag-disabled"}>
           <colgroup>
             <col className="contact-name-column" />
             <col className="contact-email-column" />
@@ -53,49 +75,77 @@ export function ContactTable({ contacts, onEdit, onDelete, onCopyEmail, onEmail,
             </tr>
           </thead>
           <tbody>
-            {contacts.map((contact) => (
-              <tr
-                key={contact.id}
-                className={selectedContactId === contact.id ? "selected" : ""}
-                draggable={Boolean(contact.id)}
-                tabIndex={0}
-                onDragStart={(event) => startDrag(event, contact)}
-                onDragEnd={onDragEnd}
-                onClick={() => setSelectedContactId(contact.id)}
-                onDoubleClick={() => onEdit(contact)}
-                onFocus={() => setSelectedContactId(contact.id)}
-              >
-                <td className="contact-primary" title={displayName(contact)}>
-                  <strong>{displayName(contact)}</strong>
-                  {contact.shortInfo && <small>{contact.shortInfo}</small>}
-                </td>
-                <td className="contact-value" title={contact.email}>
-                  <div className="contact-email-content">
-                    <span>{contact.email || "-"}</span>
-                    {contact.email && (
-                      <button title="E-Mail kopieren" type="button" onClick={() => onCopyEmail(contact.email)}>
-                        <Copy size={16} />
+            {contacts.map((contact) => {
+              const isMultiSelected = Boolean(contact.id && selectedContactIds.has(contact.id));
+              return (
+                <tr
+                  key={contact.id}
+                  className={[
+                    selectedContactId === contact.id ? "selected" : "",
+                    isMultiSelected ? "multi-selected" : "",
+                    selectionMode ? "selection-mode" : ""
+                  ].filter(Boolean).join(" ")}
+                  tabIndex={0}
+                  onClick={() => selectRow(contact)}
+                  onDoubleClick={() => {
+                    if (!selectionMode) onEdit(contact);
+                  }}
+                  onFocus={() => setSelectedContactId(contact.id)}
+                  onPointerDown={(event) => startPointerDrag(event, contact)}
+                >
+                  <td className="contact-primary" title={displayName(contact)}>
+                    <div className="contact-name-content">
+                      {selectionMode && (
+                        <span className={isMultiSelected ? "selection-dot checked" : "selection-dot"} aria-hidden="true">
+                          {isMultiSelected ? "✓" : ""}
+                        </span>
+                      )}
+                      {dragEnabled && (
+                        <span
+                          aria-label="Kontakt verschieben"
+                          className="drag-handle"
+                          onMouseDown={() => setSelectedContactId(contact.id)}
+                          role="button"
+                          tabIndex={-1}
+                          title="Kontakt in Gruppe ziehen"
+                        >
+                          <GripVertical size={16} />
+                        </span>
+                      )}
+                      <span className="contact-name-text">
+                        <strong>{displayName(contact)}</strong>
+                        {contact.shortInfo && <small>{contact.shortInfo}</small>}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="contact-value" title={contact.email}>
+                    <div className="contact-email-content">
+                      <span>{contact.email || "-"}</span>
+                      {contact.email && (
+                        <button title="E-Mail kopieren" type="button" onClick={() => onCopyEmail(contact.email)}>
+                          <Copy size={16} />
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                  <td>
+                    <div className="inline-actions">
+                      <button title={t.editContact} type="button" onClick={() => onEdit(contact)} disabled={selectionMode}>
+                        <Edit size={16} />
                       </button>
-                    )}
-                  </div>
-                </td>
-                <td>
-                  <div className="inline-actions">
-                    <button title={t.editContact} type="button" onClick={() => onEdit(contact)}>
-                      <Edit size={16} />
-                    </button>
-                    {contact.email && (
-                      <button title="E-Mail-Anwendung auswählen" type="button" onClick={() => onEmail(contact.email)}>
-                        <Mail size={16} />
+                      {contact.email && (
+                        <button title="E-Mail-Anwendung auswählen" type="button" onClick={() => onEmail(contact.email)} disabled={selectionMode}>
+                          <Mail size={16} />
+                        </button>
+                      )}
+                      <button title={t.deleteContact} type="button" onClick={() => onDelete(contact)} disabled={selectionMode}>
+                        <Trash2 size={16} />
                       </button>
-                    )}
-                    <button title={t.deleteContact} type="button" onClick={() => onDelete(contact)}>
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
             {contacts.length === 0 && (
               <tr>
                 <td colSpan={3} className="empty-row">

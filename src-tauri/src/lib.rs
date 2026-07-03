@@ -20,6 +20,41 @@ fn hidden_command(program: &str) -> Command {
     command
 }
 
+fn normalize_recipients(recipients: Vec<String>) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for recipient in recipients {
+        let email = recipient.trim();
+        if email.is_empty() || !email.contains('@') {
+            continue;
+        }
+        if normalized
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(email))
+        {
+            continue;
+        }
+        normalized.push(email.to_string());
+    }
+    normalized
+}
+
+fn powershell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn url_encode_component(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char);
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
 struct AppState {
     db_path: Mutex<PathBuf>,
 }
@@ -946,6 +981,28 @@ fn move_contact_to_group(app: AppHandle, contact_id: i64, group_id: i64) -> Resu
 }
 
 #[tauri::command]
+fn clear_contact_groups(app: AppHandle, contact_id: i64) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    let contact_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM contacts WHERE id = ? AND deleted_at IS NULL)",
+            params![contact_id],
+            |row| row.get(0),
+        )
+        .map_err(|err| err.to_string())?;
+    if !contact_exists {
+        return Err("Kontakt wurde nicht gefunden oder ist gelöscht.".to_string());
+    }
+
+    conn.execute(
+        "DELETE FROM contact_groups WHERE contact_id = ?",
+        params![contact_id],
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 fn open_outlook_classic_email(email: String) -> Result<(), String> {
     let shortcut = r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Outlook (classic).lnk";
     let status = hidden_command("cmd")
@@ -971,6 +1028,78 @@ fn open_outlook_classic_email(email: String) -> Result<(), String> {
 #[tauri::command]
 fn open_new_outlook_email(email: String) -> Result<(), String> {
     let compose_url = format!("ms-outlook://compose?to={}", email.trim());
+    hidden_command("explorer.exe")
+        .arg(compose_url)
+        .spawn()
+        .map_err(|err| format!("Das neue Outlook konnte nicht geöffnet werden: {err}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn open_outlook_classic_bulk_email(
+    recipients: Vec<String>,
+    subject: Option<String>,
+) -> Result<(), String> {
+    let recipients = normalize_recipients(recipients);
+    if recipients.is_empty() {
+        return Err("Keine gültigen E-Mail-Adressen gefunden.".to_string());
+    }
+
+    let bcc = recipients.join("; ");
+    let subject = subject.unwrap_or_default();
+    let script = format!(
+        r#"
+$ErrorActionPreference = 'Stop'
+$outlook = New-Object -ComObject Outlook.Application
+$mail = $outlook.CreateItem(0)
+$mail.Bcc = {bcc}
+$mail.Subject = {subject}
+$mail.Display()
+"#,
+        bcc = powershell_single_quote(&bcc),
+        subject = powershell_single_quote(&subject)
+    );
+
+    let status = hidden_command("powershell")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script.as_str(),
+        ])
+        .status()
+        .map_err(|err| format!("Outlook Classic konnte nicht geöffnet werden: {err}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("Outlook Classic konnte nicht geöffnet werden.".to_string())
+    }
+}
+
+#[tauri::command]
+fn open_new_outlook_bulk_email(
+    recipients: Vec<String>,
+    subject: Option<String>,
+) -> Result<(), String> {
+    let recipients = normalize_recipients(recipients);
+    if recipients.is_empty() {
+        return Err("Keine gültigen E-Mail-Adressen gefunden.".to_string());
+    }
+
+    let bcc = recipients.join(";");
+    let mut compose_url = format!(
+        "ms-outlook://compose?bcc={}",
+        url_encode_component(&bcc)
+    );
+    if let Some(subject) = subject {
+        let subject = subject.trim();
+        if !subject.is_empty() {
+            compose_url.push_str("&subject=");
+            compose_url.push_str(&url_encode_component(subject));
+        }
+    }
+
     hidden_command("explorer.exe")
         .arg(compose_url)
         .spawn()
@@ -1131,8 +1260,11 @@ pub fn run() {
             delete_all_contacts,
             add_contact_to_group,
             move_contact_to_group,
+            clear_contact_groups,
             open_outlook_classic_email,
             open_new_outlook_email,
+            open_outlook_classic_bulk_email,
+            open_new_outlook_bulk_email,
             get_app_setting,
             set_app_setting,
             import_outlook_store

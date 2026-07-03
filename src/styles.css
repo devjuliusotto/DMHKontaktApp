@@ -390,6 +390,31 @@ td input[type="checkbox"] {
   gap: 0.45rem;
 }
 
+.contacts-tabs {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: inline-flex;
+  gap: 0.25rem;
+  justify-self: start;
+  padding: 0.25rem;
+}
+
+.contacts-tabs button {
+  background: transparent;
+  border-color: transparent;
+  min-height: 38px;
+  padding: 0.4rem 0.8rem;
+}
+
+.contacts-tabs button.active {
+  background: var(--soft);
+  border-color: var(--primary);
+  color: var(--primary-dark);
+  font-weight: 800;
+}
+
 .contacts-commandbar {
   align-items: center;
   display: grid;
@@ -431,6 +456,15 @@ td input[type="checkbox"] {
 .contacts-page .contacts-actions button {
   min-height: 38px;
   padding: 0.4rem 0.6rem;
+}
+
+.selection-count {
+  align-items: center;
+  color: var(--muted);
+  display: inline-flex;
+  font-size: 0.9rem;
+  font-weight: 700;
+  min-height: 38px;
 }
 
 .icon-only {
@@ -485,6 +519,65 @@ td input[type="checkbox"] {
 
 .email-app-dialog {
   max-width: 640px;
+}
+
+.bulk-add-dialog {
+  max-width: 680px;
+}
+
+.bulk-add-search {
+  margin: 0.9rem 0 0.7rem;
+  min-width: 0;
+  width: 100%;
+}
+
+.bulk-add-list {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  max-height: 380px;
+  overflow: auto;
+}
+
+.bulk-add-row {
+  align-items: center;
+  background: #ffffff;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  justify-content: stretch;
+  min-height: 58px;
+  padding: 0.55rem 0.75rem;
+  text-align: left;
+}
+
+.bulk-add-row:last-child {
+  border-bottom: 0;
+}
+
+.bulk-add-row:hover,
+.bulk-add-row.selected {
+  background: #e8f1fb;
+}
+
+.bulk-add-row span:last-child {
+  display: grid;
+  min-width: 0;
+}
+
+.bulk-add-row strong,
+.bulk-add-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bulk-add-row small {
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .email-recipient {
@@ -605,7 +698,7 @@ td input[type="checkbox"] {
   align-items: stretch;
   display: grid;
   gap: 0.4rem;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   margin-top: 0.45rem;
 }
 
@@ -1055,12 +1148,51 @@ table {
   outline: none;
 }
 
-.contacts-table tbody tr[draggable="true"] {
+.contacts-table tbody tr {
   cursor: grab;
 }
 
-.contacts-table tbody tr[draggable="true"]:active {
+.contacts-table.drag-disabled tbody tr {
+  cursor: default;
+}
+
+.contacts-table tbody tr:active,
+.contacts-page.dragging-contact .contacts-table tbody tr.selected {
   cursor: grabbing;
+}
+
+.contacts-table.drag-disabled tbody tr:active {
+  cursor: default;
+}
+
+.contacts-page.dragging-contact {
+  user-select: none;
+}
+
+.contacts-page.dragging-contact .group-drop {
+  cursor: copy;
+}
+
+.contact-drag-preview {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid #99c5ee;
+  border-radius: 6px;
+  box-shadow: 0 10px 24px rgba(14, 42, 71, 0.22);
+  box-sizing: border-box;
+  color: #17324d;
+  display: block;
+  font-weight: 800;
+  max-width: 260px;
+  opacity: 0.92;
+  overflow: hidden;
+  padding: 0.45rem 0.65rem;
+  pointer-events: none;
+  position: fixed;
+  text-overflow: ellipsis;
+  transform: translate(4px, 4px);
+  white-space: nowrap;
+  z-index: 3000;
 }
 
 .contacts-table tbody tr:hover td {
@@ -1074,16 +1206,89 @@ table {
   color: #ffffff;
 }
 
+.contacts-table tbody tr.multi-selected td {
+  background: #dcebfa;
+  border-bottom-color: #b9d7f2;
+  color: #17324d;
+}
+
+.contacts-table tbody tr.multi-selected.selected td,
+.contacts-table tbody tr.multi-selected:focus td {
+  background: #cfe5f8;
+  border-bottom-color: #99c5ee;
+  color: #17324d;
+}
+
 .contacts-table tbody tr.selected button,
 .contacts-table tbody tr:focus button {
   border-color: #ffffff;
 }
 
 .contacts-table .contact-primary,
-.contacts-table .contact-email-content > span {
+.contacts-table .contact-email-content > span,
+.contacts-table .contact-name-text {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.contacts-table .contact-name-content {
+  align-items: center;
+  display: flex;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.selection-dot {
+  align-items: center;
+  border: 2px solid #8aa3b8;
+  border-radius: 50%;
+  color: #ffffff;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 0.75rem;
+  font-weight: 900;
+  height: 18px;
+  justify-content: center;
+  line-height: 1;
+  width: 18px;
+}
+
+.selection-dot.checked {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+.contacts-table .drag-handle {
+  align-items: center;
+  border-radius: 4px;
+  color: #5f6f7f;
+  cursor: grab;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 22px;
+  justify-content: center;
+  width: 18px;
+}
+
+.contacts-table .drag-handle:active {
+  cursor: grabbing;
+}
+
+.contacts-table .contact-name-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.contacts-table tbody tr.selected .drag-handle,
+.contacts-table tbody tr:focus .drag-handle {
+  color: #ffffff;
+}
+
+.contacts-table tbody tr.multi-selected .drag-handle,
+.contacts-table tbody tr.multi-selected:focus .drag-handle {
+  color: #5f6f7f;
 }
 
 .contacts-table .contact-primary small {

@@ -74,12 +74,24 @@ export function moveContactToGroup(contactId: number, groupId: number): Promise<
   return invoke("move_contact_to_group", { contactId, groupId });
 }
 
+export function clearContactGroups(contactId: number): Promise<void> {
+  return invoke("clear_contact_groups", { contactId });
+}
+
 export function openOutlookClassicEmail(email: string): Promise<void> {
   return invoke("open_outlook_classic_email", { email });
 }
 
 export function openNewOutlookEmail(email: string): Promise<void> {
   return invoke("open_new_outlook_email", { email });
+}
+
+export function openOutlookClassicBulkEmail(recipients: string[], subject?: string): Promise<void> {
+  return invoke("open_outlook_classic_bulk_email", { recipients, subject });
+}
+
+export function openNewOutlookBulkEmail(recipients: string[], subject?: string): Promise<void> {
+  return invoke("open_new_outlook_bulk_email", { recipients, subject });
 }
 
 export function getAppSetting(key: string): Promise<string | null> {
