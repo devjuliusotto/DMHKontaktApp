@@ -329,6 +329,108 @@ textarea {
   margin: 0.25rem 0;
 }
 
+.import-choice-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+}
+
+.import-choice-card {
+  align-items: center;
+  border-width: 2px;
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  justify-content: start;
+  min-height: 128px;
+  padding: 1.1rem;
+  text-align: left;
+}
+
+.import-choice-card svg {
+  color: var(--primary);
+}
+
+.import-choice-card span,
+.import-choice-card small {
+  display: block;
+}
+
+.import-choice-card strong {
+  font-size: 1.2rem;
+}
+
+.import-choice-card small,
+.import-step-text,
+.import-step-box p,
+.import-file-name {
+  color: var(--accent);
+}
+
+.import-wizard-panel .panel-heading {
+  align-items: flex-start;
+}
+
+.import-step-text {
+  margin: 0.25rem 0 0;
+}
+
+.import-wizard-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
+}
+
+.import-step-box {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 0.7rem;
+  padding: 1rem;
+}
+
+.import-step-number {
+  align-items: center;
+  background: var(--primary);
+  border-radius: 999px;
+  color: #ffffff;
+  display: inline-flex;
+  font-weight: 800;
+  height: 32px;
+  justify-content: center;
+  width: 32px;
+}
+
+.import-step-box h4,
+.import-step-box p {
+  margin: 0;
+}
+
+.import-file-name {
+  overflow-wrap: anywhere;
+}
+
+.calendar-import-preview {
+  background: var(--event-bg, var(--soft));
+  border-left: 4px solid var(--event-border, var(--primary));
+  border-radius: 6px;
+  display: inline-flex;
+  font-weight: 800;
+  padding: 0.45rem 0.65rem;
+}
+
+.import-confirm-panel {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  justify-content: flex-end;
+  padding: 0.8rem;
+}
+
 .import-summary {
   align-items: center;
   display: flex;
@@ -834,7 +936,8 @@ table {
 }
 
 .calendar-navigation,
-.calendar-view-switch {
+.calendar-view-switch,
+.calendar-date-filter {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
@@ -846,6 +949,40 @@ table {
   margin: 0 0 0 0.5rem;
   min-width: 0;
   text-transform: capitalize;
+}
+
+.calendar-date-filter {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.35rem;
+}
+
+.calendar-date-filter label {
+  align-items: center;
+  display: flex;
+  gap: 0.35rem;
+}
+
+.calendar-date-filter span {
+  color: var(--accent);
+  font-size: 0.82rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.calendar-date-filter input,
+.calendar-date-filter select {
+  min-height: 38px;
+  padding: 0.35rem 0.5rem;
+}
+
+.calendar-date-filter input {
+  width: 92px;
+}
+
+.calendar-date-filter select {
+  width: auto;
 }
 
 .calendar-category-filter {
@@ -1030,6 +1167,10 @@ table {
   max-width: 760px;
 }
 
+.calendar-category-dialog {
+  max-width: 560px;
+}
+
 .calendar-form-actions .danger-button {
   border-color: #b3261e;
   color: #9a1b15;
@@ -1124,6 +1265,10 @@ table {
   }
 
   .calendar-category-filter {
+    width: 100%;
+  }
+
+  .calendar-date-filter {
     width: 100%;
   }
 }
@@ -1487,6 +1632,130 @@ td small {
   flex-wrap: wrap;
   gap: 0.2rem 0.8rem;
   min-width: 0;
+}
+
+.export-choice-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+}
+
+.export-choice-card {
+  align-items: center;
+  border-width: 2px;
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  justify-content: start;
+  min-height: 128px;
+  padding: 1.1rem;
+  text-align: left;
+}
+
+.export-choice-card svg {
+  color: var(--primary);
+}
+
+.export-choice-card span,
+.export-choice-card small {
+  display: block;
+}
+
+.export-choice-card strong {
+  font-size: 1.2rem;
+}
+
+.export-choice-card small,
+.export-step-text,
+.export-step-box p {
+  color: var(--accent);
+}
+
+.export-wizard-panel .panel-heading {
+  align-items: flex-start;
+}
+
+.export-step-text {
+  margin: 0.25rem 0 0;
+}
+
+.export-wizard-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+}
+
+.export-step-box {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 0.7rem;
+  padding: 1rem;
+}
+
+.export-step-number {
+  align-items: center;
+  background: var(--primary);
+  border-radius: 999px;
+  color: #ffffff;
+  display: inline-flex;
+  font-weight: 800;
+  height: 32px;
+  justify-content: center;
+  width: 32px;
+}
+
+.export-step-box h4,
+.export-step-box p {
+  margin: 0;
+}
+
+.export-radio-list {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.export-radio-option {
+  align-items: center;
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 0.75rem;
+}
+
+.export-radio-option.selected {
+  background: var(--soft);
+  border-color: var(--primary);
+}
+
+.export-radio-option input {
+  height: 22px;
+  min-height: 22px;
+  width: 22px;
+}
+
+.export-radio-option span,
+.export-radio-option small {
+  display: block;
+}
+
+.export-radio-option small {
+  color: var(--accent);
+}
+
+.export-confirm-panel {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  justify-content: flex-end;
+  padding: 0.8rem;
 }
 
 .simple-card,

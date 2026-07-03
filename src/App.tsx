@@ -13,7 +13,7 @@ export default function App() {
     <div className="app-shell">
       <Sidebar activePage={page} onNavigate={setPage} />
       <main className="content">
-        {page === "contacts" && <ContactsPage onNavigate={setPage} />}
+        {page === "contacts" && <ContactsPage />}
         {page === "calendar" && <CalendarPage />}
         {page === "import" && <ImportPage />}
         {page === "export" && <ExportPage />}

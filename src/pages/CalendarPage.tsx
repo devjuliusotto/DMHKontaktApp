@@ -1,17 +1,34 @@
-import { open, save } from "@tauri-apps/plugin-dialog";
-import { readFile } from "@tauri-apps/plugin-fs";
-import { CalendarDays, CalendarPlus, ChevronLeft, ChevronRight, Download, Edit, List, Plus, Rows3, Trash2 } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, Edit, List, Plus, Rows3, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { CalendarEventForm } from "../components/CalendarEventForm";
 import { StatusMessage } from "../components/StatusMessage";
-import { importOutlookStore, writeExportFile } from "../services/db";
 import type { CalendarEvent } from "../types/calendar";
-import { calendarColorStyle, calendarColorValue, defaultCalendarColor, exportCalendarIcs, formatCalendarDate, parseCalendarDate, parseCalendarFile } from "../utils/calendar";
+import { calendarColorOptions, calendarColorStyle, calendarColorValue, defaultCalendarColor, formatCalendarDate, parseCalendarDate } from "../utils/calendar";
 
 const storageKey = "agendakontakte.calendarEvents";
+const categoriesStorageKey = "agendakontakte.calendarCategories";
 const weekdays = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
 type CalendarView = "month" | "week" | "list";
+type CalendarDateFilter = "all" | "year" | "month" | "day";
+type CalendarCategory = {
+  name: string;
+  color: string;
+};
 const allCategoriesValue = "__all__";
+const calendarMonths = [
+  "Januar",
+  "Februar",
+  "März",
+  "April",
+  "Mai",
+  "Juni",
+  "Juli",
+  "August",
+  "September",
+  "Oktober",
+  "November",
+  "Dezember"
+];
 
 function startOfDay(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate());
@@ -32,8 +49,27 @@ function sameDay(left: Date, right: Date): boolean {
   return left.getFullYear() === right.getFullYear() && left.getMonth() === right.getMonth() && left.getDate() === right.getDate();
 }
 
+function daysInMonth(year: number, month: number): number {
+  return new Date(year, month + 1, 0).getDate();
+}
+
+function clampDay(year: number, month: number, day: number): number {
+  return Math.min(Math.max(day, 1), daysInMonth(year, month));
+}
+
 function eventDate(event: CalendarEvent): Date | null {
   return parseCalendarDate(event.startsAt);
+}
+
+function eventMatchesDateFilter(event: CalendarEvent, cursor: Date, filter: CalendarDateFilter): boolean {
+  if (filter === "all") return true;
+  const date = eventDate(event);
+  if (!date) return false;
+  if (date.getFullYear() !== cursor.getFullYear()) return false;
+  if (filter === "year") return true;
+  if (date.getMonth() !== cursor.getMonth()) return false;
+  if (filter === "month") return true;
+  return sameDay(date, cursor);
 }
 
 function eventTime(event: CalendarEvent): string {
@@ -73,23 +109,38 @@ function normalizeEvent(event: CalendarEvent): CalendarEvent {
   };
 }
 
+function normalizeCategory(category: CalendarCategory): CalendarCategory {
+  return {
+    name: category.name.trim(),
+    color: calendarColorValue(category.color)
+  };
+}
+
 export function CalendarPage() {
   const [events, setEvents] = useState<CalendarEvent[]>([]);
+  const [categories, setCategories] = useState<CalendarCategory[]>([]);
   const [message, setMessage] = useState("");
   const [view, setView] = useState<CalendarView>("month");
   const [cursor, setCursor] = useState(() => startOfDay(new Date()));
   const [editingEvent, setEditingEvent] = useState<CalendarEvent | null>(null);
   const [editingIsNew, setEditingIsNew] = useState(false);
   const [categoryFilter, setCategoryFilter] = useState(allCategoriesValue);
+  const [dateFilter, setDateFilter] = useState<CalendarDateFilter>("all");
+  const [showCategoryDialog, setShowCategoryDialog] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [newCategoryColor, setNewCategoryColor] = useState(defaultCalendarColor);
 
   useEffect(() => {
     const saved = localStorage.getItem(storageKey);
     if (saved) {
       const storedEvents = (JSON.parse(saved) as CalendarEvent[]).map(normalizeEvent);
       setEvents(storedEvents);
-      const datedEvents = storedEvents.map(eventDate).filter((date): date is Date => Boolean(date)).sort((a, b) => a.getTime() - b.getTime());
-      const nextEvent = datedEvents.find((date) => date >= startOfDay(new Date())) ?? datedEvents[0];
-      if (nextEvent) setCursor(startOfDay(nextEvent));
+    }
+
+    const savedCategories = localStorage.getItem(categoriesStorageKey);
+    if (savedCategories) {
+      const storedCategories = (JSON.parse(savedCategories) as CalendarCategory[]).map(normalizeCategory).filter((category) => category.name);
+      setCategories(storedCategories);
     }
   }, []);
 
@@ -98,12 +149,22 @@ export function CalendarPage() {
     [events]
   );
   const categoryOptions = useMemo(
-    () => Array.from(new Set(events.map((event) => event.category.trim()).filter(Boolean))).sort((left, right) => left.localeCompare(right, "de")),
-    [events]
+    () => {
+      const names = new Set<string>();
+      for (const category of categories) if (category.name.trim()) names.add(category.name.trim());
+      for (const event of events) if (event.category.trim()) names.add(event.category.trim());
+      return Array.from(names).sort((left, right) => left.localeCompare(right, "de"));
+    },
+    [categories, events]
   );
   const sortedEvents = useMemo(
-    () => categoryFilter === allCategoriesValue ? allSortedEvents : allSortedEvents.filter((event) => event.category.trim() === categoryFilter),
-    [allSortedEvents, categoryFilter]
+    () => {
+      const byCategory = categoryFilter === allCategoriesValue
+        ? allSortedEvents
+        : allSortedEvents.filter((event) => event.category.trim() === categoryFilter);
+      return byCategory.filter((event) => eventMatchesDateFilter(event, cursor, dateFilter));
+    },
+    [allSortedEvents, categoryFilter, cursor, dateFilter]
   );
 
   const monthDays = useMemo(() => {
@@ -128,48 +189,55 @@ export function CalendarPage() {
       ? `${new Intl.DateTimeFormat("de-DE", { day: "2-digit", month: "2-digit" }).format(weekDays[0])} - ${new Intl.DateTimeFormat("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" }).format(weekDays[6])}`
       : `${sortedEvents.length} Termine`;
 
+  const setCalendarYear = (year: number) => {
+    if (!Number.isFinite(year)) return;
+    setCursor((current) => new Date(year, current.getMonth(), clampDay(year, current.getMonth(), current.getDate())));
+    setDateFilter("year");
+  };
+
+  const setCalendarMonth = (month: number) => {
+    if (!Number.isFinite(month)) return;
+    setCursor((current) => new Date(current.getFullYear(), month, clampDay(current.getFullYear(), month, current.getDate())));
+    setDateFilter("month");
+  };
+
+  const setCalendarDay = (day: number) => {
+    if (!Number.isFinite(day)) return;
+    setCursor((current) => new Date(current.getFullYear(), current.getMonth(), clampDay(current.getFullYear(), current.getMonth(), day)));
+    setDateFilter("day");
+  };
+
   const persist = (nextEvents: CalendarEvent[]) => {
     const sorted = nextEvents.map(normalizeEvent).sort((a, b) => a.startsAt.localeCompare(b.startsAt));
     setEvents(sorted);
     localStorage.setItem(storageKey, JSON.stringify(sorted));
   };
 
-  const importCalendar = async () => {
-    try {
-      const path = await open({
-        multiple: false,
-        filters: [{ name: "Kalenderdateien", extensions: ["ics", "eml", "pst", "ost"] }]
-      });
-      if (!path || Array.isArray(path)) return;
-      const lower = path.toLowerCase();
-      const imported = (lower.endsWith(".pst") || lower.endsWith(".ost") ? (await importOutlookStore(path)).events : parseCalendarFile(await readFile(path), path)).map(normalizeEvent);
-      if (!imported.length) {
-        setMessage("Keine Kalendertermine gefunden. Bitte exportieren Sie aus Thunderbird als .ics oder wählen Sie eine E-Mail mit iCalendar-Inhalt.");
-        return;
-      }
-      const byId = new Map(events.map((event) => [event.id, event]));
-      for (const event of imported) byId.set(event.id, event);
-      persist(Array.from(byId.values()));
-      const firstImportedDate = imported.map(eventDate).filter((date): date is Date => Boolean(date)).sort((a, b) => a.getTime() - b.getTime())[0];
-      if (firstImportedDate) setCursor(startOfDay(firstImportedDate));
-      setMessage(`${imported.length} Termine importiert.`);
-    } catch (error) {
-      setMessage(`Kalenderimport fehlgeschlagen: ${error}`);
+  const persistCategories = (nextCategories: CalendarCategory[]) => {
+    const byName = new Map<string, CalendarCategory>();
+    for (const category of nextCategories.map(normalizeCategory).filter((entry) => entry.name)) {
+      byName.set(category.name.toLowerCase(), category);
     }
+    const sorted = Array.from(byName.values()).sort((left, right) => left.name.localeCompare(right.name, "de"));
+    setCategories(sorted);
+    localStorage.setItem(categoriesStorageKey, JSON.stringify(sorted));
   };
 
-  const exportCalendar = async () => {
-    try {
-      const path = await save({
-        defaultPath: "AgendaKontakte-Kalender.ics",
-        filters: [{ name: "iCalendar", extensions: ["ics"] }]
-      });
-      if (!path) return;
-      await writeExportFile(path, exportCalendarIcs(allSortedEvents));
-      setMessage(`${allSortedEvents.length} Termine als ICS exportiert.`);
-    } catch (error) {
-      setMessage(`Kalenderexport fehlgeschlagen: ${error}`);
+  const createCategory = () => {
+    const name = newCategoryName.trim();
+    if (!name) {
+      setMessage("Bitte geben Sie einen Kategorienamen ein.");
+      return;
     }
+    if (categories.some((category) => category.name.toLowerCase() === name.toLowerCase())) {
+      setMessage("Diese Kategorie gibt es bereits.");
+      return;
+    }
+    persistCategories([...categories, { name, color: newCategoryColor }]);
+    setNewCategoryName("");
+    setNewCategoryColor(defaultCalendarColor);
+    setShowCategoryDialog(false);
+    setMessage(`Kategorie "${name}" wurde erstellt.`);
   };
 
   const move = (direction: number) => {
@@ -178,7 +246,9 @@ export function CalendarPage() {
   };
 
   const openNewEvent = (date = cursor) => {
-    setEditingEvent(blankEvent(date));
+    const event = blankEvent(date);
+    const firstCategory = categories[0];
+    setEditingEvent(firstCategory ? { ...event, category: firstCategory.name, color: firstCategory.color } : event);
     setEditingIsNew(true);
   };
 
@@ -190,7 +260,8 @@ export function CalendarPage() {
   const saveEvent = () => {
     if (!editingEvent) return;
     const next = events.filter((event) => event.id !== editingEvent.id);
-    persist([...next, normalizeEvent({ ...editingEvent, source: editingEvent.source || "AgendaKontakte" })]);
+    const matchingCategory = categories.find((category) => category.name === editingEvent.category.trim());
+    persist([...next, normalizeEvent({ ...editingEvent, color: matchingCategory?.color ?? editingEvent.color, source: editingEvent.source || "AgendaKontakte" })]);
     const date = eventDate(editingEvent);
     if (date) setCursor(startOfDay(date));
     setEditingEvent(null);
@@ -215,15 +286,43 @@ export function CalendarPage() {
           <button className="primary" type="button" onClick={() => openNewEvent(new Date())}>
             <Plus size={20} /> Neuer Termin
           </button>
-          <button className="primary" type="button" onClick={importCalendar}>
-            <CalendarPlus size={20} /> Kalender importieren
-          </button>
-          <button type="button" onClick={exportCalendar} disabled={!sortedEvents.length}>
-            <Download size={20} /> Als ICS exportieren
+          <button type="button" onClick={() => setShowCategoryDialog(true)}>
+            <Plus size={20} /> Kategorie erstellen
           </button>
         </div>
       </header>
       <StatusMessage message={message} />
+
+      {showCategoryDialog && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Kategorie erstellen">
+          <div className="modal-card calendar-category-dialog">
+            <section className="form-panel">
+              <div className="panel-heading">
+                <h3>Kategorie erstellen</h3>
+                <button className="icon-only" type="button" aria-label="Schließen" onClick={() => setShowCategoryDialog(false)}>
+                  <X size={22} />
+                </button>
+              </div>
+              <div className="form-grid">
+                <label className="field">
+                  <span>Name</span>
+                  <input value={newCategoryName} onChange={(event) => setNewCategoryName(event.target.value)} placeholder="z. B. Sitzung" autoFocus />
+                </label>
+                <label className="field">
+                  <span>Farbe</span>
+                  <select value={newCategoryColor} onChange={(event) => setNewCategoryColor(event.target.value)}>
+                    {calendarColorOptions.map((color) => <option value={color.value} key={color.value}>{color.label}</option>)}
+                  </select>
+                </label>
+              </div>
+              <div className="button-row">
+                <button className="primary" type="button" onClick={createCategory}>Speichern</button>
+                <button type="button" onClick={() => setShowCategoryDialog(false)}>Abbrechen</button>
+              </div>
+            </section>
+          </div>
+        </div>
+      )}
 
       {editingEvent && (
         <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={editingIsNew ? "Neuer Termin" : "Termin bearbeiten"}>
@@ -231,6 +330,7 @@ export function CalendarPage() {
             <CalendarEventForm
               value={editingEvent}
               isNew={editingIsNew}
+              categories={categories}
               onChange={setEditingEvent}
               onSave={saveEvent}
               onDelete={() => deleteEvent()}
@@ -250,6 +350,47 @@ export function CalendarPage() {
             </>
           )}
           <h3>{title}</h3>
+        </div>
+        <div className="calendar-date-filter" aria-label="Kalenderzeitraum">
+          <label>
+            <span>Zeitraum</span>
+            <select value={dateFilter} onChange={(event) => setDateFilter(event.target.value as CalendarDateFilter)}>
+              <option value="all">Alle</option>
+              <option value="year">Jahr</option>
+              <option value="month">Monat</option>
+              <option value="day">Tag</option>
+            </select>
+          </label>
+          <label>
+            <span>Jahr</span>
+            <input
+              type="number"
+              min="1900"
+              max="2100"
+              value={cursor.getFullYear()}
+              onChange={(event) => {
+                if (event.target.value) setCalendarYear(Number(event.target.value));
+              }}
+            />
+          </label>
+          <label>
+            <span>Monat</span>
+            <select value={cursor.getMonth()} onChange={(event) => setCalendarMonth(Number(event.target.value))}>
+              {calendarMonths.map((month, index) => <option value={index} key={month}>{month}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>Tag</span>
+            <input
+              type="number"
+              min="1"
+              max={daysInMonth(cursor.getFullYear(), cursor.getMonth())}
+              value={cursor.getDate()}
+              onChange={(event) => {
+                if (event.target.value) setCalendarDay(Number(event.target.value));
+              }}
+            />
+          </label>
         </div>
         <div className="calendar-view-switch" aria-label="Kalenderansicht">
           <button className={view === "month" ? "active" : ""} type="button" onClick={() => setView("month")}><CalendarDays size={18} /> Monat</button>

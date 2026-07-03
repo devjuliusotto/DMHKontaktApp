@@ -4,14 +4,22 @@ import { calendarColorOptions, calendarColorValue } from "../utils/calendar";
 interface CalendarEventFormProps {
   value: CalendarEvent;
   isNew: boolean;
+  categories: Array<{ name: string; color: string }>;
   onChange: (value: CalendarEvent) => void;
   onSave: () => void;
   onDelete: () => void;
   onCancel: () => void;
 }
 
-export function CalendarEventForm({ value, isNew, onChange, onSave, onDelete, onCancel }: CalendarEventFormProps) {
+export function CalendarEventForm({ value, isNew, categories, onChange, onSave, onDelete, onCancel }: CalendarEventFormProps) {
   const update = (key: keyof CalendarEvent, fieldValue: string) => onChange({ ...value, [key]: fieldValue });
+  const categoryNames = categories.map((category) => category.name);
+  const categoryValue = value.category && !categoryNames.includes(value.category) ? value.category : value.category;
+
+  const updateCategory = (categoryName: string) => {
+    const category = categories.find((entry) => entry.name === categoryName);
+    onChange({ ...value, category: categoryName, color: category?.color ?? value.color });
+  };
 
   return (
     <section className="form-panel calendar-event-form">
@@ -43,7 +51,15 @@ export function CalendarEventForm({ value, isNew, onChange, onSave, onDelete, on
         </label>
         <label className="field">
           <span>Kategorie</span>
-          <input value={value.category} onChange={(event) => update("category", event.target.value)} placeholder="z. B. Sitzung" />
+          {categories.length > 0 ? (
+            <select value={categoryValue} onChange={(event) => updateCategory(event.target.value)}>
+              <option value="">Keine Kategorie</option>
+              {value.category && !categoryNames.includes(value.category) && <option value={value.category}>{value.category}</option>}
+              {categories.map((category) => <option value={category.name} key={category.name}>{category.name}</option>)}
+            </select>
+          ) : (
+            <input value={value.category} onChange={(event) => update("category", event.target.value)} placeholder="z. B. Sitzung" />
+          )}
         </label>
         <label className="field wide">
           <span>Beschreibung</span>

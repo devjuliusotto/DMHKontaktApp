@@ -1,5 +1,5 @@
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { Download, Ellipsis, Mail, Plus, Search, Trash2, Upload, UserPlus, X } from "lucide-react";
+import { Ellipsis, Mail, Plus, Search, Trash2, UserPlus, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ContactForm } from "../components/ContactForm";
 import { ContactTable } from "../components/ContactTable";
@@ -24,11 +24,6 @@ import {
 } from "../services/db";
 import type { Contact, ContactInput, Group } from "../types/contact";
 import { displayName, emptyContact, toContactInput } from "../utils/contact";
-import type { Page } from "../components/Sidebar";
-
-interface ContactsPageProps {
-  onNavigate: (page: Page) => void;
-}
 
 type ContactsTab = "all" | "groups";
 type GroupSelection = "ungrouped" | number;
@@ -67,7 +62,7 @@ function contactInGroup(contact: Contact, groupId: number) {
   return contact.groups.some((group) => group.id === groupId);
 }
 
-export function ContactsPage({ onNavigate }: ContactsPageProps) {
+export function ContactsPage() {
   const [tab, setTab] = useState<ContactsTab>("all");
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
@@ -458,12 +453,6 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
               </div>
             )}
           </div>
-          <button type="button" onClick={() => onNavigate("import")}>
-            <Upload size={20} /> Agenda importieren
-          </button>
-          <button type="button" onClick={() => onNavigate("export")}>
-            <Download size={20} /> Für Outlook exportieren
-          </button>
         </div>
       </header>
 
