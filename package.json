@@ -28,8 +28,9 @@
     "dev": "vite",
     "preview": "vite preview",
     "tauri": "tauri",
-    "tauri:build": "tauri build",
-    "tauri:dev": "tauri dev"
+    "tauri:build": "set CARGO_TARGET_DIR=%TEMP%\\agendakontakte-cargo-target&& tauri build",
+    "tauri:dev": "set CARGO_TARGET_DIR=%TEMP%\\agendakontakte-cargo-target&& tauri dev",
+    "tauri:open": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/open-tauri-dev.ps1"
   },
   "type": "module",
   "version": "0.0.8"
