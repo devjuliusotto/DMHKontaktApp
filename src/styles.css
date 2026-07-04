@@ -895,6 +895,58 @@ td input[type="checkbox"] {
   padding: 0.6rem 0;
 }
 
+.trash-row.selected {
+  background: #dcebfa;
+  margin-left: -0.5rem;
+  margin-right: -0.5rem;
+  padding-left: 0.5rem;
+  padding-right: 0.5rem;
+}
+
+.trash-section-heading {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  justify-content: space-between;
+  margin-bottom: 0.6rem;
+}
+
+.trash-section-heading h3 {
+  margin: 0;
+}
+
+.trash-section-heading button,
+.trash-selection-toolbar button {
+  min-height: 38px;
+  padding: 0.4rem 0.6rem;
+}
+
+.trash-selection-toolbar {
+  align-items: center;
+  background: var(--page);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-bottom: 0.65rem;
+  padding: 0.5rem;
+}
+
+.trash-contact-name {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.trash-contact-name input {
+  height: 24px;
+  min-height: 24px;
+  width: 24px;
+}
+
 .panel-heading {
   align-items: center;
   display: flex;

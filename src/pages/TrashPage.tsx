@@ -1,5 +1,5 @@
 import { RotateCcw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { StatusMessage } from "../components/StatusMessage";
 import { listDeletedContacts, listDeletedGroups, restoreContact, restoreGroup } from "../services/db";
 import type { Contact, Group } from "../types/contact";
@@ -9,6 +9,20 @@ export function TrashPage() {
   const [deletedContacts, setDeletedContacts] = useState<Contact[]>([]);
   const [deletedGroups, setDeletedGroups] = useState<Group[]>([]);
   const [message, setMessage] = useState("");
+  const [contactSelectionMode, setContactSelectionMode] = useState(false);
+  const [selectedContactIds, setSelectedContactIds] = useState<Set<number>>(() => new Set());
+
+  const deletedContactIds = useMemo(
+    () => deletedContacts.map((contact) => contact.id).filter((id): id is number => Boolean(id)),
+    [deletedContacts]
+  );
+
+  const selectedDeletedContactIds = useMemo(
+    () => deletedContactIds.filter((contactId) => selectedContactIds.has(contactId)),
+    [deletedContactIds, selectedContactIds]
+  );
+
+  const allDeletedContactsSelected = deletedContactIds.length > 0 && selectedDeletedContactIds.length === deletedContactIds.length;
 
   const refresh = async () => {
     const [contacts, groups] = await Promise.all([listDeletedContacts(), listDeletedGroups()]);
@@ -23,7 +37,59 @@ export function TrashPage() {
   const restoreDeletedContact = async (contact: Contact) => {
     if (!contact.id) return;
     await restoreContact(contact.id);
+    setSelectedContactIds((current) => {
+      const next = new Set(current);
+      next.delete(contact.id!);
+      return next;
+    });
     setMessage("Kontakt wurde wiederhergestellt.");
+    await refresh();
+  };
+
+  const toggleContactSelectionMode = () => {
+    setContactSelectionMode((enabled) => {
+      if (enabled) setSelectedContactIds(new Set());
+      return !enabled;
+    });
+  };
+
+  const toggleContactSelection = (contact: Contact) => {
+    if (!contact.id) return;
+    setSelectedContactIds((current) => {
+      const next = new Set(current);
+      if (next.has(contact.id!)) next.delete(contact.id!);
+      else next.add(contact.id!);
+      return next;
+    });
+  };
+
+  const toggleSelectAllDeletedContacts = () => {
+    setSelectedContactIds((current) => {
+      const next = new Set(current);
+      if (allDeletedContactsSelected) {
+        for (const contactId of deletedContactIds) next.delete(contactId);
+      } else {
+        for (const contactId of deletedContactIds) next.add(contactId);
+      }
+      return next;
+    });
+  };
+
+  const restoreSelectedContacts = async () => {
+    if (selectedDeletedContactIds.length === 0) return;
+    await Promise.all(selectedDeletedContactIds.map((contactId) => restoreContact(contactId)));
+    setMessage(`${selectedDeletedContactIds.length} Kontakte wurden wiederhergestellt.`);
+    setSelectedContactIds(new Set());
+    setContactSelectionMode(false);
+    await refresh();
+  };
+
+  const restoreAllDeletedContacts = async () => {
+    if (deletedContactIds.length === 0) return;
+    await Promise.all(deletedContactIds.map((contactId) => restoreContact(contactId)));
+    setMessage(`${deletedContactIds.length} Kontakte wurden wiederhergestellt.`);
+    setSelectedContactIds(new Set());
+    setContactSelectionMode(false);
     await refresh();
   };
 
@@ -46,11 +112,42 @@ export function TrashPage() {
       <section className="trash-panel">
         <div className="trash-grid">
           <div>
-            <h3>Gelöschte Kontakte</h3>
+            <div className="trash-section-heading">
+              <h3>Gelöschte Kontakte</h3>
+              <div className="button-row">
+                <button type="button" onClick={toggleContactSelectionMode} disabled={deletedContacts.length === 0}>
+                  {contactSelectionMode ? "Fertig" : "Auswählen"}
+                </button>
+                <button type="button" onClick={restoreAllDeletedContacts} disabled={deletedContactIds.length === 0}>
+                  Alle wiederherstellen
+                </button>
+              </div>
+            </div>
+            {contactSelectionMode && (
+              <div className="trash-selection-toolbar">
+                <button type="button" onClick={toggleSelectAllDeletedContacts} disabled={deletedContactIds.length === 0}>
+                  {allDeletedContactsSelected ? "Auswahl aufheben" : "Alle auswählen"}
+                </button>
+                <button className="primary" type="button" onClick={restoreSelectedContacts} disabled={selectedDeletedContactIds.length === 0}>
+                  Ausgewählte wiederherstellen
+                </button>
+                <span className="selection-count">{selectedDeletedContactIds.length} ausgewählt</span>
+              </div>
+            )}
             {deletedContacts.length === 0 && <p>Keine gelöschten Kontakte.</p>}
             {deletedContacts.map((contact) => (
-              <div className="trash-row" key={contact.id}>
-                <span>{displayName(contact)}</span>
+              <div className={contact.id && selectedContactIds.has(contact.id) ? "trash-row selected" : "trash-row"} key={contact.id}>
+                <span className="trash-contact-name">
+                  {contactSelectionMode && (
+                    <input
+                      aria-label={`${displayName(contact)} auswählen`}
+                      checked={Boolean(contact.id && selectedContactIds.has(contact.id))}
+                      onChange={() => toggleContactSelection(contact)}
+                      type="checkbox"
+                    />
+                  )}
+                  {displayName(contact)}
+                </span>
                 <button type="button" onClick={() => restoreDeletedContact(contact)}>
                   <RotateCcw size={18} /> Wiederherstellen
                 </button>

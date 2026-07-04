@@ -2,6 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import type { CalendarEvent } from "../types/calendar";
 import type { BackupData, Contact, ContactInput, Group, ImportResult } from "../types/contact";
 
+export interface OutlookSyncResult {
+  scanned: number;
+  inserted: number;
+  updated: number;
+  skipped: number;
+}
+
 export function listContacts(search = "", groupId?: number): Promise<Contact[]> {
   return invoke("list_contacts", { search, groupId });
 }
@@ -104,4 +111,8 @@ export function setAppSetting(key: string, value: string): Promise<void> {
 
 export function importOutlookStore(path: string): Promise<{ contacts: ContactInput[]; events: CalendarEvent[] }> {
   return invoke("import_outlook_store", { path });
+}
+
+export function syncOutlookClassicContacts(): Promise<OutlookSyncResult> {
+  return invoke("sync_outlook_classic_contacts");
 }

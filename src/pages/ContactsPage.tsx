@@ -20,7 +20,8 @@ import {
   openOutlookClassicEmail,
   saveContact,
   saveGroup,
-  setAppSetting
+  setAppSetting,
+  syncOutlookClassicContacts
 } from "../services/db";
 import type { Contact, ContactInput, Group } from "../types/contact";
 import { displayName, emptyContact, toContactInput } from "../utils/contact";
@@ -44,6 +45,7 @@ const blankGroup: Group = { name: "", description: "", createdAt: "", updatedAt:
 const emailAppSettingKey = "default_email_app";
 const ungroupedGroupName = "Gesammelte Adressen";
 const emptySelection = new Set<number>();
+let outlookClassicSyncStarted = false;
 
 function uniqueContactEmails(contactRows: Contact[]) {
   const seen = new Set<string>();
@@ -133,6 +135,37 @@ export function ContactsPage() {
   }, [tab, allSearch, groupSearch, groupSelection]);
 
   useEffect(() => {
+    if (outlookClassicSyncStarted) return;
+    outlookClassicSyncStarted = true;
+    let cancelled = false;
+
+    setMessage("Outlook Classic wird automatisch synchronisiert...");
+    setMessageType("info");
+    syncOutlookClassicContacts()
+      .then(async (result) => {
+        if (cancelled) return;
+        const changed = result.inserted + result.updated;
+        if (changed > 0) {
+          setMessage(`${result.inserted} Outlook-Kontakte hinzugefügt, ${result.updated} aktualisiert.`);
+          setMessageType("success");
+        } else {
+          setMessage(`Outlook Classic synchronisiert. Keine Änderungen gefunden (${result.scanned} Kontakte geprüft).`);
+          setMessageType("info");
+        }
+        await refresh();
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setMessage(`Automatische Outlook-Synchronisierung nicht möglich: ${error}`);
+        setMessageType("info");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     getAppSetting(emailAppSettingKey)
       .then((value) => {
         if (value === "outlook-classic" || value === "outlook-new") {
@@ -203,7 +236,14 @@ export function ContactsPage() {
   };
 
   const removeAllContacts = async () => {
-    if (!window.confirm("Alle Kontakte wirklich in den Papierkorb verschieben? Diese Funktion ist nur zum Testen gedacht.")) return;
+    const firstConfirmation = window.confirm("Alle Kontakte wirklich in den Papierkorb verschieben?");
+    if (!firstConfirmation) return;
+
+    const secondConfirmation = window.confirm(
+      "Sind Sie wirklich sicher, dass Sie alle Kontakte löschen möchten? Alle Kontakte werden in den Papierkorb verschoben."
+    );
+    if (!secondConfirmation) return;
+
     const count = await deleteAllContacts();
     setTestMenuOpen(false);
     setMessage(`${count} Kontakte wurden in den Papierkorb verschoben.`);
