@@ -146,10 +146,10 @@ export function ContactsPage() {
         if (cancelled) return;
         const changed = result.inserted + result.updated;
         if (changed > 0) {
-          setMessage(`${result.inserted} Outlook-Kontakte hinzugefügt, ${result.updated} aktualisiert.`);
+          setMessage(`${result.pushed} lokale Kontakte an Outlook gesendet. ${result.inserted} Outlook-Kontakte hinzugefügt, ${result.updated} aktualisiert.`);
           setMessageType("success");
         } else {
-          setMessage(`Outlook Classic synchronisiert. Keine Änderungen gefunden (${result.scanned} Kontakte geprüft).`);
+          setMessage(`Outlook Classic synchronisiert. ${result.pushed} lokale Kontakte geprüft/gesendet, keine lokalen Änderungen aus Outlook (${result.scanned} Outlook-Kontakte geprüft).`);
           setMessageType("info");
         }
         await refresh();

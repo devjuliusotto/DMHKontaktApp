@@ -1,6 +1,7 @@
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -179,6 +180,7 @@ pub struct OutlookSyncResult {
     pub inserted: usize,
     pub updated: usize,
     pub skipped: usize,
+    pub pushed: usize,
 }
 
 struct ExistingContactRow {
@@ -196,6 +198,81 @@ struct ExistingContactRow {
     short_info: String,
     notes: String,
     deleted_at: Option<String>,
+    outlook_entry_id: Option<String>,
+    outlook_store_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OutlookContactRecord {
+    #[serde(default)]
+    entry_id: String,
+    #[serde(default)]
+    store_id: String,
+    #[serde(default)]
+    first_name: String,
+    #[serde(default)]
+    last_name: String,
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
+    email: String,
+    #[serde(default)]
+    phone: String,
+    #[serde(default)]
+    mobile_phone: String,
+    #[serde(default)]
+    street: String,
+    #[serde(default)]
+    postal_code: String,
+    #[serde(default)]
+    city: String,
+    #[serde(default)]
+    country: String,
+    #[serde(default)]
+    short_info: String,
+    #[serde(default)]
+    notes: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OutlookReadData {
+    contacts: Vec<OutlookContactRecord>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalOutlookContact {
+    id: i64,
+    first_name: String,
+    last_name: String,
+    display_name: String,
+    email: String,
+    phone: String,
+    mobile_phone: String,
+    street: String,
+    postal_code: String,
+    city: String,
+    country: String,
+    short_info: String,
+    notes: String,
+    outlook_entry_id: Option<String>,
+    outlook_store_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OutlookLink {
+    local_id: i64,
+    entry_id: String,
+    store_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OutlookPushData {
+    links: Vec<OutlookLink>,
 }
 
 fn now() -> String {
@@ -286,6 +363,8 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
 
     ensure_column(&conn, "contacts", "deleted_at", "TEXT")?;
     ensure_column(&conn, "contacts", "short_info", "TEXT NOT NULL DEFAULT ''")?;
+    ensure_column(&conn, "contacts", "outlook_entry_id", "TEXT")?;
+    ensure_column(&conn, "contacts", "outlook_store_id", "TEXT")?;
     ensure_column(&conn, "groups", "deleted_at", "TEXT")?;
     conn.execute_batch(
         "
@@ -1154,7 +1233,7 @@ fn set_app_setting(app: AppHandle, key: String, value: String) -> Result<(), Str
     Ok(())
 }
 
-fn read_outlook_classic_contacts() -> Result<Vec<ContactInput>, String> {
+fn read_outlook_classic_contacts() -> Result<Vec<OutlookContactRecord>, String> {
     let script = r#"
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -1162,25 +1241,29 @@ $outlook = New-Object -ComObject Outlook.Application
 $namespace = $outlook.Session
 $contactsFolder = $namespace.GetDefaultFolder(10)
 $contacts = New-Object System.Collections.Generic.List[object]
+function Get-Contact-Email($item) {
+  $email = [string]$item.Email1Address
+  try {
+    $smtp = [string]$item.PropertyAccessor.GetProperty('http://schemas.microsoft.com/mapi/proptag/0x39FE001E')
+    if (-not [string]::IsNullOrWhiteSpace($smtp)) { $email = $smtp }
+  } catch {}
+  if ([string]::IsNullOrWhiteSpace($email)) { $email = [string]$item.Email2Address }
+  if ([string]::IsNullOrWhiteSpace($email)) { $email = [string]$item.Email3Address }
+  return $email
+}
 function Read-Contact-Folders($folder) {
   try {
     foreach ($item in @($folder.Items)) {
       try {
         $messageClass = [string]$item.MessageClass
         if ($messageClass -like 'IPM.Contact*') {
-          $email = [string]$item.Email1Address
-          try {
-            $smtp = [string]$item.PropertyAccessor.GetProperty('http://schemas.microsoft.com/mapi/proptag/0x39FE001E')
-            if (-not [string]::IsNullOrWhiteSpace($smtp)) { $email = $smtp }
-          } catch {}
-          if ([string]::IsNullOrWhiteSpace($email)) { $email = [string]$item.Email2Address }
-          if ([string]::IsNullOrWhiteSpace($email)) { $email = [string]$item.Email3Address }
           $contacts.Add([pscustomobject]@{
-            id = $null
+            entryId = [string]$item.EntryID
+            storeId = [string]$folder.StoreID
             firstName = [string]$item.FirstName
             lastName = [string]$item.LastName
             displayName = [string]$item.FullName
-            email = $email
+            email = (Get-Contact-Email $item)
             phone = [string]$item.BusinessTelephoneNumber
             mobilePhone = [string]$item.MobileTelephoneNumber
             street = [string]$item.BusinessAddressStreet
@@ -1189,7 +1272,6 @@ function Read-Contact-Folders($folder) {
             country = [string]$item.BusinessAddressCountry
             shortInfo = ''
             notes = [string]$item.Body
-            groupIds = @()
           }) | Out-Null
         }
       } catch {}
@@ -1220,10 +1302,230 @@ Read-Contact-Folders $contactsFolder
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let data = serde_json::from_str::<OutlookImportData>(stdout.trim()).map_err(|err| {
+    let data = serde_json::from_str::<OutlookReadData>(stdout.trim()).map_err(|err| {
         format!("Outlook-Kontakte konnten nicht ausgewertet werden: {err}. Ausgabe: {stdout}")
     })?;
     Ok(data.contacts)
+}
+
+fn outlook_record_to_contact(record: &OutlookContactRecord) -> ContactInput {
+    ContactInput {
+        id: None,
+        first_name: record.first_name.clone(),
+        last_name: record.last_name.clone(),
+        display_name: record.display_name.clone(),
+        email: record.email.clone(),
+        phone: record.phone.clone(),
+        mobile_phone: record.mobile_phone.clone(),
+        street: record.street.clone(),
+        postal_code: record.postal_code.clone(),
+        city: record.city.clone(),
+        country: record.country.clone(),
+        short_info: record.short_info.clone(),
+        notes: record.notes.clone(),
+        group_ids: Vec::new(),
+    }
+}
+
+fn load_local_outlook_contacts(conn: &Connection) -> Result<Vec<LocalOutlookContact>, String> {
+    let mut stmt = conn
+        .prepare(
+            "
+            SELECT id, first_name, last_name, display_name, email, phone, mobile_phone,
+                   street, postal_code, city, country, short_info, notes,
+                   outlook_entry_id, outlook_store_id
+            FROM contacts
+            WHERE deleted_at IS NULL
+            ORDER BY updated_at ASC
+            ",
+        )
+        .map_err(|err| err.to_string())?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(LocalOutlookContact {
+                id: row.get(0)?,
+                first_name: row.get(1)?,
+                last_name: row.get(2)?,
+                display_name: row.get(3)?,
+                email: row.get(4)?,
+                phone: row.get(5)?,
+                mobile_phone: row.get(6)?,
+                street: row.get(7)?,
+                postal_code: row.get(8)?,
+                city: row.get(9)?,
+                country: row.get(10)?,
+                short_info: row.get(11)?,
+                notes: row.get(12)?,
+                outlook_entry_id: row.get(13)?,
+                outlook_store_id: row.get(14)?,
+            })
+        })
+        .map_err(|err| err.to_string())?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| err.to_string())
+}
+
+fn push_local_contacts_to_outlook(conn: &mut Connection) -> Result<usize, String> {
+    let contacts = load_local_outlook_contacts(conn)?;
+    if contacts.is_empty() {
+        return Ok(0);
+    }
+
+    let json = serde_json::to_string(&contacts).map_err(|err| err.to_string())?;
+    let json_path = env::temp_dir().join(format!(
+        "agendakontakte-outlook-sync-{}.json",
+        Utc::now().timestamp_millis()
+    ));
+    fs::write(&json_path, json).map_err(|err| err.to_string())?;
+    let escaped_path = json_path.to_string_lossy().replace('\'', "''");
+    let script = format!(
+        r#"
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$contactsPath = '{escaped_path}'
+$localContacts = @(Get-Content -LiteralPath $contactsPath -Raw -Encoding UTF8 | ConvertFrom-Json)
+$outlook = New-Object -ComObject Outlook.Application
+$namespace = $outlook.Session
+$contactsFolder = $namespace.GetDefaultFolder(10)
+$links = New-Object System.Collections.Generic.List[object]
+
+function Get-Contact-Email($item) {{
+  $email = [string]$item.Email1Address
+  try {{
+    $smtp = [string]$item.PropertyAccessor.GetProperty('http://schemas.microsoft.com/mapi/proptag/0x39FE001E')
+    if (-not [string]::IsNullOrWhiteSpace($smtp)) {{ $email = $smtp }}
+  }} catch {{}}
+  if ([string]::IsNullOrWhiteSpace($email)) {{ $email = [string]$item.Email2Address }}
+  if ([string]::IsNullOrWhiteSpace($email)) {{ $email = [string]$item.Email3Address }}
+  return $email
+}}
+
+function Read-Contact-Folders($folder, $items) {{
+  try {{
+    foreach ($item in @($folder.Items)) {{
+      try {{
+        if ([string]$item.MessageClass -like 'IPM.Contact*') {{ $items.Add($item) | Out-Null }}
+      }} catch {{}}
+    }}
+  }} catch {{}}
+  foreach ($child in @($folder.Folders)) {{ Read-Contact-Folders $child $items }}
+}}
+
+function Find-Outlook-Contact($local, $allContacts) {{
+  $entryId = [string]$local.outlookEntryId
+  $storeId = [string]$local.outlookStoreId
+  if (-not [string]::IsNullOrWhiteSpace($entryId)) {{
+    try {{
+      if (-not [string]::IsNullOrWhiteSpace($storeId)) {{ return $namespace.GetItemFromID($entryId, $storeId) }}
+      return $namespace.GetItemFromID($entryId)
+    }} catch {{}}
+  }}
+
+  $email = ([string]$local.email).Trim().ToLowerInvariant()
+  $name = ([string]$local.displayName).Trim().ToLowerInvariant()
+  if ([string]::IsNullOrWhiteSpace($name)) {{ $name = (([string]$local.firstName + ' ' + [string]$local.lastName).Trim()).ToLowerInvariant() }}
+  $phone = ([string]$local.phone).Trim()
+  $mobile = ([string]$local.mobilePhone).Trim()
+  $city = ([string]$local.city).Trim().ToLowerInvariant()
+  $nameMatches = New-Object System.Collections.Generic.List[object]
+
+  foreach ($item in @($allContacts)) {{
+    try {{
+      if (-not [string]::IsNullOrWhiteSpace($email) -and (Get-Contact-Email $item).Trim().ToLowerInvariant() -eq $email) {{ return $item }}
+      $itemName = ([string]$item.FullName).Trim().ToLowerInvariant()
+      if ([string]::IsNullOrWhiteSpace($itemName)) {{ $itemName = (([string]$item.FirstName + ' ' + [string]$item.LastName).Trim()).ToLowerInvariant() }}
+      if (-not [string]::IsNullOrWhiteSpace($name) -and $itemName -eq $name) {{
+        $nameMatches.Add($item) | Out-Null
+        if ((-not [string]::IsNullOrWhiteSpace($phone) -and [string]$item.BusinessTelephoneNumber -eq $phone) -or
+            (-not [string]::IsNullOrWhiteSpace($mobile) -and [string]$item.MobileTelephoneNumber -eq $mobile) -or
+            ([string]::IsNullOrWhiteSpace($phone) -and [string]::IsNullOrWhiteSpace($mobile) -and ([string]$item.BusinessAddressCity).Trim().ToLowerInvariant() -eq $city)) {{
+          return $item
+        }}
+      }}
+    }} catch {{}}
+  }}
+  if ($nameMatches.Count -eq 1) {{ return $nameMatches[0] }}
+  return $null
+}}
+
+function Set-When-Present($item, $property, $value) {{
+  $text = [string]$value
+  if (-not [string]::IsNullOrWhiteSpace($text)) {{ $item.$property = $text }}
+}}
+
+$allContacts = New-Object System.Collections.Generic.List[object]
+Read-Contact-Folders $contactsFolder $allContacts
+
+foreach ($local in $localContacts) {{
+  $item = Find-Outlook-Contact $local $allContacts
+  if ($null -eq $item) {{
+    $item = $contactsFolder.Items.Add(2)
+    $allContacts.Add($item) | Out-Null
+  }}
+
+  Set-When-Present $item 'FirstName' $local.firstName
+  Set-When-Present $item 'LastName' $local.lastName
+  Set-When-Present $item 'FullName' $local.displayName
+  Set-When-Present $item 'Email1Address' $local.email
+  Set-When-Present $item 'BusinessTelephoneNumber' $local.phone
+  Set-When-Present $item 'MobileTelephoneNumber' $local.mobilePhone
+  Set-When-Present $item 'BusinessAddressStreet' $local.street
+  Set-When-Present $item 'BusinessAddressPostalCode' $local.postalCode
+  Set-When-Present $item 'BusinessAddressCity' $local.city
+  Set-When-Present $item 'BusinessAddressCountry' $local.country
+  Set-When-Present $item 'Body' $local.notes
+  $item.Save()
+
+  $links.Add([pscustomobject]@{{
+    localId = [int64]$local.id
+    entryId = [string]$item.EntryID
+    storeId = [string]$contactsFolder.StoreID
+  }}) | Out-Null
+}}
+
+[pscustomobject]@{{ links = $links }} | ConvertTo-Json -Depth 5 -Compress
+"#
+    );
+
+    let output = hidden_command("powershell")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script.as_str(),
+        ])
+        .output()
+        .map_err(|err| format!("Outlook Classic konnte nicht aktualisiert werden: {err}"));
+
+    let _ = fs::remove_file(&json_path);
+    let output = output?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "Outlook Classic konnte nicht aktualisiert werden. {stderr}"
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let data = serde_json::from_str::<OutlookPushData>(stdout.trim()).map_err(|err| {
+        format!("Outlook-Aktualisierung konnte nicht ausgewertet werden: {err}. Ausgabe: {stdout}")
+    })?;
+
+    let tx = conn.transaction().map_err(|err| err.to_string())?;
+    for link in &data.links {
+        tx.execute(
+            "UPDATE contacts SET outlook_entry_id = ?, outlook_store_id = ? WHERE id = ?",
+            params![link.entry_id, link.store_id, link.local_id],
+        )
+        .map_err(|err| err.to_string())?;
+    }
+    tx.commit().map_err(|err| err.to_string())?;
+
+    Ok(data.links.len())
 }
 
 fn normalize_contact_display_name(contact: &ContactInput) -> String {
@@ -1248,14 +1550,19 @@ fn find_existing_sync_contact(
     contact: &ContactInput,
     display_name: &str,
     email: &str,
+    entry_id: &str,
 ) -> Result<Option<ExistingContactRow>, String> {
     let mut stmt = conn
         .prepare(
             "
             SELECT id, first_name, last_name, display_name, email, phone, mobile_phone,
-                   street, postal_code, city, country, short_info, notes, deleted_at
+                   street, postal_code, city, country, short_info, notes, deleted_at,
+                   outlook_entry_id, outlook_store_id
             FROM contacts
             WHERE (
+                ?6 <> '' AND outlook_entry_id = ?6
+              )
+              OR (
                 ?1 <> '' AND lower(email) = ?1
               )
               OR (
@@ -1279,7 +1586,8 @@ fn find_existing_sync_contact(
             display_name.trim().to_lowercase(),
             contact.phone.trim(),
             contact.mobile_phone.trim(),
-            contact.city.trim().to_lowercase()
+            contact.city.trim().to_lowercase(),
+            entry_id
         ],
         |row| {
             Ok(ExistingContactRow {
@@ -1297,6 +1605,8 @@ fn find_existing_sync_contact(
                 short_info: row.get(11)?,
                 notes: row.get(12)?,
                 deleted_at: row.get(13)?,
+                outlook_entry_id: row.get(14)?,
+                outlook_store_id: row.get(15)?,
             })
         },
     )
@@ -1309,6 +1619,8 @@ fn contact_needs_update(
     contact: &ContactInput,
     display_name: &str,
     email: &str,
+    entry_id: &str,
+    store_id: &str,
 ) -> bool {
     existing.deleted_at.is_some()
         || existing.first_name != contact.first_name
@@ -1323,35 +1635,51 @@ fn contact_needs_update(
         || existing.country != contact.country
         || existing.short_info != contact.short_info
         || existing.notes != contact.notes
+        || existing.outlook_entry_id.as_deref().unwrap_or_default() != entry_id
+        || existing.outlook_store_id.as_deref().unwrap_or_default() != store_id
 }
 
 #[tauri::command]
 fn sync_outlook_classic_contacts(app: AppHandle) -> Result<OutlookSyncResult, String> {
-    let contacts = read_outlook_classic_contacts()?;
     let mut conn = open_db(&app)?;
+    let pushed = push_local_contacts_to_outlook(&mut conn)?;
+    let contacts = read_outlook_classic_contacts()?;
     let tx = conn.transaction().map_err(|err| err.to_string())?;
     let timestamp = now();
     let mut inserted = 0usize;
     let mut updated = 0usize;
     let mut skipped = 0usize;
 
-    for contact in contacts.iter() {
-        let display_name = normalize_contact_display_name(contact);
+    for record in contacts.iter() {
+        let contact = outlook_record_to_contact(record);
+        let display_name = normalize_contact_display_name(&contact);
         let email = contact.email.trim().to_lowercase();
+        let entry_id = record.entry_id.trim();
+        let store_id = record.store_id.trim();
 
-        if !contact_has_identity(contact, &display_name, &email) {
+        if !contact_has_identity(&contact, &display_name, &email) {
             skipped += 1;
             continue;
         }
 
-        if let Some(existing) = find_existing_sync_contact(&tx, contact, &display_name, &email)? {
-            if contact_needs_update(&existing, contact, &display_name, &email) {
+        if let Some(existing) =
+            find_existing_sync_contact(&tx, &contact, &display_name, &email, entry_id)?
+        {
+            if contact_needs_update(
+                &existing,
+                &contact,
+                &display_name,
+                &email,
+                entry_id,
+                store_id,
+            ) {
                 tx.execute(
                     "
                     UPDATE contacts
                     SET first_name = ?, last_name = ?, display_name = ?, email = ?, phone = ?,
                         mobile_phone = ?, street = ?, postal_code = ?, city = ?, country = ?,
-                        short_info = ?, notes = ?, deleted_at = NULL, updated_at = ?
+                        short_info = ?, notes = ?, outlook_entry_id = ?, outlook_store_id = ?,
+                        deleted_at = NULL, updated_at = ?
                     WHERE id = ?
                     ",
                     params![
@@ -1367,6 +1695,8 @@ fn sync_outlook_classic_contacts(app: AppHandle) -> Result<OutlookSyncResult, St
                         contact.country,
                         contact.short_info,
                         contact.notes,
+                        entry_id,
+                        store_id,
                         timestamp,
                         existing.id
                     ],
@@ -1379,9 +1709,10 @@ fn sync_outlook_classic_contacts(app: AppHandle) -> Result<OutlookSyncResult, St
                 "
                 INSERT INTO contacts (
                     first_name, last_name, display_name, email, phone, mobile_phone, street,
-                    postal_code, city, country, short_info, notes, import_batch_id, created_at, updated_at
+                    postal_code, city, country, short_info, notes, import_batch_id,
+                    outlook_entry_id, outlook_store_id, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ",
                 params![
                     contact.first_name,
@@ -1397,6 +1728,8 @@ fn sync_outlook_classic_contacts(app: AppHandle) -> Result<OutlookSyncResult, St
                     contact.short_info,
                     contact.notes,
                     "outlook-classic-sync",
+                    entry_id,
+                    store_id,
                     timestamp,
                     timestamp
                 ],
@@ -1412,6 +1745,7 @@ fn sync_outlook_classic_contacts(app: AppHandle) -> Result<OutlookSyncResult, St
         inserted,
         updated,
         skipped,
+        pushed,
     })
 }
 

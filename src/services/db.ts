@@ -7,6 +7,7 @@ export interface OutlookSyncResult {
   inserted: number;
   updated: number;
   skipped: number;
+  pushed: number;
 }
 
 export function listContacts(search = "", groupId?: number): Promise<Contact[]> {
