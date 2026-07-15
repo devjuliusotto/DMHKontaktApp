@@ -622,7 +622,6 @@ fn save_contact(app: AppHandle, contact: ContactInput) -> Result<i64, String> {
 #[tauri::command]
 fn delete_contact(app: AppHandle, id: i64) -> Result<(), String> {
     let conn = open_db(&app)?;
-    delete_local_contact_from_outlook(&conn, id)?;
     conn.execute(
         "UPDATE contacts SET deleted_at = ?, updated_at = ? WHERE id = ?",
         params![now(), now(), id],
@@ -1054,21 +1053,6 @@ fn write_export_file(path: String, content: String) -> Result<(), String> {
 #[tauri::command]
 fn delete_all_contacts(app: AppHandle) -> Result<usize, String> {
     let conn = open_db(&app)?;
-    let contact_ids = {
-        let mut stmt = conn
-            .prepare("SELECT id FROM contacts WHERE deleted_at IS NULL")
-            .map_err(|err| err.to_string())?;
-        let rows = stmt
-            .query_map([], |row| row.get::<_, i64>(0))
-            .map_err(|err| err.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|err| err.to_string())?
-    };
-
-    for contact_id in &contact_ids {
-        delete_local_contact_from_outlook(&conn, *contact_id)?;
-    }
-
     conn.execute(
         "UPDATE contacts SET deleted_at = ?, updated_at = ? WHERE deleted_at IS NULL",
         params![now(), now()],
@@ -2236,9 +2220,6 @@ pub fn run() {
             open_new_outlook_bulk_email,
             get_app_setting,
             set_app_setting,
-            sync_outlook_classic_contacts,
-            push_project_contacts_to_outlook,
-            diagnose_outlook_contact_folders,
             import_outlook_store
         ])
         .run(tauri::generate_context!())

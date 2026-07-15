@@ -2,30 +2,6 @@ import { invoke } from "@tauri-apps/api/core";
 import type { CalendarEvent } from "../types/calendar";
 import type { BackupData, Contact, ContactInput, Group, ImportResult } from "../types/contact";
 
-export interface OutlookSyncResult {
-  scanned: number;
-  inserted: number;
-  updated: number;
-  skipped: number;
-  pushed: OutlookPushResult;
-}
-
-export interface OutlookPushResult {
-  total: number;
-  created: number;
-  updated: number;
-  linked: number;
-  errors: number;
-  folderPath: string;
-  storeName: string;
-}
-
-export interface OutlookFolderDiagnostic {
-  folderPath: string;
-  storeName: string;
-  itemCount: number;
-}
-
 export function listContacts(search = "", groupId?: number): Promise<Contact[]> {
   return invoke("list_contacts", { search, groupId });
 }
@@ -128,16 +104,4 @@ export function setAppSetting(key: string, value: string): Promise<void> {
 
 export function importOutlookStore(path: string): Promise<{ contacts: ContactInput[]; events: CalendarEvent[] }> {
   return invoke("import_outlook_store", { path });
-}
-
-export function syncOutlookClassicContacts(): Promise<OutlookSyncResult> {
-  return invoke("sync_outlook_classic_contacts");
-}
-
-export function pushProjectContactsToOutlook(): Promise<OutlookPushResult> {
-  return invoke("push_project_contacts_to_outlook");
-}
-
-export function diagnoseOutlookContactFolders(): Promise<OutlookFolderDiagnostic[]> {
-  return invoke("diagnose_outlook_contact_folders");
 }

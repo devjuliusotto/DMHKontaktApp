@@ -10,7 +10,6 @@ import {
   deleteAllContacts,
   deleteContact,
   deleteGroup,
-  diagnoseOutlookContactFolders,
   getAppSetting,
   listContacts,
   listGroups,
@@ -19,11 +18,9 @@ import {
   openNewOutlookEmail,
   openOutlookClassicBulkEmail,
   openOutlookClassicEmail,
-  pushProjectContactsToOutlook,
   saveContact,
   saveGroup,
-  setAppSetting,
-  syncOutlookClassicContacts
+  setAppSetting
 } from "../services/db";
 import type { Contact, ContactInput, Group } from "../types/contact";
 import { displayName, emptyContact, toContactInput } from "../utils/contact";
@@ -47,17 +44,6 @@ const blankGroup: Group = { name: "", description: "", createdAt: "", updatedAt:
 const emailAppSettingKey = "default_email_app";
 const ungroupedGroupName = "Gesammelte Adressen";
 const emptySelection = new Set<number>();
-let outlookClassicSyncInFlight: ReturnType<typeof syncOutlookClassicContacts> | null = null;
-
-function startOutlookClassicSync() {
-  if (outlookClassicSyncInFlight) return outlookClassicSyncInFlight;
-  const syncPromise = syncOutlookClassicContacts().finally(() => {
-    if (outlookClassicSyncInFlight === syncPromise) outlookClassicSyncInFlight = null;
-  });
-  outlookClassicSyncInFlight = syncPromise;
-  return syncPromise;
-}
-
 function uniqueContactEmails(contactRows: Contact[]) {
   const seen = new Set<string>();
   const emails: string[] = [];
@@ -99,8 +85,6 @@ export function ContactsPage() {
   const [bulkAddSearch, setBulkAddSearch] = useState("");
   const [bulkAddContacts, setBulkAddContacts] = useState<Contact[]>([]);
   const [bulkAddSelectedIds, setBulkAddSelectedIds] = useState<Set<number>>(() => new Set());
-  const [outlookSyncing, setOutlookSyncing] = useState(false);
-  const mountedRef = useRef(true);
   const draggedContactIdsRef = useRef<number[]>([]);
   const groupsRef = useRef<Group[]>([]);
 
@@ -140,51 +124,12 @@ export function ContactsPage() {
     setContacts(await listContacts(groupSearch, groupSelection));
   };
 
-  const runOutlookSync = async (automatic = false) => {
-    if (!mountedRef.current) return;
-    setOutlookSyncing(true);
-    setMessage(automatic ? "Outlook Classic wird automatisch synchronisiert..." : "Outlook Classic wird synchronisiert...");
-    setMessageType("info");
-
-    try {
-      const result = await startOutlookClassicSync();
-      if (!mountedRef.current) return;
-      const changed = result.inserted + result.updated;
-      if (changed > 0) {
-        setMessage(`${result.pushed.linked} lokale Kontakte an Outlook gesendet. ${result.inserted} Outlook-Kontakte hinzugefügt, ${result.updated} aktualisiert.`);
-        setMessageType("success");
-      } else {
-        setMessage(`Outlook Classic synchronisiert. ${result.pushed.linked} lokale Kontakte geprüft/gesendet, keine lokalen Änderungen aus Outlook (${result.scanned} Outlook-Kontakte geprüft).`);
-        setMessageType("info");
-      }
-      await refresh();
-    } catch (error) {
-      if (!mountedRef.current) return;
-      setMessage(`${automatic ? "Automatische " : ""}Outlook-Synchronisierung nicht möglich: ${error}`);
-      setMessageType("error");
-    } finally {
-      if (!mountedRef.current) return;
-      setOutlookSyncing(false);
-    }
-  };
-
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-
   useEffect(() => {
     refresh().catch((error) => {
       setMessage(`Fehler beim Laden: ${error}`);
       setMessageType("error");
     });
   }, [tab, allSearch, groupSearch, groupSelection]);
-
-  useEffect(() => {
-    void runOutlookSync(true);
-  }, []);
 
   useEffect(() => {
     getAppSetting(emailAppSettingKey)
@@ -229,20 +174,9 @@ export function ContactsPage() {
     try {
       await saveContact(editing);
       setEditing(null);
-      setMessage("Kontakt wurde gespeichert. Outlook wird aktualisiert...");
-      setMessageType("info");
+      setMessage("Kontakt wurde lokal gespeichert.");
+      setMessageType("success");
       await refresh();
-      try {
-        const result = await pushProjectContactsToOutlook();
-        const folder = result.folderPath || result.storeName || "Outlook-Kontakte";
-        setMessage(
-          `Kontakt wurde gespeichert. Outlook: ${result.created} erstellt, ${result.updated} aktualisiert, ${result.errors} Fehler. Ziel: ${folder}`
-        );
-        setMessageType(result.errors > 0 ? "error" : "success");
-      } catch (syncError) {
-        setMessage(`Kontakt wurde lokal gespeichert, aber Outlook konnte nicht aktualisiert werden: ${syncError}`);
-        setMessageType("error");
-      }
     } catch (error) {
       setMessage(`Kontakt konnte nicht gespeichert werden: ${error}`);
       setMessageType("error");
@@ -254,7 +188,7 @@ export function ContactsPage() {
     if (!window.confirm(`Kontakt "${displayName(contact)}" wirklich löschen?`)) return;
     try {
       await deleteContact(contact.id);
-      setMessage("Kontakt wurde in den Papierkorb verschoben und in Outlook gelöscht.");
+      setMessage("Kontakt wurde lokal in den Papierkorb verschoben.");
       setMessageType("success");
       await refresh();
     } catch (error) {
@@ -283,30 +217,9 @@ export function ContactsPage() {
 
     const count = await deleteAllContacts();
     setTestMenuOpen(false);
-    setMessage(`${count} Kontakte wurden in den Papierkorb verschoben und in Outlook gelöscht.`);
+    setMessage(`${count} Kontakte wurden lokal in den Papierkorb verschoben.`);
     setMessageType("success");
     await refresh();
-  };
-
-  const showOutlookFolders = async () => {
-    try {
-      const folders = await diagnoseOutlookContactFolders();
-      setTestMenuOpen(false);
-      if (folders.length === 0) {
-        setMessage("Keine Outlook-Kontaktordner gefunden.");
-        setMessageType("info");
-        return;
-      }
-      setMessage(
-        folders
-          .map((folder) => `${folder.itemCount} Kontakte: ${folder.folderPath || folder.storeName}`)
-          .join(" | ")
-      );
-      setMessageType("info");
-    } catch (error) {
-      setMessage(`Outlook-Kontaktordner konnten nicht gelesen werden: ${error}`);
-      setMessageType("error");
-    }
   };
 
   const copyEmail = async (email: string) => {
@@ -541,16 +454,12 @@ export function ContactsPage() {
           <button className="primary" type="button" onClick={startNew}>
             <Plus size={20} /> {t.newContact}
           </button>
-          <button type="button" onClick={() => runOutlookSync(false)} disabled={outlookSyncing}>
-            {outlookSyncing ? "Synchronisiert..." : "Outlook synchronisieren"}
-          </button>
           <div className="more-menu-wrap">
             <button className="icon-only" type="button" aria-label="Weitere Optionen" onClick={() => setTestMenuOpen((open) => !open)}>
               <Ellipsis size={20} />
             </button>
             {testMenuOpen && (
               <div className="more-menu">
-                <button type="button" onClick={showOutlookFolders}>Outlook-Ordner anzeigen</button>
                 <button type="button" onClick={removeAllContacts}>Alle Kontakte löschen</button>
               </div>
             )}
