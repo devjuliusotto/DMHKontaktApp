@@ -1,14 +1,15 @@
-import { CalendarDays, Download, Trash2, Upload, UserRound } from "lucide-react";
+import { CalendarDays, Download, Settings, Trash2, Upload, UserRound } from "lucide-react";
 import { t } from "../i18n";
 
-export type Page = "contacts" | "calendar" | "import" | "export" | "trash";
+export type Page = "contacts" | "calendar" | "import" | "export" | "trash" | "settings";
 
 const items: Array<{ page: Page; label: string; icon: typeof UserRound }> = [
   { page: "contacts", label: t.contacts, icon: UserRound },
   { page: "calendar", label: "Kalender", icon: CalendarDays },
   { page: "import", label: t.import, icon: Upload },
   { page: "export", label: t.export, icon: Download },
-  { page: "trash", label: "Papierkorb", icon: Trash2 }
+  { page: "trash", label: "Papierkorb", icon: Trash2 },
+  { page: "settings", label: "Einstellungen", icon: Settings }
 ];
 
 interface SidebarProps {

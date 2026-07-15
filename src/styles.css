@@ -1900,6 +1900,137 @@ td small {
   padding: 0.8rem;
 }
 
+.mail-settings-panel .panel-heading {
+  align-items: flex-start;
+}
+
+.mail-settings-panel .panel-heading h3,
+.mail-settings-panel .panel-heading p,
+.mail-account-card h4,
+.mail-account-card dl,
+.mail-account-row strong,
+.mail-account-row span {
+  margin: 0;
+}
+
+.mail-settings-panel .panel-heading p,
+.mail-account-title span,
+.mail-account-row span {
+  color: var(--accent);
+}
+
+.mail-settings-panel .panel-heading p {
+  margin-top: 0.25rem;
+  max-width: 780px;
+}
+
+.mail-account-grid {
+  display: grid;
+  gap: 0.9rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(330px, 100%), 1fr));
+}
+
+.mail-account-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 0.9rem;
+  padding: 1rem;
+}
+
+.mail-account-title {
+  align-items: center;
+  display: flex;
+  gap: 0.7rem;
+  min-width: 0;
+}
+
+.mail-account-title svg {
+  color: var(--primary);
+  flex: 0 0 auto;
+}
+
+.mail-account-title div,
+.mail-account-row > div:first-child {
+  min-width: 0;
+}
+
+.mail-account-title h4,
+.mail-account-title span,
+.mail-account-row strong,
+.mail-account-row span {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.mail-account-details {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.mail-account-details div {
+  display: grid;
+  gap: 0.15rem;
+  grid-template-columns: 110px minmax(0, 1fr);
+}
+
+.mail-account-details dt {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.mail-account-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.credential-available {
+  color: #176b45;
+  font-weight: 800;
+}
+
+.credential-missing {
+  color: #b3261e;
+  font-weight: 800;
+}
+
+.mail-account-list {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.mail-account-row {
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  justify-content: space-between;
+  padding: 0.85rem;
+}
+
+.danger-button {
+  border-color: #b3261e;
+  color: #8f1d18;
+}
+
+.spin {
+  animation: spin 900ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation: none;
+  }
+}
+
 @media print {
   .sidebar,
   .page-header,

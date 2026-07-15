@@ -1,5 +1,7 @@
 node_modules
 dist
 src-tauri/target
+outlook-profile-reader/target
+src-tauri/resources/*.exe
 *.log
 .DS_Store

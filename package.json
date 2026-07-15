@@ -25,7 +25,9 @@
   "private": true,
   "scripts": {
     "build": "tsc && vite build",
+    "build:outlook-helper": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-outlook-helpers.ps1 -Configuration release",
     "dev": "vite",
+    "prepare:outlook-helper": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-outlook-helpers.ps1 -Configuration debug",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:build": "set CARGO_TARGET_DIR=%TEMP%\\agendakontakte-cargo-target&& tauri build",

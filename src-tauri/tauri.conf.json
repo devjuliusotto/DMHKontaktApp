@@ -15,8 +15,8 @@
     ]
   },
   "build": {
-    "beforeBuildCommand": "npm run build",
-    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build:outlook-helper && npm run build",
+    "beforeDevCommand": "npm run prepare:outlook-helper && npm run dev",
     "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "../dist"
   },
@@ -29,6 +29,9 @@
     ],
     "longDescription": "AgendaKontakte verwaltet Kontakte und Gruppen lokal auf dem Windows-PC.",
     "publisher": "Diakonissenmutterhaus Aidlingen e.V.",
+    "resources": [
+      "resources/*"
+    ],
     "shortDescription": "Lokale Kontaktverwaltung",
     "targets": [
       "msi",

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { CalendarEvent } from "../types/calendar";
 import type { BackupData, Contact, ContactInput, Group, ImportResult } from "../types/contact";
+import type { MailAccount, OutlookAccountCandidate } from "../types/mail";
 
 export function listContacts(search = "", groupId?: number): Promise<Contact[]> {
   return invoke("list_contacts", { search, groupId });
@@ -104,4 +105,24 @@ export function setAppSetting(key: string, value: string): Promise<void> {
 
 export function importOutlookStore(path: string): Promise<{ contacts: ContactInput[]; events: CalendarEvent[] }> {
   return invoke("import_outlook_store", { path });
+}
+
+export function scanOutlookAccounts(): Promise<OutlookAccountCandidate[]> {
+  return invoke("scan_outlook_accounts");
+}
+
+export function listMailAccounts(): Promise<MailAccount[]> {
+  return invoke("list_mail_accounts");
+}
+
+export function importOutlookAccount(sourceAccountId: string): Promise<MailAccount> {
+  return invoke("import_outlook_account", { sourceAccountId });
+}
+
+export function testMailConnection(accountId: number): Promise<void> {
+  return invoke("test_mail_connection", { accountId });
+}
+
+export function removeMailAccount(accountId: number): Promise<void> {
+  return invoke("remove_mail_account", { accountId });
 }

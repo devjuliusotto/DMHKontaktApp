@@ -8,6 +8,8 @@ use std::process::Command;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 
+mod mail_accounts;
+
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
@@ -380,6 +382,29 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
         CREATE TABLE IF NOT EXISTS app_settings (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS mail_accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL DEFAULT 'outlook-classic',
+            source_account_id TEXT NOT NULL UNIQUE,
+            account_name TEXT NOT NULL DEFAULT '',
+            email TEXT NOT NULL DEFAULT '',
+            account_type TEXT NOT NULL DEFAULT 'imap',
+            incoming_server TEXT NOT NULL,
+            incoming_user TEXT NOT NULL,
+            incoming_port INTEGER NOT NULL,
+            incoming_security TEXT NOT NULL,
+            incoming_use_spa INTEGER NOT NULL DEFAULT 0,
+            outgoing_server TEXT NOT NULL DEFAULT '',
+            outgoing_user TEXT NOT NULL DEFAULT '',
+            outgoing_port INTEGER NOT NULL DEFAULT 0,
+            outgoing_security TEXT NOT NULL DEFAULT 'none',
+            outgoing_use_auth INTEGER NOT NULL DEFAULT 0,
+            outgoing_auth_method INTEGER NOT NULL DEFAULT 0,
+            credential_reference TEXT NOT NULL,
+            outgoing_credential_reference TEXT,
+            created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
         ",
@@ -2220,7 +2245,12 @@ pub fn run() {
             open_new_outlook_bulk_email,
             get_app_setting,
             set_app_setting,
-            import_outlook_store
+            import_outlook_store,
+            mail_accounts::scan_outlook_accounts,
+            mail_accounts::list_mail_accounts,
+            mail_accounts::import_outlook_account,
+            mail_accounts::test_mail_connection,
+            mail_accounts::remove_mail_account
         ])
         .run(tauri::generate_context!())
         .expect("Fehler beim Starten von AgendaKontakte");

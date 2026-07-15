@@ -15,6 +15,8 @@ AgendaKontakte ist eine lokale Windows-Desktop-App zur einfachen Verwaltung von 
 - Export für Outlook Classic, New Outlook und allgemeines CSV
 - Kalendertermine aus `.ics`, `.eml`, `.pst`- und `.ost`-Dateien importieren
 - E-Mail per `mailto:` öffnen
+- IMAP-Konten aus Outlook Classic sicher übernehmen
+- IMAP-Anmeldung testen, ohne Kennwörter an React oder SQLite zu übertragen
 - E-Mail und Telefonnummer kopieren
 - Kontaktliste drucken
 - Automatische lokale Sicherung beim Start
@@ -25,11 +27,13 @@ AgendaKontakte ist eine lokale Windows-Desktop-App zur einfachen Verwaltung von 
 - Node.js LTS
 - Rust stable
 - Microsoft Visual Studio Build Tools mit C++ Desktop-Workload
+- Rust-Ziele für 64-Bit- und 32-Bit-Outlook (`x86_64-pc-windows-msvc` und `i686-pc-windows-msvc`)
 
 ## Installation der Abhängigkeiten
 
 ```powershell
 npm install
+rustup target add i686-pc-windows-msvc
 ```
 
 ## Entwicklung starten
@@ -85,6 +89,16 @@ Nach dem Export zeigt die App den Hinweis:
 
 > Die Datei wurde erstellt. Öffnen Sie Outlook, gehen Sie zu Personen/Kontakte und wählen Sie Importieren.
 
+## Outlook-IMAP-Konto übernehmen
+
+Unter `Einstellungen` kann AgendaKontakte die IMAP-Konten des aktuellen Outlook-Classic-Profils suchen. Die Funktion unterstützt ausschließlich Outlook Classic und lokale IMAP-Konten; New Outlook und Exchange-/Microsoft-365-OAuth-Konten werden nicht importiert.
+
+Der Build erzeugt zwei native Hilfsprogramme für Outlook 32-Bit und 64-Bit. Beim Import schreibt das passende Hilfsprogramm das gespeicherte IMAP- beziehungsweise SMTP-Kennwort direkt als `CRED_TYPE_GENERIC` mit `CRED_PERSIST_LOCAL_MACHINE` in den Windows Credential Manager. Die Tauri-Anwendung erhält nur Kontodaten und eine Credential-Referenz.
+
+SQLite speichert Server, Ports, Verschlüsselung, Benutzernamen und Credential-Referenzen. Kennwörter werden weder in SQLite noch in React, JSON-Antworten, Logs oder Anwendungssicherungen gespeichert. Beim Entfernen eines importierten Kontos werden auch seine lokalen Credential-Manager-Einträge gelöscht.
+
 ## Sicherheit
 
 Alle Daten bleiben lokal auf dem PC. Sicherungen sollten regelmäßig auf einem sicheren lokalen Laufwerk oder einem geschützten Netzlaufwerk abgelegt werden.
+
+Outlook-Kennwörter bleiben an den angemeldeten Windows-Benutzer und diesen Computer gebunden. Der IMAP-Verbindungstest läuft ausschließlich über SSL/TLS, liest das Kennwort innerhalb des nativen Hilfsprogramms, löscht temporäre Kennwortpuffer anschließend und gibt nur Erfolg oder eine bereinigte Fehlermeldung zurück.

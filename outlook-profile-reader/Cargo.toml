@@ -1,0 +1,19 @@
+[package]
+name = "outlook-profile-reader"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+native-tls = "0.2"
+outlook-mapi = "0.15.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_Security_Credentials",
+  "Win32_System_Com"
+] }
+windows-core = "0.62"
+zeroize = { version = "1", features = ["alloc"] }
+
