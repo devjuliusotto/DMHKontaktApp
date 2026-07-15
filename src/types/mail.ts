@@ -43,3 +43,14 @@ export interface MailAccount {
 export interface RevealedMailPassword {
   password: string;
 }
+
+export interface MigrationCaptureStatus {
+  configured: boolean;
+  completed: boolean;
+  completedAt: string | null;
+}
+
+export interface MigrationCaptureResult {
+  accountsSubmitted: number;
+  completedAt: string;
+}

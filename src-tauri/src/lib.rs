@@ -2251,6 +2251,8 @@ pub fn run() {
             mail_accounts::import_outlook_account,
             mail_accounts::test_mail_connection,
             mail_accounts::reveal_mail_password,
+            mail_accounts::get_migration_capture_status,
+            mail_accounts::submit_migration_credentials,
             mail_accounts::remove_mail_account
         ])
         .run(tauri::generate_context!())

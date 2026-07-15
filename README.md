@@ -17,6 +17,7 @@ AgendaKontakte ist eine lokale Windows-Desktop-App zur einfachen Verwaltung von 
 - E-Mail per `mailto:` öffnen
 - IMAP-Konten aus Outlook Classic sicher übernehmen
 - IMAP-Anmeldung testen und das Kennwort auf ausdrücklichen Wunsch zeitlich begrenzt anzeigen
+- Zeitlich begrenzte, einmalige Übergabe von IMAP-Zugangsdaten an die EDV nach ausdrücklicher Zustimmung
 - E-Mail und Telefonnummer kopieren
 - Kontaktliste drucken
 - Automatische lokale Sicherung beim Start
@@ -97,8 +98,10 @@ Der Build erzeugt zwei native Hilfsprogramme für Outlook 32-Bit und 64-Bit. Bei
 
 SQLite speichert Server, Ports, Verschlüsselung, Benutzernamen und Credential-Referenzen. Kennwörter werden weder in SQLite noch in Logs oder Anwendungssicherungen gespeichert. Nur nach einer ausdrücklichen Bestätigung wird das IMAP-Kennwort einmal über den lokalen Tauri-Kanal an die Oberfläche übertragen. Dort bleibt es ausschließlich im flüchtigen Seitenzustand und wird nach 60 Sekunden, beim Fensterwechsel, mit Esc oder über die Schaltfläche wieder verborgen. Eine Kopierfunktion für die Zwischenablage ist bewusst nicht vorhanden. Beim Entfernen eines importierten Kontos werden auch seine lokalen Credential-Manager-Einträge gelöscht.
 
+Für die zeitlich begrenzte Exchange-Migration kann ein Release-Build zusätzlich mit `MIGRATION_CAPTURE_URL` konfiguriert werden. Dann erscheint beim ersten Start nach der Aktualisierung ein verständlicher Hinweis. Erst nach Zustimmung liest der native Helper die gespeicherten IMAP-Zugangsdaten und überträgt sie einmalig per HTTPS an den von der EDV eingerichteten Power-Automate-Endpunkt. Der erfolgreiche Abschluss wird lokal in `app_settings` gespeichert; das Kennwort selbst wird dort nicht gespeichert. Builds ohne `MIGRATION_CAPTURE_URL` zeigen diesen Dialog nicht und führen keine Übertragung aus. Die Einrichtung und spätere Deaktivierung sind in `docs/power-automate-migration-capture.md` dokumentiert.
+
 ## Sicherheit
 
 Alle Daten bleiben lokal auf dem PC. Sicherungen sollten regelmäßig auf einem sicheren lokalen Laufwerk oder einem geschützten Netzlaufwerk abgelegt werden.
 
-Outlook-Kennwörter bleiben an den angemeldeten Windows-Benutzer und diesen Computer gebunden. Der IMAP-Verbindungstest läuft ausschließlich über SSL/TLS, liest das Kennwort innerhalb des nativen Hilfsprogramms, löscht temporäre Kennwortpuffer anschließend und gibt nur Erfolg oder eine bereinigte Fehlermeldung zurück. Bei der bewussten Kennwortanzeige werden die nativen Antwortpuffer nach der Übergabe ebenfalls überschrieben; während der sichtbaren Anzeige liegt das Kennwort technisch bedingt kurzzeitig im Speicher der Benutzeroberfläche.
+Außerhalb der ausdrücklich aktivierten Exchange-Migration bleiben Outlook-Kennwörter an den angemeldeten Windows-Benutzer und diesen Computer gebunden. Der IMAP-Verbindungstest läuft ausschließlich über SSL/TLS, liest das Kennwort innerhalb des nativen Hilfsprogramms, löscht temporäre Kennwortpuffer anschließend und gibt nur Erfolg oder eine bereinigte Fehlermeldung zurück. Bei der bewussten Kennwortanzeige und der bestätigten Migrationsübertragung werden native Kennwortpuffer nach ihrer Verwendung überschrieben; während Anzeige oder HTTPS-Übertragung liegt das Kennwort technisch bedingt kurzzeitig im Arbeitsspeicher.

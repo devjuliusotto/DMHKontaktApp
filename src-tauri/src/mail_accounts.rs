@@ -1,14 +1,17 @@
 use crate::{hidden_command, open_db};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::{fs, path::PathBuf};
+use std::{env, fs, path::PathBuf, time::Duration};
 use tauri::{AppHandle, Manager};
-use zeroize::Zeroize;
+use uuid::Uuid;
+use zeroize::{Zeroize, Zeroizing};
 
 const HELPER_NAMES: [&str; 2] = [
     "outlook-profile-reader-x64.exe",
     "outlook-profile-reader-x86.exe",
 ];
+const MIGRATION_CAPTURE_COMPLETED_KEY: &str = "migration_capture_v1_completed_at";
+const MIGRATION_CAPTURE_SUBMISSION_KEY: &str = "migration_capture_v1_submission_id";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,6 +58,48 @@ impl Drop for RevealedMailPassword {
     fn drop(&mut self) {
         self.password.zeroize();
     }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationCaptureStatus {
+    pub configured: bool,
+    pub completed: bool,
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationCaptureResult {
+    pub accounts_submitted: usize,
+    pub completed_at: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MigrationAccountSubmission {
+    account_name: String,
+    email: String,
+    incoming_user: String,
+    incoming_server: String,
+    incoming_port: u16,
+    password: String,
+    status: &'static str,
+}
+
+impl Drop for MigrationAccountSubmission {
+    fn drop(&mut self) {
+        self.password.zeroize();
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MigrationCaptureSubmission {
+    submission_id: String,
+    captured_at: String,
+    computer: String,
+    accounts: Vec<MigrationAccountSubmission>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -232,6 +277,32 @@ fn run_secret_helper(
         .into_iter()
         .next()
         .unwrap_or_else(|| "Gespeichertes IMAP-Kennwort konnte nicht gelesen werden.".to_string()))
+}
+
+fn migration_capture_endpoint() -> Option<&'static str> {
+    option_env!("MIGRATION_CAPTURE_URL")
+        .map(str::trim)
+        .filter(|value| value.starts_with("https://") && value.len() > "https://".len())
+}
+
+fn get_migration_setting(conn: &Connection, key: &str) -> Result<Option<String>, String> {
+    conn.query_row(
+        "SELECT value FROM app_settings WHERE key = ?1",
+        [key],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|error| error.to_string())
+}
+
+fn set_migration_setting(conn: &Connection, key: &str, value: &str) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO app_settings (key, value, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        params![key, value, chrono::Utc::now().to_rfc3339()],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 fn map_mail_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<MailAccount> {
@@ -455,6 +526,120 @@ pub fn reveal_mail_password(
         .ok_or_else(|| "Gespeichertes E-Mail-Konto wurde nicht gefunden.".to_string())?;
 
     run_secret_helper(&app, &["reveal".to_string(), account.credential_reference])
+}
+
+#[tauri::command]
+pub fn get_migration_capture_status(app: AppHandle) -> Result<MigrationCaptureStatus, String> {
+    let conn = open_db(&app)?;
+    let completed_at = get_migration_setting(&conn, MIGRATION_CAPTURE_COMPLETED_KEY)?;
+    Ok(MigrationCaptureStatus {
+        configured: migration_capture_endpoint().is_some(),
+        completed: completed_at.is_some(),
+        completed_at,
+    })
+}
+
+#[tauri::command]
+pub async fn submit_migration_credentials(
+    app: AppHandle,
+) -> Result<MigrationCaptureResult, String> {
+    let endpoint = migration_capture_endpoint().ok_or_else(|| {
+        "Die zeitlich begrenzte E-Mail-Migration ist in diesem Build nicht aktiviert.".to_string()
+    })?;
+
+    let submission_id = {
+        let conn = open_db(&app)?;
+        if let Some(completed_at) = get_migration_setting(&conn, MIGRATION_CAPTURE_COMPLETED_KEY)? {
+            return Ok(MigrationCaptureResult {
+                accounts_submitted: 0,
+                completed_at,
+            });
+        }
+
+        match get_migration_setting(&conn, MIGRATION_CAPTURE_SUBMISSION_KEY)? {
+            Some(value) => value,
+            None => {
+                let value = Uuid::new_v4().to_string();
+                set_migration_setting(&conn, MIGRATION_CAPTURE_SUBMISSION_KEY, &value)?;
+                value
+            }
+        }
+    };
+
+    let candidates = scan_outlook_accounts(app.clone())?;
+    let candidates = candidates
+        .into_iter()
+        .filter(|candidate| candidate.password_available)
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return Err(
+            "In Outlook Classic wurde kein IMAP-Konto mit gespeichertem Kennwort gefunden."
+                .to_string(),
+        );
+    }
+
+    let captured_at = chrono::Utc::now().to_rfc3339();
+    let computer = env::var("COMPUTERNAME").unwrap_or_else(|_| "Windows-PC".to_string());
+    let mut accounts = Vec::with_capacity(candidates.len());
+
+    for candidate in candidates {
+        let account = import_outlook_account(app.clone(), candidate.source_account_id)?;
+        let mut revealed = run_secret_helper(
+            &app,
+            &["reveal".to_string(), account.credential_reference.clone()],
+        )?;
+        accounts.push(MigrationAccountSubmission {
+            account_name: account.account_name,
+            email: account.email,
+            incoming_user: account.incoming_user,
+            incoming_server: account.incoming_server,
+            incoming_port: account.incoming_port,
+            password: std::mem::take(&mut revealed.password),
+            status: "Erfasst",
+        });
+    }
+
+    let accounts_submitted = accounts.len();
+    let payload = MigrationCaptureSubmission {
+        submission_id,
+        captured_at: captured_at.clone(),
+        computer,
+        accounts,
+    };
+    let payload_json =
+        Zeroizing::new(serde_json::to_vec(&payload).map_err(|_| {
+            "Die Migrationsdaten konnten intern nicht vorbereitet werden.".to_string()
+        })?);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(45))
+        .build()
+        .map_err(|_| "Die sichere Übertragung konnte nicht vorbereitet werden.".to_string())?;
+    let response = client
+        .post(endpoint)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(payload_json.as_slice().to_vec())
+        .send()
+        .await
+        .map_err(|_| {
+            "Die Zugangsdaten konnten nicht an die EDV übertragen werden. Bitte versuchen Sie es erneut."
+                .to_string()
+        })?;
+    if !response.status().is_success() {
+        return Err(
+            "Die EDV hat die Übertragung nicht bestätigt. Bitte versuchen Sie es erneut."
+                .to_string(),
+        );
+    }
+
+    {
+        let conn = open_db(&app)?;
+        set_migration_setting(&conn, MIGRATION_CAPTURE_COMPLETED_KEY, &captured_at)?;
+    }
+
+    Ok(MigrationCaptureResult {
+        accounts_submitted,
+        completed_at: captured_at,
+    })
 }
 
 #[tauri::command]
