@@ -2250,6 +2250,7 @@ pub fn run() {
             mail_accounts::list_mail_accounts,
             mail_accounts::import_outlook_account,
             mail_accounts::test_mail_connection,
+            mail_accounts::reveal_mail_password,
             mail_accounts::remove_mail_account
         ])
         .run(tauri::generate_context!())

@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { CalendarEvent } from "../types/calendar";
 import type { BackupData, Contact, ContactInput, Group, ImportResult } from "../types/contact";
-import type { MailAccount, OutlookAccountCandidate } from "../types/mail";
+import type { MailAccount, OutlookAccountCandidate, RevealedMailPassword } from "../types/mail";
 
 export function listContacts(search = "", groupId?: number): Promise<Contact[]> {
   return invoke("list_contacts", { search, groupId });
@@ -121,6 +121,10 @@ export function importOutlookAccount(sourceAccountId: string): Promise<MailAccou
 
 export function testMailConnection(accountId: number): Promise<void> {
   return invoke("test_mail_connection", { accountId });
+}
+
+export function revealMailPassword(accountId: number): Promise<RevealedMailPassword> {
+  return invoke("reveal_mail_password", { accountId });
 }
 
 export function removeMailAccount(accountId: number): Promise<void> {

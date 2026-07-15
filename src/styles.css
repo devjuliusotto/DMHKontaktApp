@@ -2010,6 +2010,63 @@ td small {
   padding: 0.85rem;
 }
 
+.password-reveal-dialog {
+  align-self: center;
+  max-width: 680px;
+}
+
+.password-reveal-heading {
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
+}
+
+.password-reveal-heading svg {
+  color: var(--primary);
+  flex: 0 0 auto;
+}
+
+.password-reveal-heading h3,
+.password-reveal-heading p,
+.password-reveal-timeout {
+  margin: 0;
+}
+
+.password-reveal-heading p,
+.password-reveal-timeout {
+  color: var(--accent);
+}
+
+.password-reveal-warning {
+  background: #fff4d6;
+  border: 1px solid #e1b64c;
+  border-radius: 8px;
+  color: #684700;
+  font-weight: 700;
+  padding: 0.8rem;
+}
+
+.password-reveal-field {
+  display: grid;
+  font-weight: 800;
+  gap: 0.4rem;
+}
+
+.password-reveal-field input {
+  background: #ffffff;
+  border: 2px solid var(--primary);
+  font-family: Consolas, "Courier New", monospace;
+  font-size: clamp(1.15rem, 3vw, 1.65rem);
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  padding: 0.9rem;
+  width: 100%;
+}
+
+.password-reveal-actions {
+  justify-content: flex-end;
+}
+
 .danger-button {
   border-color: #b3261e;
   color: #8f1d18;

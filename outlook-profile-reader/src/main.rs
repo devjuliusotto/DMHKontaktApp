@@ -16,7 +16,7 @@ use serde::Serialize;
 use std::{
     env,
     ffi::c_void,
-    io::{BufRead, BufReader, Read, Write},
+    io::{self, BufRead, BufReader, Read, Write},
     net::{TcpStream, ToSocketAddrs},
     ptr,
     sync::Arc,
@@ -78,6 +78,16 @@ struct ImportedOutlookAccount {
 #[derive(Serialize)]
 struct ErrorEnvelope<'a> {
     error: &'a str,
+}
+
+#[derive(Serialize)]
+struct SecretEnvelope<'a> {
+    password: &'a str,
+}
+
+enum HelperOutput {
+    Json(serde_json::Value),
+    Secret(Zeroizing<String>),
 }
 
 #[implement(IOlkAccountHelper)]
@@ -689,12 +699,14 @@ fn required_arg(args: &mut impl Iterator<Item = String>, name: &str) -> AppResul
         .ok_or_else(|| format!("Interner Aufruffehler: Argument {name} fehlt."))
 }
 
-fn run() -> AppResult<serde_json::Value> {
+fn run() -> AppResult<HelperOutput> {
     let mut args = env::args().skip(1);
     match required_arg(&mut args, "Befehl")?.as_str() {
         "scan" => {
             let profile = required_arg(&mut args, "Profil")?;
-            serde_json::to_value(scan(&profile)?).map_err(|error| error.to_string())
+            serde_json::to_value(scan(&profile)?)
+                .map(HelperOutput::Json)
+                .map_err(|error| error.to_string())
         }
         "import" => {
             let profile = required_arg(&mut args, "Profil")?;
@@ -707,6 +719,7 @@ fn run() -> AppResult<serde_json::Value> {
                 &incoming_reference,
                 &outgoing_reference,
             )?)
+            .map(HelperOutput::Json)
             .map_err(|error| error.to_string())
         }
         "test" => {
@@ -718,13 +731,22 @@ fn run() -> AppResult<serde_json::Value> {
             let username = required_arg(&mut args, "Benutzer")?;
             let credential_reference = required_arg(&mut args, "Credential")?;
             test_imap_connection(&server, port, &security, &username, &credential_reference)?;
-            Ok(serde_json::json!({ "ok": true }))
+            Ok(HelperOutput::Json(serde_json::json!({ "ok": true })))
+        }
+        "reveal" => {
+            let credential_reference = required_arg(&mut args, "Credential")?;
+            let password_wide = read_credential(&credential_reference)?;
+            let password = Zeroizing::new(
+                String::from_utf16(&password_wide)
+                    .map_err(|_| "Gespeichertes Kennwort ist ungültig.".to_string())?,
+            );
+            Ok(HelperOutput::Secret(password))
         }
         "delete" => {
             for reference in args.filter(|value| !value.is_empty()) {
                 delete_credential(&reference)?;
             }
-            Ok(serde_json::json!({ "ok": true }))
+            Ok(HelperOutput::Json(serde_json::json!({ "ok": true })))
         }
         _ => Err("Unbekannter interner Befehl.".to_string()),
     }
@@ -732,7 +754,7 @@ fn run() -> AppResult<serde_json::Value> {
 
 fn main() {
     match run() {
-        Ok(value) => match serde_json::to_string(&value) {
+        Ok(HelperOutput::Json(value)) => match serde_json::to_string(&value) {
             Ok(json) => println!("{json}"),
             Err(_) => {
                 println!(
@@ -742,6 +764,29 @@ fn main() {
                 std::process::exit(1);
             }
         },
+        Ok(HelperOutput::Secret(password)) => {
+            let json = match serde_json::to_string(&SecretEnvelope {
+                password: password.as_str(),
+            }) {
+                Ok(value) => Zeroizing::new(value),
+                Err(_) => {
+                    println!(
+                        "{}",
+                        "{\"error\":\"Interne Antwort konnte nicht erstellt werden.\"}"
+                    );
+                    std::process::exit(1);
+                }
+            };
+            let mut stdout = io::stdout().lock();
+            if stdout
+                .write_all(json.as_bytes())
+                .and_then(|_| stdout.write_all(b"\n"))
+                .and_then(|_| stdout.flush())
+                .is_err()
+            {
+                std::process::exit(1);
+            }
+        }
         Err(error) => {
             let json = serde_json::to_string(&ErrorEnvelope { error: &error })
                 .unwrap_or_else(|_| "{\"error\":\"Unbekannter interner Fehler.\"}".to_string());

@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, Download, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
+import { CheckCircle2, Download, Eye, EyeOff, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
 import { StatusMessage } from "../components/StatusMessage";
 import { sqliteSchema } from "../db/schema";
 import {
   importOutlookAccount,
   listMailAccounts,
+  revealMailPassword,
   removeMailAccount,
   scanOutlookAccounts,
   testMailConnection
@@ -17,6 +18,11 @@ export function SettingsPage() {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState<"success" | "error" | "info">("info");
+  const [revealedPassword, setRevealedPassword] = useState<{
+    accountId: number;
+    accountLabel: string;
+    password: string;
+  } | null>(null);
 
   const importedIds = useMemo(
     () => new Set(accounts.map((account) => account.sourceAccountId.toLowerCase())),
@@ -34,6 +40,29 @@ export function SettingsPage() {
       setMessage(`Gespeicherte E-Mail-Konten konnten nicht geladen werden: ${error}`);
     });
   }, []);
+
+  useEffect(() => {
+    if (!revealedPassword) return;
+
+    const hidePassword = () => setRevealedPassword(null);
+    const hideWhenPageIsHidden = () => {
+      if (document.hidden) hidePassword();
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") hidePassword();
+    };
+    const timeout = window.setTimeout(hidePassword, 60_000);
+
+    window.addEventListener("blur", hidePassword);
+    window.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("visibilitychange", hideWhenPageIsHidden);
+    return () => {
+      window.clearTimeout(timeout);
+      window.removeEventListener("blur", hidePassword);
+      window.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("visibilitychange", hideWhenPageIsHidden);
+    };
+  }, [revealedPassword]);
 
   const scan = async () => {
     setBusyAction("scan");
@@ -88,11 +117,41 @@ export function SettingsPage() {
     }
   };
 
+  const revealPassword = async (account: MailAccount) => {
+    const accountLabel = account.accountName || account.email;
+    const confirmed = window.confirm(
+      `E-Mail-Kennwort aus Outlook für „${accountLabel}“ sichtbar anzeigen?\n\nAchten Sie darauf, dass niemand auf den Bildschirm schaut. Das Kennwort wird nach 60 Sekunden oder beim Verlassen des Fensters automatisch verborgen.`
+    );
+    if (!confirmed) return;
+
+    setRevealedPassword(null);
+    setBusyAction(`reveal-${account.id}`);
+    setMessage("");
+    try {
+      const result = await revealMailPassword(account.id);
+      if (!document.hasFocus()) {
+        setMessageType("info");
+        setMessage("Das Kennwort wurde nicht angezeigt, weil das App-Fenster nicht mehr aktiv war. Versuchen Sie es bei Bedarf erneut.");
+        return;
+      }
+      setRevealedPassword({ accountId: account.id, accountLabel, password: result.password });
+      setMessageType("info");
+      setMessage("Das E-Mail-Kennwort wird vorübergehend angezeigt und nicht in der App-Datenbank gespeichert.");
+    } catch (error) {
+      setMessageType("error");
+      setMessage(`E-Mail-Kennwort konnte nicht angezeigt werden: ${error}`);
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
   const removeAccount = async (account: MailAccount) => {
     const confirmed = window.confirm(
       `„${account.accountName || account.email}“ entfernen? Dabei werden auch die zugehörigen Kennwörter aus dem Windows Credential Manager gelöscht.`
     );
     if (!confirmed) return;
+
+    if (revealedPassword?.accountId === account.id) setRevealedPassword(null);
 
     setBusyAction(`remove-${account.id}`);
     setMessage("");
@@ -125,7 +184,7 @@ export function SettingsPage() {
           <div>
             <h3>Outlook Classic – IMAP-Konto</h3>
             <p>
-              Liest ausschließlich IMAP-Konten aus dem aktuellen Outlook-Classic-Profil. Kennwörter werden nie an die Oberfläche übertragen.
+              Liest ausschließlich IMAP-Konten aus dem aktuellen Outlook-Classic-Profil. Nach dem sicheren Import kann das IMAP-Kennwort bewusst und zeitlich begrenzt angezeigt werden.
             </p>
           </div>
           <button className="primary" type="button" onClick={scan} disabled={busyAction !== null}>
@@ -200,6 +259,9 @@ export function SettingsPage() {
                   <button type="button" onClick={() => testAccount(account)} disabled={busyAction !== null}>
                     <CheckCircle2 size={19} /> IMAP testen
                   </button>
+                  <button type="button" onClick={() => revealPassword(account)} disabled={busyAction !== null}>
+                    <Eye size={19} /> E-Mail-Kennwort anzeigen
+                  </button>
                   <button className="danger-button" type="button" onClick={() => removeAccount(account)} disabled={busyAction !== null}>
                     <Trash2 size={19} /> Entfernen
                   </button>
@@ -218,6 +280,49 @@ export function SettingsPage() {
         <h3>Datenbank</h3>
         <pre className="schema">{sqliteSchema}</pre>
       </section>
+
+      {revealedPassword && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setRevealedPassword(null)}>
+          <section
+            className="form-panel modal-card password-reveal-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="password-reveal-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="password-reveal-heading">
+              <Eye size={28} aria-hidden="true" />
+              <div>
+                <h3 id="password-reveal-title">E-Mail-Kennwort aus Outlook</h3>
+                <p>{revealedPassword.accountLabel}</p>
+              </div>
+            </div>
+            <div className="password-reveal-warning" role="note">
+              Dies ist das in Outlook gespeicherte Kennwort für den E-Mail-Server. Schreiben Sie es bei Bedarf auf Papier ab und bewahren Sie den Zettel sicher auf.
+            </div>
+            <label className="password-reveal-field">
+              <span>Kennwort</span>
+              <input
+                type="text"
+                value={revealedPassword.password}
+                readOnly
+                autoFocus
+                autoComplete="off"
+                spellCheck={false}
+                onFocus={(event) => event.currentTarget.select()}
+              />
+            </label>
+            <p className="password-reveal-timeout">
+              Die Anzeige schließt sich nach 60 Sekunden, beim Wechsel in ein anderes Fenster oder mit Esc. Das Kennwort wird nicht in die Zwischenablage kopiert.
+            </p>
+            <div className="button-row password-reveal-actions">
+              <button className="primary" type="button" onClick={() => setRevealedPassword(null)}>
+                <EyeOff size={19} /> Kennwort wieder verbergen
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }

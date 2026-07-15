@@ -3,6 +3,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{fs, path::PathBuf};
 use tauri::{AppHandle, Manager};
+use zeroize::Zeroize;
 
 const HELPER_NAMES: [&str; 2] = [
     "outlook-profile-reader-x64.exe",
@@ -43,6 +44,17 @@ struct ImportedOutlookAccount {
 #[derive(Debug, Deserialize)]
 struct HelperError {
     error: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RevealedMailPassword {
+    password: String,
+}
+
+impl Drop for RevealedMailPassword {
+    fn drop(&mut self) {
+        self.password.zeroize();
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -172,6 +184,54 @@ fn run_helper<T: DeserializeOwned>(app: &AppHandle, arguments: &[String]) -> Res
         .or_else(|| errors.first().cloned())
         .unwrap_or_else(|| "Outlook-IMAP-Konto konnte nicht gelesen werden.".to_string());
     Err(message)
+}
+
+fn run_secret_helper(
+    app: &AppHandle,
+    arguments: &[String],
+) -> Result<RevealedMailPassword, String> {
+    let mut errors = Vec::new();
+    let mut found_helper = false;
+
+    for name in HELPER_NAMES {
+        let Some(path) = helper_path(app, name) else {
+            continue;
+        };
+        found_helper = true;
+        let mut output = hidden_command(path.to_string_lossy().as_ref())
+            .args(arguments)
+            .output()
+            .map_err(|_| "Outlook-Hilfsprogramm konnte nicht gestartet werden.".to_string())?;
+
+        if output.status.success() {
+            let result =
+                serde_json::from_slice::<RevealedMailPassword>(&output.stdout).map_err(|_| {
+                    "Outlook-Hilfsprogramm hat eine ungültige Antwort geliefert.".to_string()
+                });
+            output.stdout.zeroize();
+            output.stderr.zeroize();
+            return result;
+        }
+
+        let message = serde_json::from_slice::<HelperError>(&output.stdout)
+            .map(|value| value.error)
+            .unwrap_or_else(|_| "Outlook-Hilfsprogramm ist fehlgeschlagen.".to_string());
+        output.stdout.zeroize();
+        output.stderr.zeroize();
+        errors.push(message);
+    }
+
+    if !found_helper {
+        return Err(
+            "Outlook-Hilfsprogramm fehlt. Installieren oder bauen Sie AgendaKontakte erneut."
+                .to_string(),
+        );
+    }
+
+    Err(errors
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| "Gespeichertes IMAP-Kennwort konnte nicht gelesen werden.".to_string()))
 }
 
 fn map_mail_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<MailAccount> {
@@ -383,6 +443,18 @@ pub fn test_mail_connection(app: AppHandle, account_id: i64) -> Result<(), Strin
         ],
     )?;
     Ok(())
+}
+
+#[tauri::command]
+pub fn reveal_mail_password(
+    app: AppHandle,
+    account_id: i64,
+) -> Result<RevealedMailPassword, String> {
+    let conn = open_db(&app)?;
+    let account = get_mail_account(&conn, account_id)?
+        .ok_or_else(|| "Gespeichertes E-Mail-Konto wurde nicht gefunden.".to_string())?;
+
+    run_secret_helper(&app, &["reveal".to_string(), account.credential_reference])
 }
 
 #[tauri::command]

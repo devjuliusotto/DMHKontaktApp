@@ -40,3 +40,6 @@ export interface MailAccount {
   updatedAt: string;
 }
 
+export interface RevealedMailPassword {
+  password: string;
+}

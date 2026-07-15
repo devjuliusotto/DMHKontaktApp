@@ -16,7 +16,7 @@ AgendaKontakte ist eine lokale Windows-Desktop-App zur einfachen Verwaltung von 
 - Kalendertermine aus `.ics`, `.eml`, `.pst`- und `.ost`-Dateien importieren
 - E-Mail per `mailto:` öffnen
 - IMAP-Konten aus Outlook Classic sicher übernehmen
-- IMAP-Anmeldung testen, ohne Kennwörter an React oder SQLite zu übertragen
+- IMAP-Anmeldung testen und das Kennwort auf ausdrücklichen Wunsch zeitlich begrenzt anzeigen
 - E-Mail und Telefonnummer kopieren
 - Kontaktliste drucken
 - Automatische lokale Sicherung beim Start
@@ -93,12 +93,12 @@ Nach dem Export zeigt die App den Hinweis:
 
 Unter `Einstellungen` kann AgendaKontakte die IMAP-Konten des aktuellen Outlook-Classic-Profils suchen. Die Funktion unterstützt ausschließlich Outlook Classic und lokale IMAP-Konten; New Outlook und Exchange-/Microsoft-365-OAuth-Konten werden nicht importiert.
 
-Der Build erzeugt zwei native Hilfsprogramme für Outlook 32-Bit und 64-Bit. Beim Import schreibt das passende Hilfsprogramm das gespeicherte IMAP- beziehungsweise SMTP-Kennwort direkt als `CRED_TYPE_GENERIC` mit `CRED_PERSIST_LOCAL_MACHINE` in den Windows Credential Manager. Die Tauri-Anwendung erhält nur Kontodaten und eine Credential-Referenz.
+Der Build erzeugt zwei native Hilfsprogramme für Outlook 32-Bit und 64-Bit. Beim Import schreibt das passende Hilfsprogramm das gespeicherte IMAP- beziehungsweise SMTP-Kennwort direkt als `CRED_TYPE_GENERIC` mit `CRED_PERSIST_LOCAL_MACHINE` in den Windows Credential Manager. Die Tauri-Anwendung erhält beim normalen Import nur Kontodaten und eine Credential-Referenz.
 
-SQLite speichert Server, Ports, Verschlüsselung, Benutzernamen und Credential-Referenzen. Kennwörter werden weder in SQLite noch in React, JSON-Antworten, Logs oder Anwendungssicherungen gespeichert. Beim Entfernen eines importierten Kontos werden auch seine lokalen Credential-Manager-Einträge gelöscht.
+SQLite speichert Server, Ports, Verschlüsselung, Benutzernamen und Credential-Referenzen. Kennwörter werden weder in SQLite noch in Logs oder Anwendungssicherungen gespeichert. Nur nach einer ausdrücklichen Bestätigung wird das IMAP-Kennwort einmal über den lokalen Tauri-Kanal an die Oberfläche übertragen. Dort bleibt es ausschließlich im flüchtigen Seitenzustand und wird nach 60 Sekunden, beim Fensterwechsel, mit Esc oder über die Schaltfläche wieder verborgen. Eine Kopierfunktion für die Zwischenablage ist bewusst nicht vorhanden. Beim Entfernen eines importierten Kontos werden auch seine lokalen Credential-Manager-Einträge gelöscht.
 
 ## Sicherheit
 
 Alle Daten bleiben lokal auf dem PC. Sicherungen sollten regelmäßig auf einem sicheren lokalen Laufwerk oder einem geschützten Netzlaufwerk abgelegt werden.
 
-Outlook-Kennwörter bleiben an den angemeldeten Windows-Benutzer und diesen Computer gebunden. Der IMAP-Verbindungstest läuft ausschließlich über SSL/TLS, liest das Kennwort innerhalb des nativen Hilfsprogramms, löscht temporäre Kennwortpuffer anschließend und gibt nur Erfolg oder eine bereinigte Fehlermeldung zurück.
+Outlook-Kennwörter bleiben an den angemeldeten Windows-Benutzer und diesen Computer gebunden. Der IMAP-Verbindungstest läuft ausschließlich über SSL/TLS, liest das Kennwort innerhalb des nativen Hilfsprogramms, löscht temporäre Kennwortpuffer anschließend und gibt nur Erfolg oder eine bereinigte Fehlermeldung zurück. Bei der bewussten Kennwortanzeige werden die nativen Antwortpuffer nach der Übergabe ebenfalls überschrieben; während der sichtbaren Anzeige liegt das Kennwort technisch bedingt kurzzeitig im Speicher der Benutzeroberfläche.
