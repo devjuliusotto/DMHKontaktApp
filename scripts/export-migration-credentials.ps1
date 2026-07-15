@@ -117,10 +117,17 @@ function Get-EncryptedRowsFromWorkbook {
 
     for ($rowIndex = 1; $rowIndex -le $rowCount; $rowIndex++) {
       $row = [ordered]@{}
+      $hasValue = $false
       for ($columnIndex = 1; $columnIndex -le $columnCount; $columnIndex++) {
-        $row[[string]$headers[1, $columnIndex]] = $values[$rowIndex, $columnIndex]
+        $value = $values[$rowIndex, $columnIndex]
+        $row[[string]$headers[1, $columnIndex]] = $value
+        if ($null -ne $value -and -not [string]::IsNullOrWhiteSpace([string]$value)) {
+          $hasValue = $true
+        }
       }
-      $rows.Add([pscustomobject]$row)
+      if ($hasValue) {
+        $rows.Add([pscustomobject]$row)
+      }
     }
     return $rows.ToArray()
   }
@@ -248,6 +255,9 @@ $seenSubmissions = @{}
 $exportRows = [Collections.Generic.List[object]]::new()
 foreach ($row in $encryptedRows) {
   $submissionId = [string](Get-RowValue -Row $row -Name 'Übertragungs-ID')
+  if ([string]::IsNullOrWhiteSpace($submissionId)) {
+    throw 'Eine nicht leere Tabellenzeile enthält keine Übertragungs-ID.'
+  }
   if ($seenSubmissions.ContainsKey($submissionId)) { continue }
   $seenSubmissions[$submissionId] = $true
 
@@ -285,4 +295,3 @@ Protect-OutputForCurrentUser -Path $resolvedCsv
 
 Write-Host "CSV erfolgreich erstellt: $resolvedCsv" -ForegroundColor Green
 Write-Warning 'Diese CSV enthält Kennwörter im Klartext. Laden Sie sie direkt in das Migrationssystem und löschen Sie sie anschließend sicher.'
-

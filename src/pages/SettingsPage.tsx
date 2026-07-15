@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, Download, Eye, EyeOff, RefreshCw, Send, ShieldCheck, Trash2 } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Download, Eye, EyeOff, LoaderCircle, RefreshCw, Send, ShieldCheck, Trash2 } from "lucide-react";
 import { MigrationCaptureDialog } from "../components/MigrationCaptureDialog";
 import { StatusMessage } from "../components/StatusMessage";
 import { sqliteSchema } from "../db/schema";
@@ -46,7 +46,7 @@ export function SettingsPage() {
     getMigrationCaptureStatus()
       .then(setMigrationStatus)
       .catch(() => {
-        // Die zeitlich begrenzte Migration darf die lokalen Einstellungen nicht blockieren.
+        setMigrationStatus({ configured: false, completed: false, completedAt: null });
       });
   }, []);
 
@@ -194,35 +194,48 @@ export function SettingsPage() {
 
       <StatusMessage message={message} type={messageType} />
 
-      {migrationStatus?.configured && (
-        <section className="form-panel migration-share-panel">
-          <div className="migration-share-copy">
-            <div className="migration-share-icon" aria-hidden="true">
-              <ShieldCheck size={30} />
-            </div>
-            <div>
-              <h3>E-Mail-Umstellung auf Exchange</h3>
-              <p>
-                Übermitteln Sie die in Outlook Classic gespeicherte IMAP-Konfiguration verschlüsselt an die EDV. Es wird nichts automatisch gesendet.
-              </p>
-              {migrationStatus.completed && (
-                <p className="migration-share-completed">
-                  <CheckCircle2 size={18} aria-hidden="true" /> Bereits sicher übertragen
-                  {migrationStatus.completedAt ? ` · ${new Date(migrationStatus.completedAt).toLocaleString("de-DE")}` : ""}
-                </p>
-              )}
-            </div>
+      <section className="form-panel migration-share-panel">
+        <div className="migration-share-copy">
+          <div className="migration-share-icon" aria-hidden="true">
+            <ShieldCheck size={30} />
           </div>
-          <button
-            className="primary large"
-            type="button"
-            onClick={() => setMigrationDialogOpen(true)}
-            disabled={busyAction !== null || migrationStatus.completed}
-          >
-            <Send size={21} /> E-Mail-Konfiguration mit der EDV teilen
-          </button>
-        </section>
-      )}
+          <div>
+            <h3>E-Mail-Umstellung auf Exchange</h3>
+            <p>
+              Übermitteln Sie die in Outlook Classic gespeicherte IMAP-Konfiguration verschlüsselt an die EDV. Es wird nichts automatisch gesendet.
+            </p>
+            {migrationStatus === null && (
+              <p className="migration-share-state migration-share-checking">
+                <LoaderCircle className="spin" size={18} aria-hidden="true" /> Verfügbarkeit wird geprüft …
+              </p>
+            )}
+            {migrationStatus && !migrationStatus.configured && (
+              <p className="migration-share-state migration-share-unavailable">
+                <AlertTriangle size={18} aria-hidden="true" /> Diese App-Version enthält noch keine sichere Übertragungsadresse. Bitte informieren Sie die EDV.
+              </p>
+            )}
+            {migrationStatus?.configured && !migrationStatus.completed && (
+              <p className="migration-share-state migration-share-ready">
+                <CheckCircle2 size={18} aria-hidden="true" /> Bereit zur verschlüsselten Übertragung
+              </p>
+            )}
+            {migrationStatus?.completed && (
+              <p className="migration-share-state migration-share-completed">
+                <CheckCircle2 size={18} aria-hidden="true" /> Bereits sicher übertragen
+                {migrationStatus.completedAt ? ` · ${new Date(migrationStatus.completedAt).toLocaleString("de-DE")}` : ""}
+              </p>
+            )}
+          </div>
+        </div>
+        <button
+          className="primary large migration-share-button"
+          type="button"
+          onClick={() => setMigrationDialogOpen(true)}
+          disabled={busyAction !== null || !migrationStatus?.configured || migrationStatus.completed}
+        >
+          <Send size={21} /> E-Mail-Konfiguration mit der EDV teilen
+        </button>
+      </section>
 
       <section className="form-panel mail-settings-panel">
         <div className="panel-heading">

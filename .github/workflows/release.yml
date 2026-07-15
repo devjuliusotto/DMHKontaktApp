@@ -41,6 +41,18 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Validate encrypted migration endpoint
+        shell: pwsh
+        env:
+          MIGRATION_CAPTURE_URL: ${{ secrets.MIGRATION_CAPTURE_URL }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:MIGRATION_CAPTURE_URL)) {
+            throw "Repository secret MIGRATION_CAPTURE_URL is missing. Refusing to publish an app that hides/disables the EDV transfer."
+          }
+          if (-not $env:MIGRATION_CAPTURE_URL.StartsWith("https://", [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "MIGRATION_CAPTURE_URL must be an HTTPS URL."
+          }
+
       - name: Build and publish Tauri app
         uses: tauri-apps/tauri-action@v1
         env:
