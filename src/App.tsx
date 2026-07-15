@@ -7,7 +7,6 @@ import { CalendarPage } from "./pages/CalendarPage";
 import { TrashPage } from "./pages/TrashPage";
 import { UpdateNotifier } from "./components/UpdateNotifier";
 import { SettingsPage } from "./pages/SettingsPage";
-import { MigrationCaptureDialog } from "./components/MigrationCaptureDialog";
 
 export default function App() {
   const [page, setPage] = useState<Page>("contacts");
@@ -23,7 +22,6 @@ export default function App() {
         {page === "trash" && <TrashPage />}
         {page === "settings" && <SettingsPage />}
       </main>
-      <MigrationCaptureDialog />
       <UpdateNotifier />
     </div>
   );

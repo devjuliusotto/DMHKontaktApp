@@ -2109,6 +2109,64 @@ td small {
   padding: 1rem;
 }
 
+.migration-capture-question {
+  background: #e8f1fb;
+  border: 2px solid #8ebce7;
+  border-radius: 8px;
+  color: #17324d;
+  font-size: 1.12rem;
+  font-weight: 800;
+  line-height: 1.5;
+  padding: 1rem;
+}
+
+.migration-share-panel {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.migration-share-copy {
+  align-items: flex-start;
+  display: flex;
+  flex: 1 1 520px;
+  gap: 0.85rem;
+}
+
+.migration-share-copy h3,
+.migration-share-copy p {
+  margin: 0;
+}
+
+.migration-share-copy p {
+  color: var(--accent);
+  margin-top: 0.25rem;
+  max-width: 760px;
+}
+
+.migration-share-icon {
+  align-items: center;
+  background: #e8f1fb;
+  border-radius: 999px;
+  color: var(--primary);
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 52px;
+  justify-content: center;
+  width: 52px;
+}
+
+.migration-share-copy .migration-share-completed {
+  align-items: center;
+  color: #176b45;
+  display: flex;
+  font-weight: 800;
+  gap: 0.35rem;
+  margin-top: 0.65rem;
+}
+
 .migration-capture-error {
   background: #fde8e7;
   border: 1px solid #b3261e;

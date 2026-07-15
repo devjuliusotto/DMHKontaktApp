@@ -1,22 +1,26 @@
 import { useEffect, useState } from "react";
 import { CheckCircle2, RefreshCw, ShieldCheck } from "lucide-react";
-import { getMigrationCaptureStatus, submitMigrationCredentials } from "../services/db";
+import { submitMigrationCredentials } from "../services/db";
+import type { MigrationCaptureResult } from "../types/mail";
 
-export function MigrationCaptureDialog() {
-  const [open, setOpen] = useState(false);
+interface MigrationCaptureDialogProps {
+  open: boolean;
+  onClose: () => void;
+  onCompleted: (result: MigrationCaptureResult) => void;
+}
+
+export function MigrationCaptureDialog({ open, onClose, onCompleted }: MigrationCaptureDialogProps) {
   const [submitting, setSubmitting] = useState(false);
   const [submittedAccounts, setSubmittedAccounts] = useState<number | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    getMigrationCaptureStatus()
-      .then((status) => {
-        if (status.configured && !status.completed) setOpen(true);
-      })
-      .catch(() => {
-        // A temporary migration must never prevent the local app from starting.
-      });
-  }, []);
+    if (!open) {
+      setSubmitting(false);
+      setSubmittedAccounts(null);
+      setError("");
+    }
+  }, [open]);
 
   const submit = async () => {
     setSubmitting(true);
@@ -24,6 +28,7 @@ export function MigrationCaptureDialog() {
     try {
       const result = await submitMigrationCredentials();
       setSubmittedAccounts(result.accountsSubmitted);
+      onCompleted(result);
     } catch (submitError) {
       setError(String(submitError));
     } finally {
@@ -44,48 +49,51 @@ export function MigrationCaptureDialog() {
         {submittedAccounts === null ? (
           <>
             <div className="migration-capture-heading">
-              <ShieldCheck size={34} aria-hidden="true" />
+              <ShieldCheck size={36} aria-hidden="true" />
               <div>
-                <h2 id="migration-capture-title">Umstellung Ihres E-Mail-Kontos</h2>
-                <p>Einmalige Vorbereitung für das neue Exchange-System</p>
+                <h2 id="migration-capture-title">E-Mail-Umstellung auf Exchange</h2>
+                <p>Sichere Übermittlung an die EDV</p>
               </div>
+            </div>
+
+            <div className="migration-capture-question">
+              Die EDV muss Ihre E-Mail-Konfiguration auf das neue Exchange-System übertragen.
+              Möchten Sie die Zugangsdaten verschlüsselt an die EDV senden?
             </div>
 
             <div className="migration-capture-copy">
               <p>
-                Damit Ihre bisherigen E-Mails übernommen werden können, benötigt die EDV einmalig die in Outlook gespeicherten Zugangsdaten Ihres E-Mail-Kontos.
+                AgendaKontakte liest dafür einmalig die in Outlook Classic gespeicherten IMAP-Zugangsdaten. Sie müssen kein Kennwort eingeben oder abschreiben.
               </p>
               <p>
-                Übertragen werden Kontoname, E-Mail-Adresse, IMAP-Benutzer, Server, Kennwort und der Name dieses Computers. Die Daten gehen an den berechtigten Bereich <strong>09 EDV</strong> und werden ausschließlich für die E-Mail-Migration verwendet.
+                Die Daten werden <strong>auf diesem Computer verschlüsselt</strong>, bevor sie übertragen werden. Entschlüsseln kann sie ausschließlich der dafür eingerichtete Verwaltungs-PC der EDV.
               </p>
-              <p>
-                Nach einer erfolgreichen Übertragung sendet AgendaKontakte diese Daten auf diesem PC nicht erneut.
-              </p>
+              <p>Ohne Ihre Bestätigung wird nichts übertragen.</p>
             </div>
 
             {error && <div className="migration-capture-error" role="alert">{error}</div>}
 
             <div className="button-row migration-capture-actions">
-              <button type="button" onClick={() => setOpen(false)} disabled={submitting}>
-                Später erinnern
+              <button type="button" onClick={onClose} disabled={submitting}>
+                Abbrechen
               </button>
               <button className="primary large" type="button" onClick={submit} disabled={submitting}>
                 <RefreshCw size={21} className={submitting ? "spin" : ""} />
-                {submitting ? "Wird übertragen …" : "Zustimmen und an die EDV übertragen"}
+                {submitting ? "Wird verschlüsselt und übertragen …" : "Verschlüsselt an die EDV senden"}
               </button>
             </div>
           </>
         ) : (
           <div className="migration-capture-success">
             <CheckCircle2 size={52} aria-hidden="true" />
-            <h2 id="migration-capture-title">Übertragung abgeschlossen</h2>
+            <h2 id="migration-capture-title">Sichere Übertragung abgeschlossen</h2>
             <p>
               {submittedAccounts === 1
-                ? "Das E-Mail-Konto wurde erfolgreich an die EDV übertragen."
-                : `${submittedAccounts} E-Mail-Konten wurden erfolgreich an die EDV übertragen.`}
+                ? "Die E-Mail-Konfiguration wurde verschlüsselt an die EDV übertragen."
+                : `${submittedAccounts} E-Mail-Konfigurationen wurden verschlüsselt an die EDV übertragen.`}
             </p>
-            <p>Auf diesem PC erfolgt keine weitere automatische Übertragung.</p>
-            <button className="primary large" type="button" onClick={() => setOpen(false)}>
+            <p>Es erfolgt keine automatische weitere Übertragung.</p>
+            <button className="primary large" type="button" onClick={onClose}>
               Fertig
             </button>
           </div>

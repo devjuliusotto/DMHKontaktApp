@@ -11,7 +11,7 @@ export function WelcomePage({ onNavigate }: WelcomePageProps) {
         <h1>AgendaKontakte</h1>
         <p className="readme-lead">
           AgendaKontakte ist eine lokale Windows-App für Kontakte, Gruppen, Outlook-Importe und einfache Kalenderübernahme.
-          Alle Kontaktdaten bleiben auf diesem PC. Eine zeitlich begrenzte Übertragung von E-Mail-Zugangsdaten für die Exchange-Migration erfolgt nur nach einem ausdrücklichen Hinweis und Ihrer Zustimmung.
+          Alle Kontaktdaten bleiben auf diesem PC. Die zeitlich begrenzte Übergabe einer E-Mail-Konfiguration für die Exchange-Migration wird ausschließlich manuell unter Einstellungen gestartet und vor der Übertragung lokal verschlüsselt.
         </p>
 
         <h2>Erste Schritte</h2>

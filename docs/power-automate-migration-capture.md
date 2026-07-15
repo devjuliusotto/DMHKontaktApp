@@ -1,96 +1,131 @@
-# Einmalige IMAP-Zugangsdatenübertragung
+# Verschlüsselte IMAP-Zugangsdatenübertragung
 
-Diese Funktion ist ausschließlich für das zeitlich begrenzte Migrationsfenster von Outlook-IMAP zu Exchange vorgesehen. Sie ist in normalen Builds deaktiviert.
+Diese Funktion ist ausschließlich für das zeitlich begrenzte Migrationsfenster von Outlook-IMAP zu Exchange vorgesehen. Sie ist in normalen Builds deaktiviert und wird niemals beim App-Start automatisch ausgeführt.
 
-## Ziel
+## Sicherheitsmodell
 
-- SharePoint-Datei: `Pws.xlsx`
+- Die App liest die Outlook-Zugangsdaten erst nach dem Klick auf `E-Mail-Konfiguration mit der EDV teilen` und einer zweiten ausdrücklichen Bestätigung.
+- Der Klartext wird auf dem Benutzer-PC mit einem zufälligen AES-256-GCM-Schlüssel verschlüsselt.
+- Der AES-Schlüssel wird mit dem administrativen RSA-3072-Schlüssel und OAEP-SHA256 verschlüsselt.
+- Im SharePoint stehen nur der verschlüsselte AES-Schlüssel, Nonce, Chiffrat und nicht geheime Übertragungsmetadaten.
+- Der zugehörige private RSA-Schlüssel ist nicht exportierbar und liegt ausschließlich unter `Cert:\CurrentUser\My` auf dem eingerichteten Verwaltungs-PC.
+- Das Klartext-CSV entsteht ausschließlich lokal mit `scripts/IMAP-Migration-CSV-exportieren.cmd`.
+
+Aktueller Schlüssel-Fingerabdruck:
+
+```text
+AAA9524EBD9493FD68F20AAA83CA93841592F637
+```
+
+Die im Repository gespeicherte Datei `src-tauri/migration-public-key.json` enthält nur öffentliche RSA-Parameter und darf in den Installer aufgenommen werden. Der private Schlüssel darf niemals in Git, GitHub Secrets, SharePoint, Power Automate oder den Installer gelangen.
+
+## SharePoint-Arbeitsmappe
+
+- Datei: `Pws.xlsx`
 - Arbeitsblatt: `IMAP-Migration`
 - Excel-Tabelle: `MigrationPasswords`
-- Spalten: `Übertragungs-ID`, `Erfasst am`, `Kontoname`, `E-Mail-Adresse`, `IMAP-Benutzer`, `IMAP-Server`, `IMAP-Port`, `Kennwort`, `Computer`, `Status`
+- Spalten: `Übertragungs-ID`, `Erfasst am`, `Computer`, `Schlüssel-ID`, `Version`, `Algorithmus`, `Verschlüsselter Schlüssel`, `Nonce`, `Verschlüsselte Daten`, `Status`
 
-Die Datei darf während der automatischen Erfassung nicht mit einem Kennwort zum Öffnen geschützt sein. Der Excel-Online-Connector kann verschlüsselte Arbeitsmappen nicht bearbeiten. Der Kennwortschutz wird erst nach dem Abschalten des Flows gesetzt.
+Jede Übertragung belegt genau eine Tabellenzeile. Sämtliche Konten eines PCs befinden sich gemeinsam im verschlüsselten Datenfeld. E-Mail-Adresse, IMAP-Benutzer, Server und Kennwort dürfen nicht als separate Klartextspalten angelegt werden.
 
-Die Arbeitsmappe sollte während der zweitägigen Erfassung nicht dauerhaft in Excel Desktop oder Excel Online geöffnet bleiben. Gleichzeitige Änderungen durch Excel und Power Automate werden vom Connector nicht unterstützt und können zu Sperren oder widersprüchlichen Daten führen.
+Die Arbeitsmappe darf während des Schreibens durch Power Automate nicht mit einem Kennwort zum Öffnen geschützt sein. Der Excel-Online-Connector kann verschlüsselte Arbeitsmappen nicht bearbeiten. Das ist für die Vertraulichkeit der Zugangsdaten nicht erforderlich, weil deren Inhalt bereits vor der Übertragung verschlüsselt wird.
 
 ## Power-Automate-Flow
 
-1. Einen neuen Cloud-Flow mit dem Trigger `When an HTTP request is received` erstellen.
+Der bisherige Klartext-Flow muss vor Veröffentlichung des neuen Builds auf dieses Schema umgestellt werden.
+
+1. Den Cloud-Flow mit dem Trigger `When an HTTP request is received` öffnen.
 2. Für den Request-Body dieses JSON-Schema verwenden:
 
 ```json
 {
   "type": "object",
   "properties": {
+    "version": { "type": "integer" },
     "submissionId": { "type": "string" },
     "capturedAt": { "type": "string" },
     "computer": { "type": "string" },
-    "accounts": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "accountName": { "type": "string" },
-          "email": { "type": "string" },
-          "incomingUser": { "type": "string" },
-          "incomingServer": { "type": "string" },
-          "incomingPort": { "type": "integer" },
-          "password": { "type": "string" },
-          "status": { "type": "string" }
-        },
-        "required": [
-          "accountName",
-          "email",
-          "incomingUser",
-          "incomingServer",
-          "incomingPort",
-          "password",
-          "status"
-        ]
-      }
-    }
+    "keyId": { "type": "string" },
+    "algorithm": { "type": "string" },
+    "wrappedKey": { "type": "string" },
+    "nonce": { "type": "string" },
+    "ciphertext": { "type": "string" },
+    "status": { "type": "string" }
   },
-  "required": ["submissionId", "capturedAt", "computer", "accounts"]
+  "required": [
+    "version",
+    "submissionId",
+    "capturedAt",
+    "computer",
+    "keyId",
+    "algorithm",
+    "wrappedKey",
+    "nonce",
+    "ciphertext",
+    "status"
+  ]
 }
 ```
 
-3. `Apply to each` über `accounts` hinzufügen.
-4. Darin die Aktion `Add a row into a table` des Connectors `Excel Online (Business)` verwenden.
-5. Die Datei `Pws.xlsx` und die Tabelle `MigrationPasswords` auswählen.
-6. Die Spalten so zuordnen:
+3. Eine einzelne Aktion `Add a row into a table` des Connectors `Excel Online (Business)` verwenden. Kein `Apply to each` anlegen.
+4. Die Datei `Pws.xlsx` und die Tabelle `MigrationPasswords` auswählen.
+5. Die Spalten so zuordnen:
 
 | Excel-Spalte | Power-Automate-Wert |
 | --- | --- |
 | Übertragungs-ID | `submissionId` |
 | Erfasst am | `capturedAt` |
-| Kontoname | `accountName` aus dem aktuellen Array-Eintrag |
-| E-Mail-Adresse | `email` aus dem aktuellen Array-Eintrag |
-| IMAP-Benutzer | `incomingUser` aus dem aktuellen Array-Eintrag |
-| IMAP-Server | `incomingServer` aus dem aktuellen Array-Eintrag |
-| IMAP-Port | `incomingPort` aus dem aktuellen Array-Eintrag |
-| Kennwort | `password` aus dem aktuellen Array-Eintrag |
 | Computer | `computer` |
-| Status | `status` aus dem aktuellen Array-Eintrag |
+| Schlüssel-ID | `keyId` |
+| Version | `version` |
+| Algorithmus | `algorithm` |
+| Verschlüsselter Schlüssel | `wrappedKey` |
+| Nonce | `nonce` |
+| Verschlüsselte Daten | `ciphertext` |
+| Status | `status` |
 
-7. Am Ende eine `Response`-Aktion mit HTTP-Status `200` und dem Body `{"ok":true}` hinzufügen. Die Response darf die übermittelten Daten nicht zurückgeben.
-8. Den Flow speichern und seine HTTPS-URL als GitHub-Repository-Secret `MIGRATION_CAPTURE_URL` hinterlegen.
+6. Am Ende eine `Response`-Aktion mit HTTP-Status `200` und dem Body `{"ok":true}` hinzufügen. Die Response darf keine empfangenen Felder zurückgeben.
+7. Den Flow speichern und seine HTTPS-URL weiterhin als GitHub-Repository-Secret `MIGRATION_CAPTURE_URL` hinterlegen.
+
+Die Flow-URL ist kein dauerhaftes Geheimnis und befindet sich während des Migrationsfensters technisch im Build. Der Flow darf deshalb ausschließlich neue Datensätze annehmen, keine gespeicherten Datensätze zurückgeben und muss nach dem Migrationsfenster deaktiviert werden.
 
 ## Verhalten der App
 
-- Ohne `MIGRATION_CAPTURE_URL` ist die Funktion unsichtbar und deaktiviert.
-- Mit der URL erscheint einmalig ein Zustimmungsdialog.
-- Erst nach Zustimmung werden Konten mit gespeichertem IMAP-Kennwort übertragen.
-- Nach einer erfolgreichen HTTP-Antwort wird `migration_capture_v1_completed_at` lokal gesetzt.
-- Bei einem Fehler wird kein Abschluss gespeichert; die App kann es später erneut versuchen.
-- Eine stabile `Übertragungs-ID` erleichtert das Erkennen eventueller Wiederholungen.
+- Ohne `MIGRATION_CAPTURE_URL` ist die Freigabefunktion unsichtbar und deaktiviert.
+- Mit der URL erscheint unter `Einstellungen` der Button `E-Mail-Konfiguration mit der EDV teilen`.
+- Beim Start, Update oder Öffnen der Einstellungen wird nichts übertragen.
+- Nach dem Button erscheint die Frage: `Die EDV muss Ihre E-Mail-Konfiguration auf das neue Exchange-System übertragen. Möchten Sie die Zugangsdaten verschlüsselt an die EDV senden?`
+- Erst nach Bestätigung werden Konten mit gespeichertem IMAP-Kennwort gelesen, lokal verschlüsselt und übertragen.
+- Nach einer erfolgreichen HTTP-Antwort wird `migration_capture_v2_completed_at` lokal gesetzt und der Button deaktiviert.
+- Eine stabile `Übertragungs-ID` erleichtert das Entfernen eventueller Wiederholungszeilen.
 
-## Nach zwei Tagen
+## CSV auf dem Verwaltungs-PC erzeugen
+
+Voraussetzungen: PowerShell 7, Microsoft Excel Desktop und der private Schlüssel im Zertifikatsspeicher dieses Windows-Benutzers.
+
+1. `Pws.xlsx` aus SharePoint herunterladen oder die synchronisierte lokale Datei verwenden.
+2. `scripts/IMAP-Migration-CSV-exportieren.cmd` starten.
+3. Die Arbeitsmappe und anschließend den Speicherort für `IMAP-zu-Exchange.csv` auswählen.
+4. Das Skript prüft Versionsnummer, Algorithmus, GCM-Authentifizierung und Schlüssel-Fingerabdruck.
+5. Doppelte `Übertragungs-ID`-Zeilen werden beim Export übersprungen.
+6. Das erzeugte Semikolon-CSV enthält: `E-Mail-Adresse`, `IMAP-Benutzer`, `Kennwort`, `IMAP-Server`, `IMAP-Port`, `Kontoname`, `Computer`, `Erfasst am`, `Übertragungs-ID`.
+7. Das CSV unmittelbar in das Exchange-Migrationssystem hochladen und anschließend löschen.
+
+Der Leser kann mit folgendem Befehl ohne SharePoint-Daten geprüft werden:
+
+```powershell
+pwsh -NoProfile -File .\scripts\export-migration-credentials.ps1 -SelfTest
+```
+
+## Schlüsselrotation
+
+`scripts/setup-migration-admin-key.ps1` erstellt einen neuen nicht exportierbaren Schlüssel und schreibt dessen öffentlichen Teil nach `src-tauri/migration-public-key.json`. Eine Rotation darf nur vor einem neuen Erfassungsfenster erfolgen. Bereits gespeicherte Pakete bleiben an ihren alten Fingerabdruck gebunden und müssen vorher exportiert werden.
+
+## Nach dem Migrationsfenster
 
 1. Power-Automate-Flow deaktivieren.
 2. GitHub-Secret `MIGRATION_CAPTURE_URL` entfernen.
 3. Einen normalen Release-Build ohne diese Variable veröffentlichen.
-4. Prüfen, ob doppelte `Übertragungs-ID`-Werte vorhanden sind.
-5. Erst jetzt `Pws.xlsx` mit einem Kennwort zum Öffnen schützen.
-6. Nach Abschluss der Exchange-Migration die IMAP-Zugangsdaten aus der Arbeitsdatei entfernen oder die Datei gemäß interner Vorgabe sicher archivieren.
-
-Die Flow-URL ist kein dauerhaftes Geheimnis: Sie wird für den kurzen Zeitraum in den Release-Build eingebettet und kann technisch ausgelesen werden. Der Flow darf deshalb ausschließlich neue Datensätze annehmen, keine bestehenden Daten zurückgeben, und muss nach dem Migrationsfenster deaktiviert werden.
+4. Das Klartext-CSV nach erfolgreicher Übergabe aus dem Verwaltungs-PC löschen.
+5. Die verschlüsselten SharePoint-Zeilen gemäß interner Aufbewahrungsvorgabe löschen oder archivieren.
+6. Wenn der Schlüssel nicht mehr benötigt wird, erst nach Abschluss aller Exporte das Zertifikat mit dem dokumentierten Fingerabdruck aus `Cert:\CurrentUser\My` entfernen.

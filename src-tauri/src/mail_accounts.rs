@@ -1,6 +1,14 @@
 use crate::{hidden_command, open_db};
+use aes_gcm::{
+    aead::{Aead, KeyInit, Payload},
+    Aes256Gcm, Nonce,
+};
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use rand::{rngs::OsRng, RngCore};
+use rsa::{BigUint, Oaep, RsaPublicKey};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use sha2::Sha256;
 use std::{env, fs, path::PathBuf, time::Duration};
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
@@ -10,8 +18,10 @@ const HELPER_NAMES: [&str; 2] = [
     "outlook-profile-reader-x64.exe",
     "outlook-profile-reader-x86.exe",
 ];
-const MIGRATION_CAPTURE_COMPLETED_KEY: &str = "migration_capture_v1_completed_at";
-const MIGRATION_CAPTURE_SUBMISSION_KEY: &str = "migration_capture_v1_submission_id";
+const MIGRATION_CAPTURE_COMPLETED_KEY: &str = "migration_capture_v2_completed_at";
+const MIGRATION_CAPTURE_SUBMISSION_KEY: &str = "migration_capture_v2_submission_id";
+const MIGRATION_ENVELOPE_VERSION: u8 = 1;
+const MIGRATION_ENVELOPE_ALGORITHM: &str = "RSA-OAEP-256+A256GCM";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -75,7 +85,7 @@ pub struct MigrationCaptureResult {
     pub completed_at: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MigrationAccountSubmission {
     account_name: String,
@@ -84,7 +94,6 @@ struct MigrationAccountSubmission {
     incoming_server: String,
     incoming_port: u16,
     password: String,
-    status: &'static str,
 }
 
 impl Drop for MigrationAccountSubmission {
@@ -93,13 +102,33 @@ impl Drop for MigrationAccountSubmission {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct MigrationCaptureSubmission {
+struct MigrationEncryptedContent {
+    accounts: Vec<MigrationAccountSubmission>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MigrationEncryptedEnvelope {
+    version: u8,
     submission_id: String,
     captured_at: String,
     computer: String,
-    accounts: Vec<MigrationAccountSubmission>,
+    key_id: String,
+    algorithm: &'static str,
+    wrapped_key: String,
+    nonce: String,
+    ciphertext: String,
+    status: &'static str,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MigrationPublicKeyConfig {
+    key_id: String,
+    modulus: String,
+    exponent: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -283,6 +312,108 @@ fn migration_capture_endpoint() -> Option<&'static str> {
     option_env!("MIGRATION_CAPTURE_URL")
         .map(str::trim)
         .filter(|value| value.starts_with("https://") && value.len() > "https://".len())
+}
+
+fn migration_public_key() -> Result<(String, RsaPublicKey), String> {
+    let config: MigrationPublicKeyConfig =
+        serde_json::from_str(include_str!("../migration-public-key.json")).map_err(|_| {
+            "Der öffentliche EDV-Schlüssel ist in diesem Build ungültig.".to_string()
+        })?;
+    let modulus = BASE64_STANDARD
+        .decode(config.modulus)
+        .map_err(|_| "Der öffentliche EDV-Schlüssel ist in diesem Build ungültig.".to_string())?;
+    let exponent = BASE64_STANDARD
+        .decode(config.exponent)
+        .map_err(|_| "Der öffentliche EDV-Schlüssel ist in diesem Build ungültig.".to_string())?;
+    let public_key = RsaPublicKey::new(
+        BigUint::from_bytes_be(&modulus),
+        BigUint::from_bytes_be(&exponent),
+    )
+    .map_err(|_| "Der öffentliche EDV-Schlüssel konnte nicht geladen werden.".to_string())?;
+    Ok((config.key_id, public_key))
+}
+
+fn migration_aad(
+    version: u8,
+    submission_id: &str,
+    captured_at: &str,
+    computer: &str,
+    key_id: &str,
+) -> Vec<u8> {
+    format!("AKM{version}\n{submission_id}\n{captured_at}\n{computer}\n{key_id}").into_bytes()
+}
+
+fn encrypt_migration_accounts_with_key(
+    submission_id: String,
+    captured_at: String,
+    computer: String,
+    accounts: Vec<MigrationAccountSubmission>,
+    key_id: String,
+    public_key: &RsaPublicKey,
+) -> Result<MigrationEncryptedEnvelope, String> {
+    let plaintext = Zeroizing::new(
+        serde_json::to_vec(&MigrationEncryptedContent { accounts }).map_err(|_| {
+            "Die Migrationsdaten konnten intern nicht vorbereitet werden.".to_string()
+        })?,
+    );
+    let aad = migration_aad(
+        MIGRATION_ENVELOPE_VERSION,
+        &submission_id,
+        &captured_at,
+        &computer,
+        &key_id,
+    );
+
+    let mut data_key = Zeroizing::new([0u8; 32]);
+    let mut nonce_bytes = [0u8; 12];
+    OsRng.fill_bytes(&mut data_key[..]);
+    OsRng.fill_bytes(&mut nonce_bytes);
+
+    let cipher = Aes256Gcm::new_from_slice(&data_key[..])
+        .map_err(|_| "Die lokale Verschlüsselung konnte nicht vorbereitet werden.".to_string())?;
+    let ciphertext = cipher
+        .encrypt(
+            Nonce::from_slice(&nonce_bytes),
+            Payload {
+                msg: plaintext.as_slice(),
+                aad: &aad,
+            },
+        )
+        .map_err(|_| "Die E-Mail-Zugangsdaten konnten nicht verschlüsselt werden.".to_string())?;
+
+    let wrapped_key = public_key
+        .encrypt(&mut OsRng, Oaep::new::<Sha256>(), &data_key[..])
+        .map_err(|_| "Der EDV-Schlüssel konnte nicht angewendet werden.".to_string())?;
+
+    Ok(MigrationEncryptedEnvelope {
+        version: MIGRATION_ENVELOPE_VERSION,
+        submission_id,
+        captured_at,
+        computer,
+        key_id,
+        algorithm: MIGRATION_ENVELOPE_ALGORITHM,
+        wrapped_key: BASE64_STANDARD.encode(wrapped_key),
+        nonce: BASE64_STANDARD.encode(nonce_bytes),
+        ciphertext: BASE64_STANDARD.encode(ciphertext),
+        status: "Verschlüsselt",
+    })
+}
+
+fn encrypt_migration_accounts(
+    submission_id: String,
+    captured_at: String,
+    computer: String,
+    accounts: Vec<MigrationAccountSubmission>,
+) -> Result<MigrationEncryptedEnvelope, String> {
+    let (key_id, public_key) = migration_public_key()?;
+    encrypt_migration_accounts_with_key(
+        submission_id,
+        captured_at,
+        computer,
+        accounts,
+        key_id,
+        &public_key,
+    )
 }
 
 fn get_migration_setting(conn: &Connection, key: &str) -> Result<Option<String>, String> {
@@ -595,21 +726,15 @@ pub async fn submit_migration_credentials(
             incoming_server: account.incoming_server,
             incoming_port: account.incoming_port,
             password: std::mem::take(&mut revealed.password),
-            status: "Erfasst",
         });
     }
 
     let accounts_submitted = accounts.len();
-    let payload = MigrationCaptureSubmission {
-        submission_id,
-        captured_at: captured_at.clone(),
-        computer,
-        accounts,
-    };
-    let payload_json =
-        Zeroizing::new(serde_json::to_vec(&payload).map_err(|_| {
-            "Die Migrationsdaten konnten intern nicht vorbereitet werden.".to_string()
-        })?);
+    let payload =
+        encrypt_migration_accounts(submission_id, captured_at.clone(), computer, accounts)?;
+    let payload_json = serde_json::to_vec(&payload).map_err(|_| {
+        "Das verschlüsselte Datenpaket konnte nicht vorbereitet werden.".to_string()
+    })?;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(45))
         .build()
@@ -617,7 +742,7 @@ pub async fn submit_migration_credentials(
     let response = client
         .post(endpoint)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .body(payload_json.as_slice().to_vec())
+        .body(payload_json)
         .send()
         .await
         .map_err(|_| {
@@ -655,4 +780,75 @@ pub fn remove_mail_account(app: AppHandle, account_id: i64) -> Result<(), String
     conn.execute("DELETE FROM mail_accounts WHERE id = ?1", [account_id])
         .map_err(|error| error.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rsa::RsaPrivateKey;
+
+    #[test]
+    fn migration_envelope_round_trips_without_plaintext_fields() {
+        let private_key = RsaPrivateKey::new(&mut OsRng, 2048).expect("private key");
+        let public_key = private_key.to_public_key();
+        let submission_id = "11111111-2222-3333-4444-555555555555".to_string();
+        let captured_at = "2026-07-15T12:00:00Z".to_string();
+        let computer = "TEST-PC".to_string();
+        let key_id = "TEST-KEY".to_string();
+        let envelope = encrypt_migration_accounts_with_key(
+            submission_id.clone(),
+            captured_at.clone(),
+            computer.clone(),
+            vec![MigrationAccountSubmission {
+                account_name: "Testkonto".to_string(),
+                email: "test@example.invalid".to_string(),
+                incoming_user: "test-user".to_string(),
+                incoming_server: "imap.example.invalid".to_string(),
+                incoming_port: 993,
+                password: "dummy-secret".to_string(),
+            }],
+            key_id.clone(),
+            &public_key,
+        )
+        .expect("encrypt envelope");
+
+        let serialized = serde_json::to_string(&envelope).expect("serialize envelope");
+        assert!(!serialized.contains("dummy-secret"));
+        assert!(!serialized.contains("test@example.invalid"));
+
+        let wrapped_key = BASE64_STANDARD
+            .decode(&envelope.wrapped_key)
+            .expect("wrapped key");
+        let data_key = private_key
+            .decrypt(Oaep::new::<Sha256>(), &wrapped_key)
+            .expect("unwrap key");
+        let nonce = BASE64_STANDARD.decode(&envelope.nonce).expect("nonce");
+        let ciphertext = BASE64_STANDARD
+            .decode(&envelope.ciphertext)
+            .expect("ciphertext");
+        let aad = migration_aad(
+            envelope.version,
+            &submission_id,
+            &captured_at,
+            &computer,
+            &key_id,
+        );
+        let cipher = Aes256Gcm::new_from_slice(&data_key).expect("AES key");
+        let plaintext = cipher
+            .decrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: &ciphertext,
+                    aad: &aad,
+                },
+            )
+            .expect("decrypt payload");
+        let content: MigrationEncryptedContent =
+            serde_json::from_slice(&plaintext).expect("payload JSON");
+
+        assert_eq!(content.accounts.len(), 1);
+        assert_eq!(content.accounts[0].email, "test@example.invalid");
+        assert_eq!(content.accounts[0].password, "dummy-secret");
+        assert_eq!(envelope.algorithm, MIGRATION_ENVELOPE_ALGORITHM);
+    }
 }
