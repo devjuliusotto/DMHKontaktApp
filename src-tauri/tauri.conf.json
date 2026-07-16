@@ -9,7 +9,7 @@
         "height": 780,
         "minHeight": 600,
         "minWidth": 760,
-        "title": "AgendaKontakte",
+        "title": "DMH Kontakte und Kalender",
         "width": 1180
       }
     ]
@@ -27,12 +27,12 @@
     "icon": [
       "icons/icon.ico"
     ],
-    "longDescription": "AgendaKontakte verwaltet Kontakte und Gruppen lokal auf dem Windows-PC.",
+    "longDescription": "DMH Kontakte und Kalender verwaltet Kontakte, Gruppen und Termine lokal auf dem Windows-PC.",
     "publisher": "Diakonissenmutterhaus Aidlingen e.V.",
     "resources": [
       "resources/*"
     ],
-    "shortDescription": "Lokale Kontaktverwaltung",
+    "shortDescription": "Lokale Kontakt- und Kalenderverwaltung",
     "targets": [
       "msi",
       "nsis"
@@ -50,6 +50,6 @@
       }
     }
   },
-  "productName": "AgendaKontakte",
-  "version": "0.0.14"
+  "productName": "DMH Kontakte und Kalender",
+  "version": "0.0.15"
 }

@@ -63,7 +63,7 @@ export function MigrationCaptureDialog({ open, onClose, onCompleted }: Migration
 
             <div className="migration-capture-copy">
               <p>
-                AgendaKontakte liest dafür einmalig die in Outlook Classic gespeicherten IMAP-Zugangsdaten. Sie müssen kein Kennwort eingeben oder abschreiben.
+                DMH Kontakte und Kalender liest dafür einmalig die in Outlook Classic gespeicherten IMAP-Zugangsdaten. Sie müssen kein Kennwort eingeben oder abschreiben.
               </p>
               <p>
                 Die Daten werden <strong>auf diesem Computer verschlüsselt</strong>, bevor sie übertragen werden. Entschlüsseln kann sie ausschließlich der dafür eingerichtete Verwaltungs-PC der EDV.

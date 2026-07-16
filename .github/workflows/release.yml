@@ -62,8 +62,8 @@ jobs:
           MIGRATION_CAPTURE_URL: ${{ secrets.MIGRATION_CAPTURE_URL }}
         with:
           tagName: ${{ github.event_name == 'workflow_dispatch' && format('app-v{0}', inputs.version) || github.ref_name }}
-          releaseName: ${{ github.event_name == 'workflow_dispatch' && format('AgendaKontakte v{0}', inputs.version) || format('AgendaKontakte {0}', github.ref_name) }}
-          releaseBody: "Windows installer for AgendaKontakte."
+          releaseName: ${{ github.event_name == 'workflow_dispatch' && format('DMH Kontakte und Kalender v{0}', inputs.version) || format('DMH Kontakte und Kalender {0}', github.ref_name) }}
+          releaseBody: "Windows-Installer für DMH Kontakte und Kalender."
           releaseDraft: false
           prerelease: false
           updaterJsonPreferNsis: true

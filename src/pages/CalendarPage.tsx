@@ -9,26 +9,11 @@ const storageKey = "agendakontakte.calendarEvents";
 const categoriesStorageKey = "agendakontakte.calendarCategories";
 const weekdays = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
 type CalendarView = "month" | "week" | "list";
-type CalendarDateFilter = "all" | "year" | "month" | "day";
 type CalendarCategory = {
   name: string;
   color: string;
 };
 const allCategoriesValue = "__all__";
-const calendarMonths = [
-  "Januar",
-  "Februar",
-  "März",
-  "April",
-  "Mai",
-  "Juni",
-  "Juli",
-  "August",
-  "September",
-  "Oktober",
-  "November",
-  "Dezember"
-];
 
 function startOfDay(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate());
@@ -49,27 +34,8 @@ function sameDay(left: Date, right: Date): boolean {
   return left.getFullYear() === right.getFullYear() && left.getMonth() === right.getMonth() && left.getDate() === right.getDate();
 }
 
-function daysInMonth(year: number, month: number): number {
-  return new Date(year, month + 1, 0).getDate();
-}
-
-function clampDay(year: number, month: number, day: number): number {
-  return Math.min(Math.max(day, 1), daysInMonth(year, month));
-}
-
 function eventDate(event: CalendarEvent): Date | null {
   return parseCalendarDate(event.startsAt);
-}
-
-function eventMatchesDateFilter(event: CalendarEvent, cursor: Date, filter: CalendarDateFilter): boolean {
-  if (filter === "all") return true;
-  const date = eventDate(event);
-  if (!date) return false;
-  if (date.getFullYear() !== cursor.getFullYear()) return false;
-  if (filter === "year") return true;
-  if (date.getMonth() !== cursor.getMonth()) return false;
-  if (filter === "month") return true;
-  return sameDay(date, cursor);
 }
 
 function eventTime(event: CalendarEvent): string {
@@ -97,7 +63,7 @@ function blankEvent(date = new Date()): CalendarEvent {
     description: "",
     color: defaultCalendarColor,
     category: "",
-    source: "AgendaKontakte"
+    source: "DMH Kontakte und Kalender"
   };
 }
 
@@ -125,7 +91,6 @@ export function CalendarPage() {
   const [editingEvent, setEditingEvent] = useState<CalendarEvent | null>(null);
   const [editingIsNew, setEditingIsNew] = useState(false);
   const [categoryFilter, setCategoryFilter] = useState(allCategoriesValue);
-  const [dateFilter, setDateFilter] = useState<CalendarDateFilter>("all");
   const [showCategoryDialog, setShowCategoryDialog] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
   const [newCategoryColor, setNewCategoryColor] = useState(defaultCalendarColor);
@@ -158,13 +123,10 @@ export function CalendarPage() {
     [categories, events]
   );
   const sortedEvents = useMemo(
-    () => {
-      const byCategory = categoryFilter === allCategoriesValue
-        ? allSortedEvents
-        : allSortedEvents.filter((event) => event.category.trim() === categoryFilter);
-      return byCategory.filter((event) => eventMatchesDateFilter(event, cursor, dateFilter));
-    },
-    [allSortedEvents, categoryFilter, cursor, dateFilter]
+    () => categoryFilter === allCategoriesValue
+      ? allSortedEvents
+      : allSortedEvents.filter((event) => event.category.trim() === categoryFilter),
+    [allSortedEvents, categoryFilter]
   );
 
   const monthDays = useMemo(() => {
@@ -188,24 +150,6 @@ export function CalendarPage() {
     : view === "week"
       ? `${new Intl.DateTimeFormat("de-DE", { day: "2-digit", month: "2-digit" }).format(weekDays[0])} - ${new Intl.DateTimeFormat("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" }).format(weekDays[6])}`
       : `${sortedEvents.length} Termine`;
-
-  const setCalendarYear = (year: number) => {
-    if (!Number.isFinite(year)) return;
-    setCursor((current) => new Date(year, current.getMonth(), clampDay(year, current.getMonth(), current.getDate())));
-    setDateFilter("year");
-  };
-
-  const setCalendarMonth = (month: number) => {
-    if (!Number.isFinite(month)) return;
-    setCursor((current) => new Date(current.getFullYear(), month, clampDay(current.getFullYear(), month, current.getDate())));
-    setDateFilter("month");
-  };
-
-  const setCalendarDay = (day: number) => {
-    if (!Number.isFinite(day)) return;
-    setCursor((current) => new Date(current.getFullYear(), current.getMonth(), clampDay(current.getFullYear(), current.getMonth(), day)));
-    setDateFilter("day");
-  };
 
   const persist = (nextEvents: CalendarEvent[]) => {
     const sorted = nextEvents.map(normalizeEvent).sort((a, b) => a.startsAt.localeCompare(b.startsAt));
@@ -261,7 +205,7 @@ export function CalendarPage() {
     if (!editingEvent) return;
     const next = events.filter((event) => event.id !== editingEvent.id);
     const matchingCategory = categories.find((category) => category.name === editingEvent.category.trim());
-    persist([...next, normalizeEvent({ ...editingEvent, color: matchingCategory?.color ?? editingEvent.color, source: editingEvent.source || "AgendaKontakte" })]);
+    persist([...next, normalizeEvent({ ...editingEvent, color: matchingCategory?.color ?? editingEvent.color, source: editingEvent.source || "DMH Kontakte und Kalender" })]);
     const date = eventDate(editingEvent);
     if (date) setCursor(startOfDay(date));
     setEditingEvent(null);
@@ -350,47 +294,6 @@ export function CalendarPage() {
             </>
           )}
           <h3>{title}</h3>
-        </div>
-        <div className="calendar-date-filter" aria-label="Kalenderzeitraum">
-          <label>
-            <span>Zeitraum</span>
-            <select value={dateFilter} onChange={(event) => setDateFilter(event.target.value as CalendarDateFilter)}>
-              <option value="all">Alle</option>
-              <option value="year">Jahr</option>
-              <option value="month">Monat</option>
-              <option value="day">Tag</option>
-            </select>
-          </label>
-          <label>
-            <span>Jahr</span>
-            <input
-              type="number"
-              min="1900"
-              max="2100"
-              value={cursor.getFullYear()}
-              onChange={(event) => {
-                if (event.target.value) setCalendarYear(Number(event.target.value));
-              }}
-            />
-          </label>
-          <label>
-            <span>Monat</span>
-            <select value={cursor.getMonth()} onChange={(event) => setCalendarMonth(Number(event.target.value))}>
-              {calendarMonths.map((month, index) => <option value={index} key={month}>{month}</option>)}
-            </select>
-          </label>
-          <label>
-            <span>Tag</span>
-            <input
-              type="number"
-              min="1"
-              max={daysInMonth(cursor.getFullYear(), cursor.getMonth())}
-              value={cursor.getDate()}
-              onChange={(event) => {
-                if (event.target.value) setCalendarDay(Number(event.target.value));
-              }}
-            />
-          </label>
         </div>
         <div className="calendar-view-switch" aria-label="Kalenderansicht">
           <button className={view === "month" ? "active" : ""} type="button" onClick={() => setView("month")}><CalendarDays size={18} /> Monat</button>

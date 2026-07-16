@@ -12,7 +12,7 @@ export function BackupPage() {
 
   const create = async () => {
     const path = await save({
-      defaultPath: "AgendaKontakte-Sicherung.json",
+      defaultPath: "DMH-Kontakte-Kalender-Sicherung.json",
       filters: [{ name: "JSON", extensions: ["json"] }]
     });
     if (!path) return;

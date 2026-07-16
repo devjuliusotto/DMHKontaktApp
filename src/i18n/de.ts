@@ -1,5 +1,5 @@
 export const de = {
-  appName: "AgendaKontakte",
+  appName: "DMH Kontakte und Kalender",
   contacts: "Kontakte",
   groups: "Gruppen",
   import: "Importieren",

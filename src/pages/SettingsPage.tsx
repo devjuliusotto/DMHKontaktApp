@@ -1,18 +1,32 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, Download, Eye, EyeOff, LoaderCircle, RefreshCw, Send, ShieldCheck, Trash2 } from "lucide-react";
+import { AlertTriangle, CalendarDays, CheckCircle2, ChevronDown, Download, Eye, EyeOff, LoaderCircle, Mail, RefreshCw, Send, ShieldCheck, Trash2, Undo2, UsersRound } from "lucide-react";
 import { MigrationCaptureDialog } from "../components/MigrationCaptureDialog";
+import { OutlookContactImportDialog } from "../components/OutlookContactImportDialog";
 import { StatusMessage } from "../components/StatusMessage";
-import { sqliteSchema } from "../db/schema";
 import {
   importOutlookAccount,
+  importOutlookClassicAppointmentsOnce,
   getMigrationCaptureStatus,
   listMailAccounts,
   revealMailPassword,
   removeMailAccount,
   scanOutlookAccounts,
-  testMailConnection
+  testMailConnection,
+  undoLastOutlookContactImport
 } from "../services/db";
+import type { CalendarEvent } from "../types/calendar";
+import type { OutlookContactImportResult } from "../types/contact";
 import type { MailAccount, MigrationCaptureResult, MigrationCaptureStatus, OutlookAccountCandidate } from "../types/mail";
+
+const calendarStorageKey = "agendakontakte.calendarEvents";
+
+function storedCalendarEvents(): CalendarEvent[] {
+  const raw = localStorage.getItem(calendarStorageKey);
+  if (!raw) return [];
+  const value: unknown = JSON.parse(raw);
+  if (!Array.isArray(value)) throw new Error("Die lokal gespeicherten Kalenderdaten sind beschädigt.");
+  return value as CalendarEvent[];
+}
 
 export function SettingsPage() {
   const [accounts, setAccounts] = useState<MailAccount[]>([]);
@@ -22,6 +36,7 @@ export function SettingsPage() {
   const [messageType, setMessageType] = useState<"success" | "error" | "info">("info");
   const [migrationStatus, setMigrationStatus] = useState<MigrationCaptureStatus | null>(null);
   const [migrationDialogOpen, setMigrationDialogOpen] = useState(false);
+  const [contactImportDialogOpen, setContactImportDialogOpen] = useState(false);
   const [revealedPassword, setRevealedPassword] = useState<{
     accountId: number;
     accountLabel: string;
@@ -54,6 +69,71 @@ export function SettingsPage() {
     setMigrationStatus({ configured: true, completed: true, completedAt: result.completedAt });
     setMessageType("success");
     setMessage("Die E-Mail-Konfiguration wurde verschlüsselt an die EDV übertragen.");
+  };
+
+  const contactsImported = (result: OutlookContactImportResult, source: "classic" | "csv") => {
+    setMessageType("success");
+    setMessage(
+      `${result.imported} Kontakte aus ${source === "classic" ? "Outlook Classic" : "dem neuen Outlook"} wurden einmalig übernommen. `
+      + `${result.skippedExactDuplicates} bereits vorhandene und ${result.skippedConflicts} nicht ausgewählte Konflikte wurden ausgelassen. Es besteht keine Synchronisierung.`
+    );
+  };
+
+  const undoOutlookContactImport = async () => {
+    const confirmed = window.confirm(
+      "Den letzten Outlook-Kontaktimport rückgängig machen? Nur Kontakte aus diesem Importvorgang werden entfernt."
+    );
+    if (!confirmed) return;
+    setBusyAction("undo-outlook-contact-import");
+    setMessageType("info");
+    setMessage("Letzter Outlook-Kontaktimport wird rückgängig gemacht …");
+    try {
+      const deleted = await undoLastOutlookContactImport();
+      setMessageType(deleted > 0 ? "success" : "info");
+      setMessage(deleted > 0
+        ? `${deleted} Kontakte aus dem letzten Outlook-Import wurden entfernt.`
+        : "Es wurde kein Outlook-Kontaktimport gefunden, der rückgängig gemacht werden kann.");
+    } catch (error) {
+      setMessageType("error");
+      setMessage(`Der letzte Outlook-Kontaktimport konnte nicht rückgängig gemacht werden: ${error}`);
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const importAppointmentsOnce = async () => {
+    const confirmed = window.confirm(
+      "Alle Termine aus allen erreichbaren Kalenderordnern des aktuellen Outlook-Classic-Profils einmalig in DMH Kontakte und Kalender kopieren?\n\nOutlook wird nicht verändert und es wird keine automatische Synchronisierung eingerichtet. Bereits importierte Termine werden ausgelassen."
+    );
+    if (!confirmed) return;
+
+    setBusyAction("import-outlook-appointments-once");
+    setMessageType("info");
+    setMessage("Alle erreichbaren Outlook-Kalender werden gelesen. Dies kann einige Minuten dauern …");
+    try {
+      const result = await importOutlookClassicAppointmentsOnce();
+      const existing = storedCalendarEvents();
+      const eventsById = new Map(existing.map((event) => [event.id, event]));
+      let imported = 0;
+      for (const event of result.events) {
+        if (eventsById.has(event.id)) continue;
+        eventsById.set(event.id, event);
+        imported += 1;
+      }
+      localStorage.setItem(calendarStorageKey, JSON.stringify(Array.from(eventsById.values())));
+      const duplicates = result.events.length - imported;
+      setMessageType("success");
+      setMessage(
+        result.found === 0
+          ? "In den erreichbaren Outlook-Kalendern wurden keine Termine gefunden."
+          : `${imported} von ${result.found} Outlook-Terminen wurden einmalig übernommen. ${duplicates} bereits vorhandene und ${result.skippedInvalid} nicht lesbare Einträge wurden ausgelassen. Es besteht keine Synchronisierung.`
+      );
+    } catch (error) {
+      setMessageType("error");
+      setMessage(`Outlook-Termine konnten nicht importiert werden: ${error}`);
+    } finally {
+      setBusyAction(null);
+    }
   };
 
   useEffect(() => {
@@ -188,156 +268,140 @@ export function SettingsPage() {
       <header className="page-header">
         <div>
           <h2>Einstellungen</h2>
-          <p>AgendaKontakte speichert alle Daten lokal auf diesem PC.</p>
+          <p>Outlook-Daten übernehmen und E-Mail-Zugänge verwalten.</p>
         </div>
       </header>
 
       <StatusMessage message={message} type={messageType} />
 
-      <section className="form-panel migration-share-panel">
-        <div className="migration-share-copy">
-          <div className="migration-share-icon" aria-hidden="true">
-            <ShieldCheck size={30} />
-          </div>
+      <section className="form-panel settings-task-panel">
+        <div className="settings-task-heading">
+          <Download size={25} aria-hidden="true" />
           <div>
-            <h3>E-Mail-Umstellung auf Exchange</h3>
-            <p>
-              Übermitteln Sie die in Outlook Classic gespeicherte IMAP-Konfiguration verschlüsselt an die EDV. Es wird nichts automatisch gesendet.
-            </p>
-            {migrationStatus === null && (
-              <p className="migration-share-state migration-share-checking">
-                <LoaderCircle className="spin" size={18} aria-hidden="true" /> Verfügbarkeit wird geprüft …
-              </p>
-            )}
+            <h3>Aus Outlook übernehmen</h3>
+            <p>Einmalig kopieren. Outlook bleibt unverändert.</p>
+          </div>
+        </div>
+        <div className="settings-action-grid">
+          <button className="settings-action-button" type="button" onClick={() => setContactImportDialogOpen(true)} disabled={busyAction !== null}>
+            <UsersRound size={25} />
+            <span>
+              <strong>Kontakte suchen und importieren</strong>
+              <small>Quellen und mögliche Duplikate vorher prüfen</small>
+            </span>
+          </button>
+          <button className="settings-action-button" type="button" onClick={importAppointmentsOnce} disabled={busyAction !== null}>
+            {busyAction === "import-outlook-appointments-once" ? <LoaderCircle className="spin" size={25} /> : <CalendarDays size={25} />}
+            <span>
+              <strong>{busyAction === "import-outlook-appointments-once" ? "Kalender werden gelesen …" : "Termine importieren"}</strong>
+              <small>Aus allen Outlook-Kalendern</small>
+            </span>
+          </button>
+        </div>
+        <button className="settings-undo-import" type="button" onClick={undoOutlookContactImport} disabled={busyAction !== null}>
+          {busyAction === "undo-outlook-contact-import" ? <LoaderCircle className="spin" size={17} /> : <Undo2 size={17} />}
+          Letzten Outlook-Kontaktimport rückgängig machen
+        </button>
+      </section>
+
+      <section className="form-panel settings-migration-panel">
+        <div className="settings-task-heading">
+          <ShieldCheck size={25} aria-hidden="true" />
+          <div>
+            <h3>E-Mail-Umstellung</h3>
+            {migrationStatus === null && <p>Verfügbarkeit wird geprüft …</p>}
             {migrationStatus && !migrationStatus.configured && (
-              <p className="migration-share-state migration-share-unavailable">
-                <AlertTriangle size={18} aria-hidden="true" /> Diese App-Version enthält noch keine sichere Übertragungsadresse. Bitte informieren Sie die EDV.
-              </p>
+              <p className="settings-state error"><AlertTriangle size={16} /> Bitte EDV informieren.</p>
             )}
             {migrationStatus?.configured && !migrationStatus.completed && (
-              <p className="migration-share-state migration-share-ready">
-                <CheckCircle2 size={18} aria-hidden="true" /> Bereit zur verschlüsselten Übertragung
-              </p>
+              <p className="settings-state ready"><CheckCircle2 size={16} /> Bereit zur sicheren Übertragung</p>
             )}
             {migrationStatus?.completed && (
-              <p className="migration-share-state migration-share-completed">
-                <CheckCircle2 size={18} aria-hidden="true" /> Bereits sicher übertragen
-                {migrationStatus.completedAt ? ` · ${new Date(migrationStatus.completedAt).toLocaleString("de-DE")}` : ""}
+              <p className="settings-state ready">
+                <CheckCircle2 size={16} /> Sicher übertragen
+                {migrationStatus.completedAt ? ` · ${new Date(migrationStatus.completedAt).toLocaleDateString("de-DE")}` : ""}
               </p>
             )}
           </div>
         </div>
         <button
-          className="primary large migration-share-button"
+          className="primary settings-migration-button"
           type="button"
           onClick={() => setMigrationDialogOpen(true)}
           disabled={busyAction !== null || !migrationStatus?.configured || migrationStatus.completed}
         >
-          <Send size={21} /> E-Mail-Konfiguration mit der EDV teilen
+          <Send size={19} /> Sicher an EDV senden
         </button>
       </section>
 
-      <section className="form-panel mail-settings-panel">
-        <div className="panel-heading">
+      <details className="form-panel settings-mail-panel">
+        <summary>
+          <span className="settings-summary-icon"><Mail size={24} aria-hidden="true" /></span>
           <div>
-            <h3>Outlook Classic – IMAP-Konto</h3>
-            <p>
-              Liest ausschließlich IMAP-Konten aus dem aktuellen Outlook-Classic-Profil. Nach dem sicheren Import kann das IMAP-Kennwort bewusst und zeitlich begrenzt angezeigt werden.
-            </p>
+            <h3>E-Mail-Konten</h3>
+            <p>Kennwort anzeigen oder ein Outlook-Konto hinzufügen</p>
           </div>
+          {accounts.length > 0 && <span className="settings-account-count">{accounts.length}</span>}
+          <ChevronDown className="settings-summary-chevron" size={21} aria-hidden="true" />
+        </summary>
+
+        <div className="settings-mail-content">
           <button className="primary" type="button" onClick={scan} disabled={busyAction !== null}>
             <RefreshCw size={20} className={busyAction === "scan" ? "spin" : ""} />
-            Outlook-Konten suchen
+            Konto aus Outlook hinzufügen
           </button>
-        </div>
 
-        {candidates.length > 0 && (
-          <div className="mail-account-grid" aria-label="Gefundene Outlook-Konten">
-            {candidates.map((candidate) => {
-              const imported = importedIds.has(candidate.sourceAccountId.toLowerCase());
-              const title = candidate.accountName || candidate.email || candidate.incomingUser;
-              return (
-                <article className="mail-account-card" key={candidate.sourceAccountId}>
-                  <div className="mail-account-title">
-                    <ShieldCheck size={26} />
+          {candidates.length > 0 && (
+            <div className="settings-found-accounts" aria-label="Gefundene Outlook-Konten">
+              <h4>In Outlook gefunden</h4>
+              {candidates.map((candidate) => {
+                const imported = importedIds.has(candidate.sourceAccountId.toLowerCase());
+                const title = candidate.accountName || candidate.email || candidate.incomingUser;
+                return (
+                  <article className="settings-account-row" key={candidate.sourceAccountId}>
                     <div>
-                      <h4>{title}</h4>
+                      <strong>{title}</strong>
                       <span>{candidate.email || candidate.incomingUser}</span>
+                      <small className={candidate.passwordAvailable ? "credential-available" : "credential-missing"}>
+                        {candidate.passwordAvailable ? "Kennwort gespeichert" : "Kein Kennwort gespeichert"}
+                      </small>
                     </div>
+                    <button type="button" onClick={() => importAccount(candidate)} disabled={busyAction !== null || !candidate.passwordAvailable}>
+                      {imported ? <RefreshCw size={18} /> : <Download size={18} />}
+                      {imported ? "Aktualisieren" : "Hinzufügen"}
+                    </button>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+
+          {accounts.length > 0 && (
+            <div className="settings-saved-accounts">
+              <h4>Gespeicherte Konten</h4>
+              {accounts.map((account) => (
+                <article className="settings-account-row" key={account.id}>
+                  <div>
+                    <strong>{account.accountName || account.email}</strong>
+                    <span>{account.email}</span>
                   </div>
-                  <dl className="mail-account-details">
-                    <div>
-                      <dt>Eingang</dt>
-                      <dd>{candidate.incomingServer}:{candidate.incomingPort} · {candidate.incomingSecurity === "ssl" ? "SSL/TLS" : "ohne TLS"}</dd>
-                    </div>
-                    <div>
-                      <dt>Ausgang</dt>
-                      <dd>{candidate.outgoingServer}:{candidate.outgoingPort} · {candidate.outgoingSecurity.toUpperCase()}</dd>
-                    </div>
-                    <div>
-                      <dt>IMAP-Kennwort</dt>
-                      <dd className={candidate.passwordAvailable ? "credential-available" : "credential-missing"}>
-                        {candidate.passwordAvailable ? "in Outlook gespeichert" : "nicht gespeichert"}
-                      </dd>
-                    </div>
-                  </dl>
-                  <button
-                    type="button"
-                    onClick={() => importAccount(candidate)}
-                    disabled={busyAction !== null || !candidate.passwordAvailable}
-                  >
-                    {imported ? <RefreshCw size={19} /> : <Download size={19} />}
-                    {imported ? "Import aktualisieren" : "Sicher importieren"}
-                  </button>
+                  <div className="inline-actions">
+                    <button type="button" onClick={() => testAccount(account)} disabled={busyAction !== null} title="Verbindung prüfen">
+                      <CheckCircle2 size={18} /> Prüfen
+                    </button>
+                    <button type="button" onClick={() => revealPassword(account)} disabled={busyAction !== null}>
+                      <Eye size={18} /> Kennwort anzeigen
+                    </button>
+                    <button className="danger-button" type="button" onClick={() => removeAccount(account)} disabled={busyAction !== null} title="Konto entfernen">
+                      <Trash2 size={18} /> Entfernen
+                    </button>
+                  </div>
                 </article>
-              );
-            })}
-          </div>
-        )}
-      </section>
-
-      <section className="form-panel mail-settings-panel">
-        <div className="panel-heading">
-          <div>
-            <h3>Importierte E-Mail-Konten</h3>
-            <p>SQLite enthält nur Serverdaten und Credential-Referenzen. Die Kennwörter bleiben im Windows Credential Manager.</p>
-          </div>
+              ))}
+            </div>
+          )}
         </div>
-        {accounts.length === 0 ? (
-          <p className="empty-inline">Noch kein Outlook-IMAP-Konto importiert.</p>
-        ) : (
-          <div className="mail-account-list">
-            {accounts.map((account) => (
-              <article className="mail-account-row" key={account.id}>
-                <div>
-                  <strong>{account.accountName || account.email}</strong>
-                  <span>{account.email} · {account.incomingServer}:{account.incomingPort}</span>
-                </div>
-                <div className="inline-actions">
-                  <button type="button" onClick={() => testAccount(account)} disabled={busyAction !== null}>
-                    <CheckCircle2 size={19} /> IMAP testen
-                  </button>
-                  <button type="button" onClick={() => revealPassword(account)} disabled={busyAction !== null}>
-                    <Eye size={19} /> E-Mail-Kennwort anzeigen
-                  </button>
-                  <button className="danger-button" type="button" onClick={() => removeAccount(account)} disabled={busyAction !== null}>
-                    <Trash2 size={19} /> Entfernen
-                  </button>
-                </div>
-              </article>
-            ))}
-          </div>
-        )}
-      </section>
-
-      <section className="form-panel">
-        <h3>Sprache</h3>
-        <p>Deutsch ist aktuell als Standardsprache aktiv. Die Struktur ist für spätere Übersetzungen vorbereitet.</p>
-      </section>
-      <section className="form-panel">
-        <h3>Datenbank</h3>
-        <pre className="schema">{sqliteSchema}</pre>
-      </section>
+      </details>
 
       {revealedPassword && (
         <div className="modal-backdrop" role="presentation" onMouseDown={() => setRevealedPassword(null)}>
@@ -386,6 +450,11 @@ export function SettingsPage() {
         open={migrationDialogOpen}
         onClose={() => setMigrationDialogOpen(false)}
         onCompleted={migrationCompleted}
+      />
+      <OutlookContactImportDialog
+        open={contactImportDialogOpen}
+        onClose={() => setContactImportDialogOpen(false)}
+        onImported={contactsImported}
       />
     </div>
   );

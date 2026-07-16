@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Standardberechtigungen fuer AgendaKontakte",
+  "description": "Standardberechtigungen fuer DMH Kontakte und Kalender",
   "windows": ["main"],
   "permissions": [
     "core:default",

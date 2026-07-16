@@ -21,10 +21,10 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
   return (
     <aside className="sidebar">
       <div className="brand">
-        <img className="brand-logo" src="/dmh-logo.png" alt="DMH" />
+        <img className="brand-logo" src="/dmh-kontakte-kalender.png" alt="Logo von DMH Kontakte und Kalender" />
         <div>
           <h1>{t.appName}</h1>
-          <p>Lokale Kontaktverwaltung</p>
+          <p>Kontakte und Termine lokal</p>
         </div>
       </div>
       <nav className="nav-list" aria-label="Hauptmenü">

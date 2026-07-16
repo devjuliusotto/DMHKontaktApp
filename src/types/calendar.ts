@@ -9,3 +9,9 @@ export interface CalendarEvent {
   category: string;
   source: string;
 }
+
+export interface OutlookOneTimeCalendarImportResult {
+  found: number;
+  skippedInvalid: number;
+  events: CalendarEvent[];
+}

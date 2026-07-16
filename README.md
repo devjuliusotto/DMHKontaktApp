@@ -1,6 +1,6 @@
-# AgendaKontakte
+# DMH Kontakte und Kalender
 
-AgendaKontakte ist eine lokale Windows-Desktop-App zur einfachen Verwaltung von Kontakten. Die Daten bleiben auf dem PC und werden in einer lokalen SQLite-Datenbank gespeichert. Es ist kein Microsoft-Login und keine Microsoft-Graph-Integration erforderlich.
+DMH Kontakte und Kalender ist eine lokale Windows-Desktop-App zur einfachen Verwaltung von Kontakten und Terminen. Die Daten bleiben auf dem PC und werden lokal gespeichert. Es ist kein Microsoft-Login und keine Microsoft-Graph-Integration erforderlich.
 
 ## Funktionen
 
@@ -57,7 +57,7 @@ Die SQLite-Datenbank liegt im lokalen App-Datenverzeichnis von Windows. Die Anwe
 
 ## Importhinweise
 
-Beim Import erkennt AgendaKontakte typische Spaltennamen automatisch, zum Beispiel:
+Beim Import erkennt DMH Kontakte und Kalender typische Spaltennamen automatisch, zum Beispiel:
 
 - `Name`
 - `Vorname`
@@ -90,9 +90,13 @@ Nach dem Export zeigt die App den Hinweis:
 
 > Die Datei wurde erstellt. Öffnen Sie Outlook, gehen Sie zu Personen/Kontakte und wählen Sie Importieren.
 
+## Outlook-Daten einmalig übernehmen
+
+Unter `Einstellungen` stehen außerdem zwei getrennte Einmalimporte für Outlook Classic bereit. `Alle Kontakte einmalig importieren` liest sämtliche erreichbaren Kontaktordner aller Stores des aktuellen Profils und legt neue lokale Kontakte an; bereits vorhandene Personen werden ausgelassen. `Alle Termine einmalig importieren` liest sämtliche erreichbaren Kalenderordner unabhängig von Konto, Ordner und Kategorie und übernimmt noch nicht vorhandene Termine in den lokalen Kalender. Beide Aktionen werden ausschließlich über den jeweiligen Button gestartet, verändern Outlook nicht und richten keine Synchronisierung oder Hintergrundaufgabe ein.
+
 ## Outlook-IMAP-Konto übernehmen
 
-Unter `Einstellungen` kann AgendaKontakte die IMAP-Konten des aktuellen Outlook-Classic-Profils suchen. Die Funktion unterstützt ausschließlich Outlook Classic und lokale IMAP-Konten; New Outlook und Exchange-/Microsoft-365-OAuth-Konten werden nicht importiert.
+Unter `Einstellungen` kann DMH Kontakte und Kalender die IMAP-Konten des aktuellen Outlook-Classic-Profils suchen. Die Funktion unterstützt ausschließlich Outlook Classic und lokale IMAP-Konten; New Outlook und Exchange-/Microsoft-365-OAuth-Konten werden nicht importiert.
 
 Der Build erzeugt zwei native Hilfsprogramme für Outlook 32-Bit und 64-Bit. Beim Import schreibt das passende Hilfsprogramm das gespeicherte IMAP- beziehungsweise SMTP-Kennwort direkt als `CRED_TYPE_GENERIC` mit `CRED_PERSIST_LOCAL_MACHINE` in den Windows Credential Manager. Die Tauri-Anwendung erhält beim normalen Import nur Kontodaten und eine Credential-Referenz.
 

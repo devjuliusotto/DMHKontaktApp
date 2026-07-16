@@ -8,9 +8,9 @@ export function WelcomePage({ onNavigate }: WelcomePageProps) {
   return (
     <div className="page">
       <article className="readme-page">
-        <h1>AgendaKontakte</h1>
+        <h1>DMH Kontakte und Kalender</h1>
         <p className="readme-lead">
-          AgendaKontakte ist eine lokale Windows-App für Kontakte, Gruppen, Outlook-Importe und einfache Kalenderübernahme.
+          DMH Kontakte und Kalender ist eine lokale Windows-App für Kontakte, Gruppen, Outlook-Importe und Kalendertermine.
           Alle Kontaktdaten bleiben auf diesem PC. Die zeitlich begrenzte Übergabe einer E-Mail-Konfiguration für die Exchange-Migration wird ausschließlich manuell unter Einstellungen gestartet und vor der Übertragung lokal verschlüsselt.
         </p>
 

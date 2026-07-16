@@ -82,7 +82,7 @@ export function exportCalendarIcs(events: CalendarEvent[]): string {
     `DESCRIPTION:${escapeIcs(event.description)}`,
     "END:VEVENT"
   ].filter(Boolean).join("\r\n"));
-  return ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//DMH//AgendaKontakte//DE", "CALSCALE:GREGORIAN", ...entries, "END:VCALENDAR", ""].join("\r\n");
+  return ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//DMH//Kontakte und Kalender//DE", "CALSCALE:GREGORIAN", ...entries, "END:VCALENDAR", ""].join("\r\n");
 }
 
 export function parseCalendarFile(bytes: Uint8Array, source: string): CalendarEvent[] {

@@ -1,6 +1,8 @@
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -232,6 +234,12 @@ struct OutlookContactRecord {
     #[serde(default)]
     store_id: String,
     #[serde(default)]
+    store_name: String,
+    #[serde(default)]
+    folder_id: String,
+    #[serde(default)]
+    folder_path: String,
+    #[serde(default)]
     first_name: String,
     #[serde(default)]
     last_name: String,
@@ -260,7 +268,135 @@ struct OutlookContactRecord {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OutlookReadData {
+    #[serde(default)]
     contacts: Vec<OutlookContactRecord>,
+    #[serde(default)]
+    skipped: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OutlookAppointmentRecord {
+    #[serde(default)]
+    entry_id: String,
+    #[serde(default)]
+    store_id: String,
+    #[serde(default)]
+    store_name: String,
+    #[serde(default)]
+    folder_path: String,
+    #[serde(default)]
+    global_appointment_id: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    starts_at: String,
+    #[serde(default)]
+    ends_at: String,
+    #[serde(default)]
+    location: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    category: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OutlookCalendarReadData {
+    #[serde(default)]
+    events: Vec<OutlookAppointmentRecord>,
+    #[serde(default)]
+    skipped: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutlookOneTimeContactImportResult {
+    pub found: usize,
+    pub imported: usize,
+    pub skipped_duplicates: usize,
+    pub skipped_invalid: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutlookContactSourcePreview {
+    pub id: String,
+    pub store_name: String,
+    pub folder_path: String,
+    pub suggested_group_name: String,
+    pub total: usize,
+    pub new_contacts: usize,
+    pub exact_duplicates: usize,
+    pub conflicts: usize,
+    pub without_email: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutlookContactPreviewItem {
+    pub id: String,
+    pub source_id: String,
+    pub display_name: String,
+    pub email: String,
+    pub phone: String,
+    pub city: String,
+    pub status: String,
+    pub reason: String,
+    pub existing_name: Option<String>,
+    pub default_selected: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutlookContactImportPreview {
+    pub found: usize,
+    pub skipped_invalid: usize,
+    pub sources: Vec<OutlookContactSourcePreview>,
+    pub contacts: Vec<OutlookContactPreviewItem>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutlookContactImportRequest {
+    pub selected_source_ids: Vec<String>,
+    #[serde(default)]
+    pub included_conflict_ids: Vec<String>,
+    #[serde(default = "default_true")]
+    pub create_source_groups: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutlookContactImportResult {
+    pub found: usize,
+    pub imported: usize,
+    pub skipped_exact_duplicates: usize,
+    pub skipped_conflicts: usize,
+    pub skipped_invalid: usize,
+    pub groups_used: usize,
+    pub batch_id: String,
+}
+
+#[derive(Debug)]
+struct ContactFingerprint {
+    display_name: String,
+    normalized_name: String,
+    email: String,
+    phones: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutlookOneTimeCalendarImportResult {
+    pub found: usize,
+    pub skipped_invalid: usize,
+    pub events: Vec<CalendarEvent>,
 }
 
 #[derive(Debug, Serialize)]
@@ -313,7 +449,10 @@ fn open_db(app: &AppHandle) -> Result<Connection, String> {
         .lock()
         .map_err(|_| "Datenbank konnte nicht gesperrt werden.".to_string())?
         .clone();
-    Connection::open(db_path).map_err(|err| err.to_string())
+    let conn = Connection::open(db_path).map_err(|err| err.to_string())?;
+    conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
+        .map_err(|err| err.to_string())?;
+    Ok(conn)
 }
 
 fn init_db(app: &AppHandle) -> Result<(), String> {
@@ -419,6 +558,15 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
     conn.execute_batch(
         "
         DROP INDEX IF EXISTS idx_contacts_email_unique;
+        CREATE INDEX IF NOT EXISTS idx_contacts_display_name_search
+            ON contacts(display_name COLLATE NOCASE);
+        CREATE INDEX IF NOT EXISTS idx_contacts_email_search
+            ON contacts(email COLLATE NOCASE);
+        CREATE INDEX IF NOT EXISTS idx_contacts_phone_search ON contacts(phone);
+        CREATE INDEX IF NOT EXISTS idx_contacts_mobile_phone_search ON contacts(mobile_phone);
+        CREATE INDEX IF NOT EXISTS idx_contacts_import_batch ON contacts(import_batch_id);
+        CREATE INDEX IF NOT EXISTS idx_contact_groups_group_contact
+            ON contact_groups(group_id, contact_id);
         ",
     )
     .map_err(|err| err.to_string())?;
@@ -894,6 +1042,48 @@ fn undo_last_import(app: AppHandle) -> Result<usize, String> {
     Ok(deleted)
 }
 
+#[tauri::command]
+fn undo_last_outlook_contact_import(app: AppHandle) -> Result<usize, String> {
+    let conn = open_db(&app)?;
+    let batch_id: Option<String> = conn
+        .query_row(
+            "SELECT batch_id
+             FROM import_history
+             WHERE source_file LIKE 'Outlook%Kontaktimport%'
+             ORDER BY created_at DESC, id DESC
+             LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|err| err.to_string())?;
+
+    let Some(batch_id) = batch_id else {
+        return Ok(0);
+    };
+    let deleted = conn
+        .execute(
+            "DELETE FROM contacts WHERE import_batch_id = ?",
+            params![batch_id],
+        )
+        .map_err(|err| err.to_string())?;
+    conn.execute(
+        "DELETE FROM import_history WHERE batch_id = ?",
+        params![batch_id],
+    )
+    .map_err(|err| err.to_string())?;
+    conn.execute(
+        "DELETE FROM groups
+         WHERE description LIKE 'Einmaliger Kontaktimport aus%Outlook%'
+           AND NOT EXISTS (
+             SELECT 1 FROM contact_groups WHERE contact_groups.group_id = groups.id
+           )",
+        [],
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(deleted)
+}
+
 fn load_backup_data(conn: &Connection) -> Result<BackupData, String> {
     let contacts = {
         let mut stmt = conn
@@ -1283,14 +1473,14 @@ fn set_app_setting(app: AppHandle, key: String, value: String) -> Result<(), Str
     Ok(())
 }
 
-fn read_outlook_classic_contacts() -> Result<Vec<OutlookContactRecord>, String> {
+fn read_outlook_classic_contacts() -> Result<OutlookReadData, String> {
     let script = r#"
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $outlook = New-Object -ComObject Outlook.Application
 $namespace = $outlook.Session
-$contactsFolder = $namespace.GetDefaultFolder(10)
 $contacts = New-Object System.Collections.Generic.List[object]
+$skipped = 0
 function Get-Contact-Email($item) {
   $email = [string]$item.Email1Address
   try {
@@ -1301,8 +1491,10 @@ function Get-Contact-Email($item) {
   if ([string]::IsNullOrWhiteSpace($email)) { $email = [string]$item.Email3Address }
   return $email
 }
-function Read-Contact-Folders($folder) {
+function Read-Contact-Folder($folder, $storeId, $storeName) {
   try {
+    $folderId = [string]$folder.EntryID
+    $folderPath = [string]$folder.FolderPath
     $folderItems = $folder.Items
     for ($index = 1; $index -le $folderItems.Count; $index++) {
       try {
@@ -1311,7 +1503,10 @@ function Read-Contact-Folders($folder) {
         if ($messageClass -like 'IPM.Contact*') {
           $contacts.Add([pscustomobject]@{
             entryId = [string]$item.EntryID
-            storeId = [string]$folder.StoreID
+            storeId = $storeId
+            storeName = $storeName
+            folderId = $folderId
+            folderPath = $folderPath
             firstName = [string]$item.FirstName
             lastName = [string]$item.LastName
             displayName = [string]$item.FullName
@@ -1326,13 +1521,28 @@ function Read-Contact-Folders($folder) {
             notes = [string]$item.Body
           }) | Out-Null
         }
-      } catch {}
+      } catch { $script:skipped++ }
     }
-  } catch {}
-  foreach ($child in @($folder.Folders)) { Read-Contact-Folders $child }
+  } catch { $script:skipped++ }
 }
-Read-Contact-Folders $contactsFolder
-[pscustomobject]@{ contacts = $contacts; events = @() } | ConvertTo-Json -Depth 6 -Compress
+function Read-Folders($folder, $storeId, $storeName) {
+  try {
+    if ([int]$folder.DefaultItemType -eq 2) { Read-Contact-Folder $folder $storeId $storeName }
+  } catch { $script:skipped++ }
+  try {
+    $children = $folder.Folders
+    for ($childIndex = 1; $childIndex -le $children.Count; $childIndex++) {
+      Read-Folders $children.Item($childIndex) $storeId $storeName
+    }
+  } catch { $script:skipped++ }
+}
+for ($storeIndex = 1; $storeIndex -le $namespace.Stores.Count; $storeIndex++) {
+  try {
+    $store = $namespace.Stores.Item($storeIndex)
+    Read-Folders $store.GetRootFolder() ([string]$store.StoreID) ([string]$store.DisplayName)
+  } catch { $script:skipped++ }
+}
+[pscustomobject]@{ contacts = @($contacts); skipped = $skipped } | ConvertTo-Json -Depth 6 -Compress
 "#;
 
     let output = hidden_command("powershell")
@@ -1354,10 +1564,8 @@ Read-Contact-Folders $contactsFolder
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let data = serde_json::from_str::<OutlookReadData>(stdout.trim()).map_err(|err| {
-        format!("Outlook-Kontakte konnten nicht ausgewertet werden: {err}. Ausgabe: {stdout}")
-    })?;
-    Ok(data.contacts)
+    serde_json::from_str::<OutlookReadData>(stdout.trim())
+        .map_err(|err| format!("Outlook-Kontakte konnten nicht ausgewertet werden: {err}"))
 }
 
 fn outlook_record_to_contact(record: &OutlookContactRecord) -> ContactInput {
@@ -1377,6 +1585,430 @@ fn outlook_record_to_contact(record: &OutlookContactRecord) -> ContactInput {
         notes: record.notes.clone(),
         group_ids: Vec::new(),
     }
+}
+
+fn outlook_hash(value: &str) -> String {
+    format!("{:x}", Sha256::digest(value.as_bytes()))
+}
+
+fn outlook_source_id(record: &OutlookContactRecord) -> String {
+    let folder_key = if record.folder_id.trim().is_empty() {
+        record.folder_path.trim()
+    } else {
+        record.folder_id.trim()
+    };
+    outlook_hash(&format!("{}|{}", record.store_id.trim(), folder_key))
+}
+
+fn outlook_contact_id(record: &OutlookContactRecord) -> String {
+    let entry_key = if record.entry_id.trim().is_empty() {
+        format!(
+            "{}|{}|{}|{}",
+            record.display_name.trim(),
+            record.email.trim(),
+            record.phone.trim(),
+            record.mobile_phone.trim()
+        )
+    } else {
+        record.entry_id.trim().to_string()
+    };
+    outlook_hash(&format!("{}|{}", outlook_source_id(record), entry_key))
+}
+
+fn outlook_store_name(record: &OutlookContactRecord) -> String {
+    let name = record.store_name.trim();
+    if name.is_empty() {
+        "Outlook".to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+fn suggested_outlook_group_name(store_name: &str) -> String {
+    let trimmed = store_name.trim();
+    let lower = trimmed.to_lowercase();
+    let label = if lower.contains("dmh") || lower.contains("aidlingen") {
+        "DMH".to_string()
+    } else if lower.contains("privat") || lower.contains("private") || lower.contains("persönlich")
+    {
+        "Privat".to_string()
+    } else if trimmed.is_empty() {
+        "Outlook".to_string()
+    } else {
+        trimmed.chars().take(80).collect()
+    };
+    format!("Outlook · {label}")
+}
+
+fn normalize_phone_for_match(value: &str) -> String {
+    let mut digits: String = value
+        .chars()
+        .filter(|value| value.is_ascii_digit())
+        .collect();
+    if digits.starts_with("0049") && digits.len() > 8 {
+        digits = format!("0{}", &digits[4..]);
+    } else if digits.starts_with("49") && digits.len() > 8 {
+        digits = format!("0{}", &digits[2..]);
+    }
+    if digits.len() < 7 {
+        String::new()
+    } else {
+        digits
+    }
+}
+
+fn contact_phone_keys(contact: &ContactInput) -> Vec<String> {
+    let mut phones = Vec::new();
+    for value in [&contact.phone, &contact.mobile_phone] {
+        let normalized = normalize_phone_for_match(value);
+        if !normalized.is_empty() && !phones.contains(&normalized) {
+            phones.push(normalized);
+        }
+    }
+    phones
+}
+
+fn load_contact_fingerprints(conn: &Connection) -> Result<Vec<ContactFingerprint>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT display_name, email, phone, mobile_phone
+             FROM contacts
+             WHERE deleted_at IS NULL",
+        )
+        .map_err(|err| err.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            let phone: String = row.get(2)?;
+            let mobile_phone: String = row.get(3)?;
+            let mut phones = Vec::new();
+            for value in [&phone, &mobile_phone] {
+                let normalized = normalize_phone_for_match(value);
+                if !normalized.is_empty() && !phones.contains(&normalized) {
+                    phones.push(normalized);
+                }
+            }
+            let display_name = row.get::<_, String>(0)?.trim().to_string();
+            Ok(ContactFingerprint {
+                normalized_name: display_name.to_lowercase(),
+                display_name,
+                email: row.get::<_, String>(1)?.trim().to_lowercase(),
+                phones,
+            })
+        })
+        .map_err(|err| err.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| err.to_string())
+}
+
+fn classify_outlook_contact(
+    fingerprints: &[ContactFingerprint],
+    contact: &ContactInput,
+    display_name: &str,
+    email: &str,
+) -> (String, String, Option<String>) {
+    if !email.is_empty() {
+        if let Some(existing) = fingerprints.iter().find(|existing| existing.email == email) {
+            return (
+                "duplicate_email".to_string(),
+                "Diese E-Mail-Adresse ist bereits vorhanden.".to_string(),
+                Some(existing.display_name.clone()),
+            );
+        }
+    }
+
+    let phone_keys = contact_phone_keys(contact);
+    if !phone_keys.is_empty() {
+        if let Some(existing) = fingerprints.iter().find(|existing| {
+            phone_keys
+                .iter()
+                .any(|phone| existing.phones.iter().any(|value| value == phone))
+        }) {
+            return (
+                "possible_phone".to_string(),
+                "Möglicherweise bereits mit derselben Telefonnummer vorhanden.".to_string(),
+                Some(existing.display_name.clone()),
+            );
+        }
+    }
+
+    let normalized_name = display_name.trim().to_lowercase();
+    if email.is_empty() && !normalized_name.is_empty() {
+        if let Some(existing) = fingerprints
+            .iter()
+            .find(|existing| existing.normalized_name == normalized_name)
+        {
+            return (
+                "possible_name".to_string(),
+                "Kontakt ohne E-Mail mit demselben Namen gefunden.".to_string(),
+                Some(existing.display_name.clone()),
+            );
+        }
+    }
+
+    ("new".to_string(), "Neuer Kontakt".to_string(), None)
+}
+
+fn add_fingerprint(
+    fingerprints: &mut Vec<ContactFingerprint>,
+    contact: &ContactInput,
+    display_name: &str,
+    email: &str,
+) {
+    fingerprints.push(ContactFingerprint {
+        display_name: display_name.trim().to_string(),
+        normalized_name: display_name.trim().to_lowercase(),
+        email: email.to_string(),
+        phones: contact_phone_keys(contact),
+    });
+}
+
+#[tauri::command]
+fn preview_outlook_classic_contacts(app: AppHandle) -> Result<OutlookContactImportPreview, String> {
+    let read_result = read_outlook_classic_contacts()?;
+    let conn = open_db(&app)?;
+    let mut fingerprints = load_contact_fingerprints(&conn)?;
+    let mut sources: Vec<OutlookContactSourcePreview> = Vec::new();
+    let mut source_indexes: HashMap<String, usize> = HashMap::new();
+    let mut contacts = Vec::new();
+    let mut skipped_invalid = read_result.skipped;
+
+    for record in &read_result.contacts {
+        let contact = outlook_record_to_contact(record);
+        let display_name = normalize_contact_display_name(&contact);
+        let email = contact.email.trim().to_lowercase();
+        if !contact_has_identity(&contact, &display_name, &email) {
+            skipped_invalid += 1;
+            continue;
+        }
+
+        let source_id = outlook_source_id(record);
+        let source_index = if let Some(index) = source_indexes.get(&source_id) {
+            *index
+        } else {
+            let store_name = outlook_store_name(record);
+            let index = sources.len();
+            sources.push(OutlookContactSourcePreview {
+                id: source_id.clone(),
+                store_name: store_name.clone(),
+                folder_path: if record.folder_path.trim().is_empty() {
+                    "Kontakte".to_string()
+                } else {
+                    record.folder_path.trim().to_string()
+                },
+                suggested_group_name: suggested_outlook_group_name(&store_name),
+                total: 0,
+                new_contacts: 0,
+                exact_duplicates: 0,
+                conflicts: 0,
+                without_email: 0,
+            });
+            source_indexes.insert(source_id.clone(), index);
+            index
+        };
+
+        let (status, reason, existing_name) =
+            classify_outlook_contact(&fingerprints, &contact, &display_name, &email);
+        let source = &mut sources[source_index];
+        source.total += 1;
+        if email.is_empty() {
+            source.without_email += 1;
+        }
+        match status.as_str() {
+            "new" => source.new_contacts += 1,
+            "duplicate_email" => source.exact_duplicates += 1,
+            _ => source.conflicts += 1,
+        }
+
+        contacts.push(OutlookContactPreviewItem {
+            id: outlook_contact_id(record),
+            source_id,
+            display_name: display_name.clone(),
+            email: email.clone(),
+            phone: if contact.mobile_phone.trim().is_empty() {
+                contact.phone.trim().to_string()
+            } else {
+                contact.mobile_phone.trim().to_string()
+            },
+            city: contact.city.trim().to_string(),
+            default_selected: status == "new",
+            status,
+            reason,
+            existing_name,
+        });
+        add_fingerprint(&mut fingerprints, &contact, &display_name, &email);
+    }
+
+    sources.sort_by(|left, right| {
+        left.store_name
+            .to_lowercase()
+            .cmp(&right.store_name.to_lowercase())
+            .then_with(|| {
+                left.folder_path
+                    .to_lowercase()
+                    .cmp(&right.folder_path.to_lowercase())
+            })
+    });
+
+    Ok(OutlookContactImportPreview {
+        found: read_result.contacts.len(),
+        skipped_invalid,
+        sources,
+        contacts,
+    })
+}
+
+#[tauri::command]
+fn import_selected_outlook_classic_contacts(
+    app: AppHandle,
+    request: OutlookContactImportRequest,
+) -> Result<OutlookContactImportResult, String> {
+    let selected_sources: HashSet<String> = request.selected_source_ids.into_iter().collect();
+    if selected_sources.is_empty() {
+        return Err("Bitte wählen Sie mindestens eine Outlook-Quelle aus.".to_string());
+    }
+    let included_conflicts: HashSet<String> = request.included_conflict_ids.into_iter().collect();
+    let read_result = read_outlook_classic_contacts()?;
+    let mut conn = open_db(&app)?;
+    let mut fingerprints = load_contact_fingerprints(&conn)?;
+    let tx = conn.transaction().map_err(|err| err.to_string())?;
+    let timestamp = now();
+    let batch_id = format!("outlook-reviewed-{}", Utc::now().timestamp_millis());
+    let mut imported = 0usize;
+    let mut found = 0usize;
+    let mut skipped_exact_duplicates = 0usize;
+    let mut skipped_conflicts = 0usize;
+    let mut skipped_invalid = read_result.skipped;
+    let mut group_ids: HashMap<String, i64> = HashMap::new();
+
+    for record in &read_result.contacts {
+        let source_id = outlook_source_id(record);
+        if !selected_sources.contains(&source_id) {
+            continue;
+        }
+        found += 1;
+        let contact = outlook_record_to_contact(record);
+        let display_name = normalize_contact_display_name(&contact);
+        let email = contact.email.trim().to_lowercase();
+        if !contact_has_identity(&contact, &display_name, &email) {
+            skipped_invalid += 1;
+            continue;
+        }
+
+        let contact_id = outlook_contact_id(record);
+        let (status, _, _) =
+            classify_outlook_contact(&fingerprints, &contact, &display_name, &email);
+        if status == "duplicate_email" {
+            skipped_exact_duplicates += 1;
+            continue;
+        }
+        if status != "new" && !included_conflicts.contains(&contact_id) {
+            skipped_conflicts += 1;
+            continue;
+        }
+
+        tx.execute(
+            "
+            INSERT INTO contacts (
+                first_name, last_name, display_name, email, phone, mobile_phone, street,
+                postal_code, city, country, short_info, notes, import_batch_id,
+                created_at, updated_at, outlook_entry_id, outlook_store_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ",
+            params![
+                contact.first_name,
+                contact.last_name,
+                display_name,
+                email,
+                contact.phone,
+                contact.mobile_phone,
+                contact.street,
+                contact.postal_code,
+                contact.city,
+                contact.country,
+                contact.short_info,
+                contact.notes,
+                batch_id,
+                timestamp,
+                timestamp,
+                record.entry_id.trim(),
+                record.store_id.trim()
+            ],
+        )
+        .map_err(|err| err.to_string())?;
+        let local_contact_id = tx.last_insert_rowid();
+
+        if request.create_source_groups {
+            let store_name = outlook_store_name(record);
+            let group_name = suggested_outlook_group_name(&store_name);
+            let group_id = if let Some(group_id) = group_ids.get(&group_name) {
+                *group_id
+            } else {
+                tx.execute(
+                    "INSERT INTO groups (name, description, created_at, updated_at, deleted_at)
+                     VALUES (?, ?, ?, ?, NULL)
+                     ON CONFLICT(name) DO UPDATE SET
+                       description = excluded.description,
+                       updated_at = excluded.updated_at,
+                       deleted_at = NULL",
+                    params![
+                        group_name,
+                        format!("Einmaliger Kontaktimport aus Outlook Classic: {store_name}"),
+                        timestamp,
+                        timestamp
+                    ],
+                )
+                .map_err(|err| err.to_string())?;
+                let group_id: i64 = tx
+                    .query_row(
+                        "SELECT id FROM groups WHERE name = ?",
+                        params![group_name],
+                        |row| row.get(0),
+                    )
+                    .map_err(|err| err.to_string())?;
+                group_ids.insert(group_name, group_id);
+                group_id
+            };
+            tx.execute(
+                "INSERT OR IGNORE INTO contact_groups (contact_id, group_id) VALUES (?, ?)",
+                params![local_contact_id, group_id],
+            )
+            .map_err(|err| err.to_string())?;
+        }
+
+        add_fingerprint(&mut fingerprints, &contact, &display_name, &email);
+        imported += 1;
+    }
+
+    if imported > 0 {
+        tx.execute(
+            "INSERT INTO import_history (batch_id, source_file, imported_count, skipped_count, created_at)
+             VALUES (?, ?, ?, ?, ?)",
+            params![
+                batch_id,
+                "Outlook Classic (geprüfter Kontaktimport)",
+                imported as i64,
+                (skipped_exact_duplicates + skipped_conflicts + skipped_invalid) as i64,
+                timestamp
+            ],
+        )
+        .map_err(|err| err.to_string())?;
+    }
+    tx.commit().map_err(|err| err.to_string())?;
+
+    Ok(OutlookContactImportResult {
+        found,
+        imported,
+        skipped_exact_duplicates,
+        skipped_conflicts,
+        skipped_invalid,
+        groups_used: group_ids.len(),
+        batch_id: if imported > 0 {
+            batch_id
+        } else {
+            String::new()
+        },
+    })
 }
 
 fn load_local_outlook_contacts(conn: &Connection) -> Result<Vec<LocalOutlookContact>, String> {
@@ -1910,10 +2542,93 @@ fn contact_needs_update(
 }
 
 #[tauri::command]
+fn import_outlook_classic_contacts_once(
+    app: AppHandle,
+) -> Result<OutlookOneTimeContactImportResult, String> {
+    let read_result = read_outlook_classic_contacts()?;
+    let found = read_result.contacts.len();
+    let mut conn = open_db(&app)?;
+    let tx = conn.transaction().map_err(|err| err.to_string())?;
+    let timestamp = now();
+    let batch_id = format!("outlook-once-{}", Utc::now().timestamp_millis());
+    let mut imported = 0usize;
+    let mut skipped_duplicates = 0usize;
+    let mut skipped_invalid = read_result.skipped;
+
+    for record in &read_result.contacts {
+        let contact = outlook_record_to_contact(record);
+        let display_name = normalize_contact_display_name(&contact);
+        let email = contact.email.trim().to_lowercase();
+
+        if !contact_has_identity(&contact, &display_name, &email) {
+            skipped_invalid += 1;
+            continue;
+        }
+
+        if find_existing_sync_contact(&tx, &contact, &display_name, &email, "")?.is_some() {
+            skipped_duplicates += 1;
+            continue;
+        }
+
+        tx.execute(
+            "
+            INSERT INTO contacts (
+                first_name, last_name, display_name, email, phone, mobile_phone, street,
+                postal_code, city, country, short_info, notes, import_batch_id,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ",
+            params![
+                contact.first_name,
+                contact.last_name,
+                display_name,
+                email,
+                contact.phone,
+                contact.mobile_phone,
+                contact.street,
+                contact.postal_code,
+                contact.city,
+                contact.country,
+                contact.short_info,
+                contact.notes,
+                batch_id,
+                timestamp,
+                timestamp
+            ],
+        )
+        .map_err(|err| err.to_string())?;
+        imported += 1;
+    }
+
+    if imported > 0 {
+        tx.execute(
+            "INSERT INTO import_history (batch_id, source_file, imported_count, skipped_count, created_at) VALUES (?, ?, ?, ?, ?)",
+            params![
+                batch_id,
+                "Outlook Classic (einmaliger Kontaktimport)",
+                imported as i64,
+                (skipped_duplicates + skipped_invalid) as i64,
+                timestamp
+            ],
+        )
+        .map_err(|err| err.to_string())?;
+    }
+
+    tx.commit().map_err(|err| err.to_string())?;
+    Ok(OutlookOneTimeContactImportResult {
+        found,
+        imported,
+        skipped_duplicates,
+        skipped_invalid,
+    })
+}
+
+#[tauri::command]
 fn sync_outlook_classic_contacts(app: AppHandle) -> Result<OutlookSyncResult, String> {
     let mut conn = open_db(&app)?;
     let pushed = push_local_contacts_to_outlook(&mut conn)?;
-    let contacts = read_outlook_classic_contacts()?;
+    let contacts = read_outlook_classic_contacts()?.contacts;
     let tx = conn.transaction().map_err(|err| err.to_string())?;
     let timestamp = now();
     let mut inserted = 0usize;
@@ -2108,6 +2823,180 @@ $folders | ConvertTo-Json -Depth 5 -Compress
         })
 }
 
+fn read_outlook_classic_appointments() -> Result<OutlookCalendarReadData, String> {
+    let script = r#"
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$outlook = New-Object -ComObject Outlook.Application
+$namespace = $outlook.Session
+$events = New-Object System.Collections.Generic.List[object]
+$skipped = 0
+
+function Read-Calendar-Folder($folder, $storeId, $storeName) {
+  try {
+    $items = $folder.Items
+    for ($index = 1; $index -le $items.Count; $index++) {
+      try {
+        $item = $items.Item($index)
+        if ([string]$item.MessageClass -notlike 'IPM.Appointment*') { continue }
+        $entryId = ''
+        $globalAppointmentId = ''
+        $start = ''
+        $end = ''
+        try { $entryId = [string]$item.EntryID } catch {}
+        try { $globalAppointmentId = [string]$item.GlobalAppointmentID } catch {}
+        try { $start = ([datetime]$item.Start).ToString('yyyy-MM-ddTHH:mm:ss') } catch {}
+        try { $end = ([datetime]$item.End).ToString('yyyy-MM-ddTHH:mm:ss') } catch {}
+        $events.Add([pscustomobject]@{
+          entryId = $entryId
+          storeId = $storeId
+          storeName = $storeName
+          folderPath = [string]$folder.FolderPath
+          globalAppointmentId = $globalAppointmentId
+          title = [string]$item.Subject
+          startsAt = $start
+          endsAt = $end
+          location = [string]$item.Location
+          description = [string]$item.Body
+          category = [string]$item.Categories
+        }) | Out-Null
+      } catch { $script:skipped++ }
+    }
+  } catch { $script:skipped++ }
+}
+
+function Read-Folders($folder, $storeId, $storeName) {
+  try {
+    if ([int]$folder.DefaultItemType -eq 1) {
+      Read-Calendar-Folder $folder $storeId $storeName
+    }
+  } catch { $script:skipped++ }
+  try {
+    $children = $folder.Folders
+    for ($childIndex = 1; $childIndex -le $children.Count; $childIndex++) {
+      Read-Folders $children.Item($childIndex) $storeId $storeName
+    }
+  } catch { $script:skipped++ }
+}
+
+for ($storeIndex = 1; $storeIndex -le $namespace.Stores.Count; $storeIndex++) {
+  try {
+    $store = $namespace.Stores.Item($storeIndex)
+    Read-Folders $store.GetRootFolder() ([string]$store.StoreID) ([string]$store.DisplayName)
+  } catch { $script:skipped++ }
+}
+
+[pscustomobject]@{ events = @($events); skipped = $skipped } | ConvertTo-Json -Depth 6 -Compress
+"#;
+
+    let output = hidden_command("powershell")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ])
+        .output()
+        .map_err(|err| format!("Outlook Classic konnte nicht gestartet werden: {err}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "Outlook-Kalender konnten nicht gelesen werden. Prüfen Sie, ob Outlook Classic installiert und eingerichtet ist. {stderr}"
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str::<OutlookCalendarReadData>(stdout.trim())
+        .map_err(|err| format!("Outlook-Termine konnten nicht ausgewertet werden: {err}"))
+}
+
+fn outlook_calendar_event_id(record: &OutlookAppointmentRecord, index: usize) -> String {
+    let identity = if !record.entry_id.trim().is_empty() {
+        format!("{}\n{}", record.store_id.trim(), record.entry_id.trim())
+    } else if !record.global_appointment_id.trim().is_empty() {
+        format!(
+            "{}\n{}",
+            record.store_id.trim(),
+            record.global_appointment_id.trim()
+        )
+    } else {
+        format!(
+            "{}\n{}\n{}\n{}\n{}",
+            record.store_id.trim(),
+            record.folder_path.trim(),
+            record.starts_at.trim(),
+            record.title.trim(),
+            index
+        )
+    };
+    let digest = Sha256::digest(identity.as_bytes());
+    let mut hash = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        hash.push_str(&format!("{byte:02x}"));
+    }
+    format!("outlook-classic-{hash}")
+}
+
+#[tauri::command]
+fn import_outlook_classic_appointments_once() -> Result<OutlookOneTimeCalendarImportResult, String>
+{
+    let read_result = read_outlook_classic_appointments()?;
+    let found = read_result.events.len();
+    let mut skipped_invalid = read_result.skipped;
+    let mut seen_ids = HashSet::new();
+    let mut events = Vec::with_capacity(found);
+
+    for (index, record) in read_result.events.into_iter().enumerate() {
+        let starts_at = record.starts_at.trim().to_string();
+        if starts_at.is_empty() {
+            skipped_invalid += 1;
+            continue;
+        }
+        let id = outlook_calendar_event_id(&record, index);
+        if !seen_ids.insert(id.clone()) {
+            skipped_invalid += 1;
+            continue;
+        }
+        let title = if record.title.trim().is_empty() {
+            "Ohne Titel".to_string()
+        } else {
+            record.title.trim().to_string()
+        };
+        let source = [
+            "Outlook Classic",
+            record.store_name.trim(),
+            record.folder_path.trim(),
+        ]
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ");
+        events.push(CalendarEvent {
+            id,
+            title,
+            starts_at: starts_at.clone(),
+            ends_at: if record.ends_at.trim().is_empty() {
+                starts_at
+            } else {
+                record.ends_at.trim().to_string()
+            },
+            location: record.location,
+            description: record.description,
+            color: default_calendar_color(),
+            category: record.category,
+            source,
+        });
+    }
+
+    Ok(OutlookOneTimeCalendarImportResult {
+        found,
+        skipped_invalid,
+        events,
+    })
+}
+
 #[tauri::command]
 fn import_outlook_store(path: String) -> Result<OutlookImportData, String> {
     let escaped_path = path.replace('\'', "''");
@@ -2232,6 +3121,7 @@ pub fn run() {
             restore_group,
             import_contacts,
             undo_last_import,
+            undo_last_outlook_contact_import,
             get_backup_data,
             restore_backup,
             write_export_file,
@@ -2246,6 +3136,9 @@ pub fn run() {
             get_app_setting,
             set_app_setting,
             import_outlook_store,
+            preview_outlook_classic_contacts,
+            import_selected_outlook_classic_contacts,
+            import_outlook_classic_appointments_once,
             mail_accounts::scan_outlook_accounts,
             mail_accounts::list_mail_accounts,
             mail_accounts::import_outlook_account,
@@ -2256,5 +3149,73 @@ pub fn run() {
             mail_accounts::remove_mail_account
         ])
         .run(tauri::generate_context!())
-        .expect("Fehler beim Starten von AgendaKontakte");
+        .expect("Fehler beim Starten von DMH Kontakte und Kalender");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_contact(name: &str, email: &str, phone: &str) -> ContactInput {
+        ContactInput {
+            id: None,
+            first_name: String::new(),
+            last_name: String::new(),
+            display_name: name.to_string(),
+            email: email.to_string(),
+            phone: phone.to_string(),
+            mobile_phone: String::new(),
+            street: String::new(),
+            postal_code: String::new(),
+            city: String::new(),
+            country: String::new(),
+            short_info: String::new(),
+            notes: String::new(),
+            group_ids: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn normalizes_german_phone_numbers_for_duplicate_checks() {
+        assert_eq!(
+            normalize_phone_for_match("+49 (7034) 12 34"),
+            normalize_phone_for_match("07034 / 1234")
+        );
+    }
+
+    #[test]
+    fn detects_exact_email_duplicates_before_phone_conflicts() {
+        let existing = sample_contact("Erika Muster", "erika@example.org", "07034 1234");
+        let fingerprints = vec![ContactFingerprint {
+            display_name: "Erika Muster".to_string(),
+            normalized_name: "erika muster".to_string(),
+            email: "erika@example.org".to_string(),
+            phones: contact_phone_keys(&existing),
+        }];
+        let candidate = sample_contact("Erika M.", "ERIKA@example.org", "07034 1234");
+        let (status, _, _) =
+            classify_outlook_contact(&fingerprints, &candidate, "Erika M.", "erika@example.org");
+        assert_eq!(status, "duplicate_email");
+    }
+
+    #[test]
+    fn marks_same_phone_and_name_without_email_for_review() {
+        let existing = sample_contact("Erika Muster", "", "07034 1234");
+        let fingerprints = vec![ContactFingerprint {
+            display_name: "Erika Muster".to_string(),
+            normalized_name: "erika muster".to_string(),
+            email: String::new(),
+            phones: contact_phone_keys(&existing),
+        }];
+
+        let same_phone = sample_contact("E. Muster", "", "+49 7034 1234");
+        let (phone_status, _, _) =
+            classify_outlook_contact(&fingerprints, &same_phone, "E. Muster", "");
+        assert_eq!(phone_status, "possible_phone");
+
+        let same_name = sample_contact("Erika Muster", "", "");
+        let (name_status, _, _) =
+            classify_outlook_contact(&fingerprints, &same_name, "Erika Muster", "");
+        assert_eq!(name_status, "possible_name");
+    }
 }

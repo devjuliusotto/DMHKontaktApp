@@ -1,5 +1,5 @@
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { Ellipsis, Mail, Plus, Search, Trash2, UserPlus, X } from "lucide-react";
+import { Ellipsis, Mail, Minus, Plus, Search, Trash2, UserPlus, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ContactForm } from "../components/ContactForm";
 import { ContactTable } from "../components/ContactTable";
@@ -42,8 +42,17 @@ type DragPreview = {
 
 const blankGroup: Group = { name: "", description: "", createdAt: "", updatedAt: "" };
 const emailAppSettingKey = "default_email_app";
+const contactsFontSizeStorageKey = "dmh.contacts.fontSize";
+const contactsFontSizes = [14, 16, 18, 20] as const;
 const ungroupedGroupName = "Gesammelte Adressen";
 const emptySelection = new Set<number>();
+
+function initialContactsFontSizeIndex(): number {
+  const savedSize = Number(localStorage.getItem(contactsFontSizeStorageKey));
+  const savedIndex = contactsFontSizes.findIndex((size) => size === savedSize);
+  return savedIndex >= 0 ? savedIndex : 1;
+}
+
 function uniqueContactEmails(contactRows: Contact[]) {
   const seen = new Set<string>();
   const emails: string[] = [];
@@ -85,6 +94,7 @@ export function ContactsPage() {
   const [bulkAddSearch, setBulkAddSearch] = useState("");
   const [bulkAddContacts, setBulkAddContacts] = useState<Contact[]>([]);
   const [bulkAddSelectedIds, setBulkAddSelectedIds] = useState<Set<number>>(() => new Set());
+  const [contactsFontSizeIndex, setContactsFontSizeIndex] = useState(initialContactsFontSizeIndex);
   const draggedContactIdsRef = useRef<number[]>([]);
   const groupsRef = useRef<Group[]>([]);
 
@@ -104,6 +114,15 @@ export function ContactsPage() {
     [selectedContactIds, visibleContactIds]
   );
   const allVisibleContactsSelected = visibleContactIds.length > 0 && selectedVisibleContactIds.length === visibleContactIds.length;
+  const contactsFontSize = contactsFontSizes[contactsFontSizeIndex];
+
+  const changeContactsFontSize = (direction: -1 | 1) => {
+    setContactsFontSizeIndex((current) => {
+      const next = Math.min(Math.max(current + direction, 0), contactsFontSizes.length - 1);
+      localStorage.setItem(contactsFontSizeStorageKey, String(contactsFontSizes[next]));
+      return next;
+    });
+  };
 
   const refresh = async () => {
     const groupRows = await listGroups();
@@ -412,7 +431,7 @@ export function ContactsPage() {
   };
 
   return (
-    <div className={draggedContactIds.length === 0 ? "page contacts-page" : "page contacts-page dragging-contact"}>
+    <div className={`${draggedContactIds.length === 0 ? "page contacts-page" : "page contacts-page dragging-contact"} contacts-font-${contactsFontSize}`}>
       <div className="contacts-tabs" role="tablist" aria-label="Kontakte">
         <button className={tab === "all" ? "active" : ""} type="button" onClick={() => setTab("all")}>
           Alle Kontakte
@@ -502,7 +521,7 @@ export function ContactsPage() {
               </div>
               <label className="checkbox-row email-default-option">
                 <input type="checkbox" checked={rememberEmailApp} onChange={(event) => setRememberEmailApp(event.target.checked)} />
-                Diese Anwendung als Standard für E-Mails in AgendaKontakte verwenden
+                Diese Anwendung als Standard für E-Mails in DMH Kontakte und Kalender verwenden
               </label>
               <div className="button-row">
                 <button className="primary" type="button" onClick={sendEmail}>E-Mail öffnen</button>
@@ -650,6 +669,27 @@ export function ContactsPage() {
           </div>
         </section>
       )}
+
+      <div className="contacts-font-control" role="group" aria-label="Schriftgröße der Kontakte">
+        <button
+          type="button"
+          onClick={() => changeContactsFontSize(-1)}
+          disabled={contactsFontSizeIndex === 0}
+          aria-label="Schrift verkleinern"
+          title="Schrift verkleinern"
+        >
+          <Minus size={22} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          onClick={() => changeContactsFontSize(1)}
+          disabled={contactsFontSizeIndex === contactsFontSizes.length - 1}
+          aria-label="Schrift vergrößern"
+          title="Schrift vergrößern"
+        >
+          <Plus size={22} aria-hidden="true" />
+        </button>
+      </div>
     </div>
   );
 }

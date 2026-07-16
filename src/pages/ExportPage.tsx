@@ -60,7 +60,7 @@ export function ExportPage() {
   const runContactExport = async (kind: ContactExportKind) => {
     try {
       const path = await save({
-        defaultPath: `AgendaKontakte-Kontakte-${kind}.csv`,
+        defaultPath: `DMH-Kontakte-${kind}.csv`,
         filters: [{ name: "CSV", extensions: ["csv"] }]
       });
       if (!path) return;
@@ -88,7 +88,7 @@ export function ExportPage() {
         return;
       }
       const path = await save({
-        defaultPath: "AgendaKontakte-Kalender.ics",
+        defaultPath: "DMH-Kalender.ics",
         filters: [{ name: "ICS", extensions: ["ics"] }]
       });
       if (!path) return;

@@ -555,7 +555,36 @@ td input[type="checkbox"] {
 }
 
 .contacts-page {
+  --contacts-font-size: 16px;
+  --contacts-small-font-size: 13px;
+  --contacts-title-font-size: 22px;
+  font-size: var(--contacts-font-size);
   gap: 0.45rem;
+  padding-bottom: 4.5rem;
+}
+
+.contacts-page.contacts-font-14 {
+  --contacts-font-size: 14px;
+  --contacts-small-font-size: 12px;
+  --contacts-title-font-size: 20px;
+}
+
+.contacts-page.contacts-font-16 {
+  --contacts-font-size: 16px;
+  --contacts-small-font-size: 13px;
+  --contacts-title-font-size: 22px;
+}
+
+.contacts-page.contacts-font-18 {
+  --contacts-font-size: 18px;
+  --contacts-small-font-size: 15px;
+  --contacts-title-font-size: 25px;
+}
+
+.contacts-page.contacts-font-20 {
+  --contacts-font-size: 20px;
+  --contacts-small-font-size: 17px;
+  --contacts-title-font-size: 28px;
 }
 
 .contacts-tabs {
@@ -1040,6 +1069,27 @@ table {
   vertical-align: middle;
 }
 
+.contact-table-pagination {
+  align-items: center;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 0.55rem;
+  justify-content: flex-end;
+  margin-top: 0.45rem;
+  padding-top: 0.45rem;
+}
+
+.contact-table-pagination span {
+  color: var(--accent);
+  font-size: var(--contacts-small-font-size, 0.8rem);
+}
+
+.contact-table-pagination button {
+  min-height: 30px;
+  min-width: 32px;
+  padding: 0.2rem;
+}
+
 .calendar-page {
   max-width: 1600px;
 }
@@ -1057,8 +1107,7 @@ table {
 }
 
 .calendar-navigation,
-.calendar-view-switch,
-.calendar-date-filter {
+.calendar-view-switch {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
@@ -1070,40 +1119,6 @@ table {
   margin: 0 0 0 0.5rem;
   min-width: 0;
   text-transform: capitalize;
-}
-
-.calendar-date-filter {
-  background: #ffffff;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.35rem;
-}
-
-.calendar-date-filter label {
-  align-items: center;
-  display: flex;
-  gap: 0.35rem;
-}
-
-.calendar-date-filter span {
-  color: var(--accent);
-  font-size: 0.82rem;
-  font-weight: 800;
-  white-space: nowrap;
-}
-
-.calendar-date-filter input,
-.calendar-date-filter select {
-  min-height: 38px;
-  padding: 0.35rem 0.5rem;
-}
-
-.calendar-date-filter input {
-  width: 92px;
-}
-
-.calendar-date-filter select {
-  width: auto;
 }
 
 .calendar-category-filter {
@@ -1389,9 +1404,6 @@ table {
     width: 100%;
   }
 
-  .calendar-date-filter {
-    width: 100%;
-  }
 }
 
 .contacts-table th,
@@ -1403,6 +1415,35 @@ table {
 
 .contacts-table th {
   font-size: 0.82rem;
+}
+
+.contacts-table .contact-sort-button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: inherit;
+  display: inline-flex;
+  font: inherit;
+  font-weight: 800;
+  gap: 0.2rem;
+  justify-content: flex-start;
+  min-height: 26px;
+  padding: 0.1rem 0.2rem;
+}
+
+.contacts-table .contact-sort-button svg {
+  color: #7b8792;
+}
+
+.contacts-table .contact-sort-button:hover,
+.contacts-table .contact-sort-button:focus-visible {
+  background: #edf3f8;
+  color: var(--primary-dark);
+}
+
+.contacts-table .contact-sort-button.active svg {
+  color: var(--primary);
 }
 
 .contacts-table td {
@@ -1590,6 +1631,69 @@ table {
   gap: 0.2rem;
 }
 
+.contacts-page .contacts-tabs button,
+.contacts-page .search-field input,
+.contacts-page .contacts-actions button,
+.contacts-page .groups-panel,
+.contacts-page .group-create input,
+.contacts-page .group-create button,
+.contacts-page .group-filter,
+.contacts-page .group-drop > button,
+.contacts-page .bulk-add-row,
+.contacts-page .email-app-dialog,
+.contacts-page .contact-form,
+.contacts-page .contacts-table th,
+.contacts-page .contacts-table td {
+  font-size: var(--contacts-font-size);
+}
+
+.contacts-page .contacts-title h2 {
+  font-size: var(--contacts-title-font-size);
+}
+
+.contacts-page .contacts-title span,
+.contacts-page .selection-count,
+.contacts-page .contact-count,
+.contacts-page .contact-primary small,
+.contacts-page .bulk-add-row small,
+.contacts-page .email-app-option small {
+  font-size: var(--contacts-small-font-size);
+}
+
+.contacts-page .contacts-table tbody td {
+  line-height: calc(var(--contacts-font-size) + 7px);
+}
+
+.contacts-font-control {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  bottom: 1rem;
+  box-shadow: 0 6px 18px rgba(50, 30, 38, 0.16);
+  display: flex;
+  font-size: 16px;
+  gap: 0.25rem;
+  left: calc(290px + 1.2rem);
+  padding: 0.25rem;
+  position: fixed;
+  z-index: 12;
+}
+
+.contacts-font-control button {
+  border-width: 1px;
+  height: 42px;
+  min-height: 42px;
+  min-width: 42px;
+  padding: 0;
+  width: 42px;
+}
+
+.contacts-font-control button:not(:disabled):hover {
+  background: var(--soft);
+  color: var(--primary-dark);
+}
+
 @media (max-width: 1400px) {
   .app-shell {
     grid-template-columns: 240px minmax(0, 1fr);
@@ -1601,6 +1705,10 @@ table {
 
   .contacts-workspace {
     grid-template-columns: 240px minmax(0, 1fr);
+  }
+
+  .contacts-font-control {
+    left: calc(240px + 1rem);
   }
 }
 
@@ -1631,6 +1739,10 @@ table {
 
   .content {
     padding: 1rem;
+  }
+
+  .contacts-font-control {
+    left: 1rem;
   }
 
   .contacts-commandbar,
@@ -1698,6 +1810,11 @@ table {
   .content,
   .sidebar {
     padding: 0.75rem;
+  }
+
+  .contacts-font-control {
+    bottom: 0.75rem;
+    left: 0.75rem;
   }
 
   .nav-list {
@@ -2084,6 +2201,706 @@ td small {
   max-width: 680px;
 }
 
+.settings-page {
+  max-width: 980px;
+}
+
+.settings-task-panel,
+.settings-migration-panel,
+.settings-mail-panel {
+  padding: 1rem;
+}
+
+.settings-task-heading {
+  align-items: center;
+  display: flex;
+  gap: 0.7rem;
+  min-width: 0;
+}
+
+.settings-task-heading > svg,
+.settings-summary-icon {
+  align-items: center;
+  background: #f7e7ee;
+  border-radius: 8px;
+  color: var(--primary);
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 42px;
+  justify-content: center;
+  width: 42px;
+}
+
+.settings-task-heading h3,
+.settings-task-heading p,
+.settings-mail-panel summary h3,
+.settings-mail-panel summary p,
+.settings-account-row strong,
+.settings-account-row span,
+.settings-account-row small {
+  margin: 0;
+}
+
+.settings-task-heading p,
+.settings-mail-panel summary p,
+.settings-account-row span {
+  color: var(--accent);
+  font-size: 0.9rem;
+}
+
+.settings-action-grid {
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 0.9rem;
+}
+
+.settings-action-button {
+  align-items: center;
+  background: #ffffff;
+  border-color: #d7b5c4;
+  display: flex;
+  gap: 0.7rem;
+  justify-content: flex-start;
+  min-height: 68px;
+  padding: 0.7rem 0.85rem;
+  text-align: left;
+}
+
+.settings-action-button > svg {
+  color: var(--primary);
+  flex: 0 0 auto;
+}
+
+.settings-action-button span,
+.settings-action-button strong,
+.settings-action-button small {
+  display: block;
+  min-width: 0;
+}
+
+.settings-undo-import {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--accent);
+  display: inline-flex;
+  font-size: 0.84rem;
+  gap: 0.35rem;
+  margin-top: 0.55rem;
+  min-height: 32px;
+  padding: 0.2rem 0.35rem;
+}
+
+.settings-undo-import:not(:disabled):hover {
+  background: var(--soft);
+  color: var(--primary-dark);
+}
+
+.outlook-import-backdrop {
+  padding: clamp(0.7rem, 3vw, 2rem);
+}
+
+.outlook-import-dialog {
+  max-width: 1040px;
+  padding: clamp(0.85rem, 2vw, 1.35rem);
+}
+
+.outlook-import-heading,
+.outlook-import-heading > div,
+.outlook-import-section-heading,
+.outlook-import-section-heading > div,
+.outlook-import-confirm,
+.outlook-import-confirm > div {
+  align-items: center;
+  display: flex;
+}
+
+.outlook-import-heading {
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.outlook-import-heading > div,
+.outlook-import-section-heading > div,
+.outlook-import-confirm > div {
+  gap: 0.7rem;
+  min-width: 0;
+}
+
+.outlook-import-heading h3,
+.outlook-import-heading p,
+.outlook-import-section h4,
+.outlook-import-section p,
+.outlook-import-success h4,
+.outlook-import-success p {
+  margin: 0;
+}
+
+.outlook-import-heading p,
+.outlook-import-section-heading p {
+  color: var(--accent);
+  font-size: 0.88rem;
+}
+
+.outlook-import-icon {
+  align-items: center;
+  background: var(--soft);
+  border-radius: 10px;
+  color: var(--primary);
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 44px;
+  justify-content: center;
+  width: 44px;
+}
+
+.outlook-import-source-choice {
+  display: grid;
+  gap: 0.85rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 1.15rem;
+}
+
+.outlook-import-source-choice > button {
+  align-items: center;
+  background: #fff;
+  border: 1px solid #d7b5c4;
+  display: flex;
+  gap: 0.85rem;
+  justify-content: flex-start;
+  min-height: 92px;
+  padding: 1rem;
+  text-align: left;
+}
+
+.outlook-import-source-choice > button:hover {
+  background: #fff8fb;
+  border-color: var(--primary);
+}
+
+.outlook-import-source-choice svg {
+  color: var(--primary);
+  flex: 0 0 auto;
+}
+
+.outlook-import-source-choice span,
+.outlook-import-source-choice strong,
+.outlook-import-source-choice small {
+  display: block;
+  min-width: 0;
+}
+
+.outlook-import-source-choice small {
+  color: var(--accent);
+  margin-top: 0.2rem;
+}
+
+.outlook-import-back {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--accent);
+  display: inline-flex;
+  font-size: 0.84rem;
+  gap: 0.3rem;
+  margin-top: 0.8rem;
+  padding: 0.25rem 0;
+}
+
+.outlook-import-progress,
+.outlook-import-success {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  justify-content: center;
+  min-height: 250px;
+  text-align: center;
+}
+
+.outlook-import-progress svg,
+.outlook-import-success > svg {
+  color: var(--primary);
+}
+
+.outlook-import-progress span,
+.outlook-import-success span {
+  color: var(--accent);
+  font-size: 0.88rem;
+}
+
+.outlook-import-error {
+  align-items: flex-start;
+  background: #fff1f0;
+  border: 1px solid #efb5b0;
+  border-radius: 8px;
+  color: #8d211b;
+  display: flex;
+  gap: 0.55rem;
+  margin-top: 0.85rem;
+  padding: 0.7rem 0.8rem;
+}
+
+.outlook-import-error svg {
+  flex: 0 0 auto;
+}
+
+.outlook-import-summary {
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 0.9rem;
+}
+
+.outlook-import-summary span {
+  background: #f6f8fa;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--accent);
+  display: flex;
+  flex-direction: column;
+  font-size: 0.78rem;
+  padding: 0.55rem 0.65rem;
+}
+
+.outlook-import-summary strong {
+  color: var(--primary-dark);
+  font-size: 1.15rem;
+}
+
+.outlook-import-section {
+  border-top: 1px solid var(--border);
+  margin-top: 1rem;
+  padding-top: 1rem;
+}
+
+.outlook-import-section-heading {
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.step-number {
+  align-items: center;
+  background: var(--primary);
+  border-radius: 50%;
+  color: #fff;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 0.82rem;
+  font-weight: 800;
+  height: 28px;
+  justify-content: center;
+  width: 28px;
+}
+
+.outlook-source-list {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.7rem;
+  max-height: 235px;
+  overflow: auto;
+  padding-right: 0.2rem;
+}
+
+.outlook-source-card {
+  align-items: center;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: auto auto minmax(0, 1fr) minmax(150px, auto);
+  padding: 0.55rem 0.65rem;
+}
+
+.outlook-source-card.selected {
+  background: #fff8fb;
+  border-color: #ca7a9d;
+}
+
+.outlook-source-card > svg {
+  color: var(--primary);
+}
+
+.outlook-source-name,
+.outlook-source-name strong,
+.outlook-source-name small,
+.outlook-source-counts,
+.outlook-source-counts strong,
+.outlook-source-counts small {
+  display: block;
+  min-width: 0;
+}
+
+.outlook-source-name small,
+.outlook-source-counts small {
+  color: var(--accent);
+  font-size: 0.76rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.outlook-source-counts {
+  text-align: right;
+}
+
+.outlook-review-toolbar {
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, auto);
+  margin-top: 0.7rem;
+}
+
+.outlook-review-search {
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  gap: 0.4rem;
+  min-width: 0;
+  padding: 0 0.65rem;
+}
+
+.outlook-review-search:focus-within {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(138, 4, 63, 0.1);
+}
+
+.outlook-review-search svg {
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+
+.outlook-review-search input {
+  border: 0;
+  min-width: 0;
+  outline: 0;
+  width: 100%;
+}
+
+.outlook-review-list {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-top: 0.55rem;
+  overflow: hidden;
+}
+
+.outlook-review-row {
+  align-items: center;
+  background: #fff;
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 0.6rem;
+  grid-template-columns: auto minmax(0, 1fr) minmax(135px, auto);
+  min-height: 58px;
+  padding: 0.5rem 0.65rem;
+}
+
+.outlook-review-row:last-child {
+  border-bottom: 0;
+}
+
+.outlook-review-row.status-possible_phone,
+.outlook-review-row.status-possible_name {
+  background: #fffaf1;
+}
+
+.outlook-review-row.status-duplicate_email {
+  background: #f7f8f9;
+}
+
+.outlook-review-status {
+  align-items: center;
+  background: #e7f5ed;
+  border-radius: 50%;
+  color: #176b45;
+  display: inline-flex;
+  height: 28px;
+  justify-content: center;
+  width: 28px;
+}
+
+.status-possible_phone .outlook-review-status,
+.status-possible_name .outlook-review-status {
+  background: #fff0cf;
+  color: #925d00;
+}
+
+.status-duplicate_email .outlook-review-status {
+  background: #e8ecef;
+  color: #68737c;
+}
+
+.outlook-review-person,
+.outlook-review-person strong,
+.outlook-review-person span,
+.outlook-review-person small {
+  display: block;
+  min-width: 0;
+}
+
+.outlook-review-person span,
+.outlook-review-person small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.outlook-review-person span {
+  color: #35495a;
+  font-size: 0.84rem;
+}
+
+.outlook-review-person small {
+  color: var(--accent);
+  font-size: 0.74rem;
+}
+
+.outlook-conflict-decision,
+.outlook-group-option {
+  align-items: center;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 0.8rem;
+  gap: 0.35rem;
+}
+
+.outlook-skip-label,
+.outlook-new-label {
+  color: #68737c;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-align: right;
+}
+
+.outlook-new-label {
+  color: #176b45;
+}
+
+.outlook-review-empty {
+  color: var(--accent);
+  margin: 0;
+  padding: 1.2rem;
+  text-align: center;
+}
+
+.outlook-pagination {
+  align-items: center;
+  display: flex;
+  gap: 0.55rem;
+  justify-content: flex-end;
+  margin-top: 0.55rem;
+}
+
+.outlook-pagination span {
+  color: var(--accent);
+  font-size: 0.78rem;
+}
+
+.outlook-pagination button {
+  min-height: 32px;
+  min-width: 34px;
+  padding: 0.25rem;
+}
+
+.outlook-import-confirm {
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.outlook-import-confirm .primary {
+  flex: 0 0 auto;
+}
+
+.outlook-import-success .primary {
+  margin-top: 0.65rem;
+}
+
+@media (max-width: 760px) {
+  .outlook-import-source-choice,
+  .outlook-import-summary,
+  .outlook-review-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .outlook-source-card {
+    grid-template-columns: auto auto minmax(0, 1fr);
+  }
+
+  .outlook-source-counts {
+    grid-column: 3;
+    text-align: left;
+  }
+
+  .outlook-review-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .outlook-review-row > :last-child {
+    grid-column: 2;
+    justify-self: start;
+    text-align: left;
+  }
+
+  .outlook-import-confirm {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .outlook-import-confirm .primary {
+    width: 100%;
+  }
+}
+
+@media (max-width: 480px) {
+  .outlook-import-heading p,
+  .outlook-import-section-heading p {
+    display: none;
+  }
+
+  .outlook-import-section-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+.settings-action-button small {
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 500;
+  margin-top: 0.1rem;
+}
+
+.settings-migration-panel {
+  align-items: center;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.settings-state {
+  align-items: center;
+  display: flex;
+  font-weight: 700;
+  gap: 0.3rem;
+}
+
+.settings-state.ready {
+  color: #176b45;
+}
+
+.settings-state.error {
+  color: #9a1b15;
+}
+
+.settings-migration-button {
+  flex: 0 0 auto;
+}
+
+.settings-migration-button:disabled {
+  background: #e9dfe3;
+  border-color: #d9c9cf;
+  color: #76666c;
+}
+
+.settings-mail-panel {
+  display: block;
+}
+
+.settings-mail-panel > summary {
+  align-items: center;
+  cursor: pointer;
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  list-style: none;
+  min-width: 0;
+}
+
+.settings-mail-panel > summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-mail-panel > summary:focus-visible {
+  border-radius: 6px;
+  outline: 3px solid rgba(138, 4, 63, 0.25);
+  outline-offset: 4px;
+}
+
+.settings-account-count {
+  background: var(--soft);
+  border-radius: 999px;
+  color: var(--primary-dark);
+  font-size: 0.82rem;
+  font-weight: 800;
+  min-width: 28px;
+  padding: 0.2rem 0.45rem;
+  text-align: center;
+}
+
+.settings-summary-chevron {
+  color: var(--accent);
+  transition: transform 160ms ease;
+}
+
+.settings-mail-panel[open] .settings-summary-chevron {
+  transform: rotate(180deg);
+}
+
+.settings-mail-content {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 1rem;
+  margin-top: 0.9rem;
+  padding-top: 0.9rem;
+}
+
+.settings-mail-content > .primary {
+  justify-self: start;
+}
+
+.settings-found-accounts,
+.settings-saved-accounts {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.settings-found-accounts h4,
+.settings-saved-accounts h4 {
+  font-size: 0.9rem;
+  margin: 0.1rem 0 0;
+}
+
+.settings-account-row {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+  padding: 0.7rem;
+}
+
+.settings-account-row > div:first-child {
+  min-width: 0;
+}
+
+.settings-account-row strong,
+.settings-account-row span,
+.settings-account-row small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.settings-account-row small {
+  font-size: 0.78rem;
+  margin-top: 0.15rem;
+}
+
 .password-reveal-heading {
   align-items: center;
   display: flex;
@@ -2187,6 +3004,48 @@ td small {
   font-weight: 800;
   line-height: 1.5;
   padding: 1rem;
+}
+
+.outlook-one-time-import-panel .panel-heading p {
+  color: var(--accent);
+  margin: 0.3rem 0 0;
+  max-width: 860px;
+}
+
+.outlook-one-time-import-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+}
+
+.outlook-one-time-import-card {
+  background: #fffdfd;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: grid;
+  gap: 0.85rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 1rem;
+}
+
+.outlook-one-time-import-card > svg {
+  color: var(--primary);
+}
+
+.outlook-one-time-import-card h4,
+.outlook-one-time-import-card p {
+  margin: 0;
+}
+
+.outlook-one-time-import-card p {
+  color: var(--accent);
+  line-height: 1.5;
+  margin-top: 0.25rem;
+}
+
+.outlook-one-time-import-card button {
+  grid-column: 1 / -1;
+  width: 100%;
 }
 
 .migration-share-panel {
@@ -2299,6 +3158,26 @@ td small {
 }
 
 @media (max-width: 1100px) {
+  .settings-migration-panel,
+  .settings-account-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .settings-migration-button,
+  .settings-account-row > button {
+    width: 100%;
+  }
+
+  .settings-account-row .inline-actions {
+    align-items: stretch;
+    width: 100%;
+  }
+
+  .settings-account-row .inline-actions button {
+    flex: 1 1 180px;
+  }
+
   .migration-share-panel,
   .mail-account-row {
     align-items: stretch;
@@ -2326,6 +3205,18 @@ td small {
 }
 
 @media (max-width: 680px) {
+  .settings-action-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-mail-panel > summary {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .settings-account-count {
+    display: none;
+  }
+
   .mail-account-details div {
     grid-template-columns: 1fr;
   }

@@ -1,6 +1,6 @@
-import { Copy, Edit, GripVertical, Mail, Printer, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, ChevronsUpDown, Copy, Edit, GripVertical, Mail, Printer, Trash2 } from "lucide-react";
 import type { PointerEvent } from "react";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Contact } from "../types/contact";
 import { displayName } from "../utils/contact";
 import { t } from "../i18n";
@@ -19,6 +19,12 @@ interface ContactTableProps {
   dragEnabled?: boolean;
 }
 
+type ContactSortKey = "name" | "email";
+type SortDirection = "asc" | "desc";
+
+const contactCollator = new Intl.Collator("de", { numeric: true, sensitivity: "base" });
+const contactsPerPage = 100;
+
 export function ContactTable({
   contacts,
   onEdit,
@@ -33,6 +39,58 @@ export function ContactTable({
   dragEnabled = true
 }: ContactTableProps) {
   const [selectedContactId, setSelectedContactId] = useState<number | undefined>();
+  const [sort, setSort] = useState<{ key: ContactSortKey; direction: SortDirection }>({
+    key: "name",
+    direction: "asc"
+  });
+  const [page, setPage] = useState(1);
+
+  const sortedContacts = useMemo(() => {
+    return contacts
+      .map((contact, originalIndex) => ({ contact, originalIndex }))
+      .sort((left, right) => {
+        const leftValue = sort.key === "name" ? displayName(left.contact).trim() : left.contact.email.trim();
+        const rightValue = sort.key === "name" ? displayName(right.contact).trim() : right.contact.email.trim();
+        const leftMissing = leftValue.length === 0;
+        const rightMissing = rightValue.length === 0;
+
+        if (leftMissing !== rightMissing) {
+          if (sort.key === "email") return sort.direction === "asc" ? (leftMissing ? -1 : 1) : (leftMissing ? 1 : -1);
+          return leftMissing ? 1 : -1;
+        }
+
+        const comparison = contactCollator.compare(leftValue, rightValue);
+        if (comparison !== 0) return sort.direction === "asc" ? comparison : -comparison;
+
+        const nameComparison = contactCollator.compare(displayName(left.contact), displayName(right.contact));
+        return nameComparison || left.originalIndex - right.originalIndex;
+      })
+      .map(({ contact }) => contact);
+  }, [contacts, sort]);
+  const totalPages = Math.max(1, Math.ceil(sortedContacts.length / contactsPerPage));
+  const visibleContacts = sortedContacts.slice((page - 1) * contactsPerPage, page * contactsPerPage);
+
+  useEffect(() => {
+    setPage(1);
+  }, [contacts, sort]);
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
+
+  const toggleSort = (key: ContactSortKey) => {
+    setSort((current) => ({
+      key,
+      direction: current.key === key && current.direction === "asc" ? "desc" : "asc"
+    }));
+  };
+
+  const sortIcon = (key: ContactSortKey) => {
+    if (sort.key !== key) return <ChevronsUpDown size={14} aria-hidden="true" />;
+    return sort.direction === "asc"
+      ? <ChevronUp size={15} aria-hidden="true" />
+      : <ChevronDown size={15} aria-hidden="true" />;
+  };
 
   const startPointerDrag = (event: PointerEvent<HTMLTableRowElement>, contact: Contact) => {
     if (!dragEnabled || event.button !== 0 || !contact.id) return;
@@ -69,13 +127,31 @@ export function ContactTable({
           </colgroup>
           <thead>
             <tr>
-              <th>Name</th>
-              <th>E-Mail</th>
+              <th aria-sort={sort.key === "name" ? (sort.direction === "asc" ? "ascending" : "descending") : "none"}>
+                <button
+                  className={sort.key === "name" ? "contact-sort-button active" : "contact-sort-button"}
+                  type="button"
+                  onClick={() => toggleSort("name")}
+                  title="Nach Name sortieren"
+                >
+                  Name {sortIcon("name")}
+                </button>
+              </th>
+              <th aria-sort={sort.key === "email" ? (sort.direction === "asc" ? "ascending" : "descending") : "none"}>
+                <button
+                  className={sort.key === "email" ? "contact-sort-button active" : "contact-sort-button"}
+                  type="button"
+                  onClick={() => toggleSort("email")}
+                  title="Nach E-Mail sortieren; Kontakte ohne E-Mail zuerst"
+                >
+                  E-Mail {sortIcon("email")}
+                </button>
+              </th>
               <th>Aktionen</th>
             </tr>
           </thead>
           <tbody>
-            {contacts.map((contact) => {
+            {visibleContacts.map((contact) => {
               const isMultiSelected = Boolean(contact.id && selectedContactIds.has(contact.id));
               return (
                 <tr
@@ -156,6 +232,17 @@ export function ContactTable({
           </tbody>
         </table>
       </div>
+      {sortedContacts.length > contactsPerPage && (
+        <div className="contact-table-pagination" aria-label="Seitennavigation Kontakte">
+          <button type="button" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={page === 1} aria-label="Vorherige Seite">
+            <ChevronLeft size={18} />
+          </button>
+          <span>Seite {page} von {totalPages} · {sortedContacts.length} Kontakte</span>
+          <button type="button" onClick={() => setPage((value) => Math.min(totalPages, value + 1))} disabled={page === totalPages} aria-label="Nächste Seite">
+            <ChevronRight size={18} />
+          </button>
+        </div>
+      )}
     </section>
   );
 }

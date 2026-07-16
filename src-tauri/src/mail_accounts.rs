@@ -242,7 +242,7 @@ fn run_helper<T: DeserializeOwned>(app: &AppHandle, arguments: &[String]) -> Res
 
     if !found_helper {
         return Err(
-            "Outlook-Hilfsprogramm fehlt. Installieren oder bauen Sie AgendaKontakte erneut."
+            "Outlook-Hilfsprogramm fehlt. Installieren oder bauen Sie DMH Kontakte und Kalender erneut."
                 .to_string(),
         );
     }
@@ -297,7 +297,7 @@ fn run_secret_helper(
 
     if !found_helper {
         return Err(
-            "Outlook-Hilfsprogramm fehlt. Installieren oder bauen Sie AgendaKontakte erneut."
+            "Outlook-Hilfsprogramm fehlt. Installieren oder bauen Sie DMH Kontakte und Kalender erneut."
                 .to_string(),
         );
     }
