@@ -11,6 +11,7 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 
 mod mail_accounts;
+mod vault;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -62,6 +63,7 @@ fn url_encode_component(value: &str) -> String {
 
 struct AppState {
     db_path: Mutex<PathBuf>,
+    vault: Mutex<vault::VaultRuntime>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -546,6 +548,26 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS vault_config (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            protected_key BLOB NOT NULL,
+            username TEXT NOT NULL DEFAULT '',
+            recovery_email TEXT NOT NULL DEFAULT '',
+            password_hash TEXT,
+            protection_enabled INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS vault_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_uuid TEXT NOT NULL UNIQUE,
+            nonce BLOB NOT NULL,
+            ciphertext BLOB NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_vault_entries_updated_at
+            ON vault_entries(updated_at DESC);
         ",
     )
     .map_err(|err| err.to_string())?;
@@ -1542,7 +1564,7 @@ for ($storeIndex = 1; $storeIndex -le $namespace.Stores.Count; $storeIndex++) {
     Read-Folders $store.GetRootFolder() ([string]$store.StoreID) ([string]$store.DisplayName)
   } catch { $script:skipped++ }
 }
-[pscustomobject]@{ contacts = @($contacts); skipped = $skipped } | ConvertTo-Json -Depth 6 -Compress
+[pscustomobject]@{ contacts = $contacts.ToArray(); skipped = $skipped } | ConvertTo-Json -Depth 6 -Compress
 "#;
 
     let output = hidden_command("powershell")
@@ -2886,7 +2908,7 @@ for ($storeIndex = 1; $storeIndex -le $namespace.Stores.Count; $storeIndex++) {
   } catch { $script:skipped++ }
 }
 
-[pscustomobject]@{ events = @($events); skipped = $skipped } | ConvertTo-Json -Depth 6 -Compress
+[pscustomobject]@{ events = $events.ToArray(); skipped = $skipped } | ConvertTo-Json -Depth 6 -Compress
 "#;
 
     let output = hidden_command("powershell")
@@ -3098,6 +3120,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(AppState {
             db_path: Mutex::new(PathBuf::new()),
+            vault: Mutex::new(vault::VaultRuntime::default()),
         })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -3146,7 +3169,17 @@ pub fn run() {
             mail_accounts::reveal_mail_password,
             mail_accounts::get_migration_capture_status,
             mail_accounts::submit_migration_credentials,
-            mail_accounts::remove_mail_account
+            mail_accounts::remove_mail_account,
+            vault::get_vault_status,
+            vault::list_vault_entries,
+            vault::save_vault_entry,
+            vault::delete_vault_entry,
+            vault::configure_vault_protection,
+            vault::disable_vault_protection,
+            vault::unlock_vault,
+            vault::lock_vault,
+            vault::request_vault_recovery,
+            vault::complete_vault_recovery
         ])
         .run(tauri::generate_context!())
         .expect("Fehler beim Starten von DMH Kontakte und Kalender");

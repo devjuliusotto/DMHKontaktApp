@@ -17,6 +17,12 @@ import type {
   OutlookAccountCandidate,
   RevealedMailPassword
 } from "../types/mail";
+import type {
+  VaultEntry,
+  VaultEntryInput,
+  VaultRecoveryDelivery,
+  VaultStatus
+} from "../types/vault";
 
 export function listContacts(search = "", groupId?: number): Promise<Contact[]> {
   return invoke("list_contacts", { search, groupId });
@@ -168,4 +174,48 @@ export function submitMigrationCredentials(): Promise<MigrationCaptureResult> {
 
 export function removeMailAccount(accountId: number): Promise<void> {
   return invoke("remove_mail_account", { accountId });
+}
+
+export function getVaultStatus(): Promise<VaultStatus> {
+  return invoke("get_vault_status");
+}
+
+export function listVaultEntries(): Promise<VaultEntry[]> {
+  return invoke("list_vault_entries");
+}
+
+export function saveVaultEntry(entry: VaultEntryInput): Promise<number> {
+  return invoke("save_vault_entry", { entry });
+}
+
+export function deleteVaultEntry(id: number): Promise<void> {
+  return invoke("delete_vault_entry", { id });
+}
+
+export function configureVaultProtection(
+  username: string,
+  recoveryEmail: string,
+  password: string
+): Promise<VaultStatus> {
+  return invoke("configure_vault_protection", { username, recoveryEmail, password });
+}
+
+export function disableVaultProtection(): Promise<VaultStatus> {
+  return invoke("disable_vault_protection");
+}
+
+export function unlockVault(username: string, password: string): Promise<VaultStatus> {
+  return invoke("unlock_vault", { username, password });
+}
+
+export function lockVault(): Promise<VaultStatus> {
+  return invoke("lock_vault");
+}
+
+export function requestVaultRecovery(username: string): Promise<VaultRecoveryDelivery> {
+  return invoke("request_vault_recovery", { username });
+}
+
+export function completeVaultRecovery(code: string, newPassword: string): Promise<VaultStatus> {
+  return invoke("complete_vault_recovery", { code, newPassword });
 }

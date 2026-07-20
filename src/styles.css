@@ -3255,3 +3255,435 @@ td small {
     border: 0;
   }
 }
+
+/* Passwort-Speicher und App-Schutz */
+.passwords-header-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.vault-protection-card {
+  align-items: center;
+  background: #fff8f3;
+  border: 1px solid #d8b79d;
+  border-radius: 10px;
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  padding: 0.9rem 1rem;
+}
+
+.vault-protection-card.enabled {
+  background: #eef7f3;
+  border-color: #9ccbb5;
+}
+
+.vault-protection-card p,
+.vault-protection-card strong {
+  display: block;
+  margin: 0;
+}
+
+.vault-protection-card p {
+  color: var(--accent);
+  margin-top: 0.2rem;
+}
+
+.vault-protection-icon {
+  align-items: center;
+  background: #ffffff;
+  border-radius: 999px;
+  color: var(--primary);
+  display: inline-flex;
+  height: 48px;
+  justify-content: center;
+  width: 48px;
+}
+
+.vault-protection-card.enabled .vault-protection-icon {
+  color: #176b45;
+}
+
+.passwords-toolbar {
+  justify-content: space-between;
+}
+
+.passwords-toolbar > span {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.passwords-table-panel {
+  padding: 0.6rem;
+}
+
+.passwords-table {
+  min-width: 580px;
+}
+
+.passwords-table th,
+.passwords-table td {
+  border-bottom: 1px solid #eadde2;
+  overflow-wrap: anywhere;
+  padding: 0.8rem;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.passwords-table th:first-child {
+  width: 34%;
+}
+
+.passwords-table th:nth-child(2) {
+  width: 34%;
+}
+
+.passwords-table th:nth-child(3) {
+  width: 32%;
+}
+
+.passwords-table tbody tr.password-row {
+  cursor: pointer;
+}
+
+.passwords-table tbody tr.password-row:hover td,
+.passwords-table tbody tr.password-row:focus td {
+  background: #fbf1f5;
+  outline: 0;
+}
+
+.password-table-value,
+.vault-secret-line,
+.vault-copy-line,
+.vault-link-line {
+  align-items: center;
+  display: flex;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.password-table-value code,
+.vault-secret-line code {
+  background: #f5f0f2;
+  border-radius: 6px;
+  display: block;
+  flex: 1 1 auto;
+  font-family: Consolas, "Courier New", monospace;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: 0.45rem 0.55rem;
+}
+
+.passwords-table .icon-only,
+.vault-drawer .icon-only {
+  min-height: 34px;
+  min-width: 34px;
+  padding: 0.35rem;
+}
+
+.muted-value {
+  color: #777;
+}
+
+.passwords-empty {
+  color: var(--accent);
+  height: 230px;
+  text-align: center !important;
+}
+
+.passwords-empty > * {
+  display: block;
+  margin: 0.35rem auto;
+}
+
+.vault-drawer-backdrop {
+  background: rgba(32, 33, 36, 0.36);
+  bottom: 0;
+  left: 0;
+  position: fixed;
+  right: 0;
+  top: 0;
+  z-index: 55;
+}
+
+.vault-drawer {
+  background: #ffffff;
+  border-left: 1px solid var(--border);
+  bottom: 0;
+  box-shadow: -16px 0 42px rgba(32, 33, 36, 0.2);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-width: 100%;
+  overflow: hidden;
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: min(470px, 92vw);
+}
+
+.vault-drawer > header {
+  align-items: flex-start;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  padding: 1.2rem;
+}
+
+.vault-drawer > header span {
+  color: var(--accent);
+  font-size: 0.85rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.vault-drawer > header h3 {
+  font-size: 1.45rem;
+  margin: 0.25rem 0 0;
+}
+
+.vault-detail-list {
+  display: grid;
+  gap: 1rem;
+  overflow-y: auto;
+  padding: 1.2rem;
+}
+
+.vault-detail-field {
+  min-width: 0;
+}
+
+.vault-detail-field > span {
+  color: var(--accent);
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 800;
+  margin-bottom: 0.3rem;
+}
+
+.vault-detail-field p,
+.vault-copy-line p,
+.vault-link-line > span {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.vault-copy-line p,
+.vault-link-line > span {
+  flex: 1 1 auto;
+}
+
+.vault-detail-field.description p {
+  background: #f7f4f5;
+  border-radius: 8px;
+  line-height: 1.5;
+  min-height: 90px;
+  padding: 0.75rem;
+}
+
+.vault-drawer > footer {
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 0.6rem;
+  justify-content: flex-end;
+  padding: 1rem 1.2rem;
+}
+
+.vault-entry-dialog {
+  max-width: 720px;
+}
+
+.vault-protection-dialog {
+  display: grid;
+  gap: 0.8rem;
+  max-width: 620px;
+}
+
+.vault-protection-dialog .panel-heading {
+  align-items: flex-start;
+}
+
+.vault-protection-dialog .panel-heading h3,
+.vault-protection-dialog .panel-heading p {
+  margin: 0;
+}
+
+.vault-protection-dialog .panel-heading p {
+  color: var(--accent);
+  margin-top: 0.25rem;
+}
+
+.vault-dialog-actions {
+  justify-content: flex-end;
+  margin-top: 1rem;
+}
+
+.vault-security-note {
+  align-items: center;
+  background: #eef7f3;
+  border-radius: 8px;
+  color: #176b45;
+  display: flex;
+  gap: 0.55rem;
+  margin: 0;
+  padding: 0.7rem;
+}
+
+.app-lock-screen,
+.app-startup-screen {
+  align-items: center;
+  background: radial-gradient(circle at top, #ffffff 0, #f3f3f5 60%);
+  display: flex;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 1.5rem;
+}
+
+.app-startup-screen {
+  flex-direction: column;
+  gap: 0.8rem;
+  text-align: center;
+}
+
+.app-startup-screen img {
+  height: 78px;
+  object-fit: contain;
+  width: 78px;
+}
+
+.app-startup-screen h1,
+.app-startup-screen p {
+  margin: 0;
+}
+
+.app-startup-screen p {
+  color: var(--accent);
+  max-width: 620px;
+}
+
+.app-lock-card {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: 0 22px 60px rgba(62, 29, 43, 0.15);
+  display: grid;
+  justify-items: center;
+  max-width: 460px;
+  padding: 1.5rem;
+  position: relative;
+  width: 100%;
+}
+
+.app-lock-card > img {
+  height: 68px;
+  object-fit: contain;
+  width: 68px;
+}
+
+.app-lock-icon {
+  align-items: center;
+  background: var(--soft);
+  border-radius: 999px;
+  color: var(--primary-dark);
+  display: flex;
+  height: 58px;
+  justify-content: center;
+  margin: 0.8rem 0;
+  width: 58px;
+}
+
+.app-lock-card form {
+  display: grid;
+  gap: 0.85rem;
+  width: 100%;
+}
+
+.app-lock-card h1,
+.app-lock-card form > p {
+  margin: 0;
+  text-align: center;
+}
+
+.app-lock-card form > p {
+  color: var(--accent);
+  line-height: 1.45;
+}
+
+.app-lock-card .app-lock-error {
+  background: #fff0f0;
+  border: 1px solid #b3261e;
+  border-radius: 8px;
+  color: #8f1d18;
+  padding: 0.7rem;
+  text-align: left;
+}
+
+.app-lock-link {
+  background: transparent;
+  border: 0;
+  color: var(--primary-dark);
+  min-height: 36px;
+  text-decoration: underline;
+}
+
+.password-input-wrap {
+  align-items: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.password-input-wrap input {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  padding-right: 3.3rem;
+}
+
+.password-input-wrap button {
+  grid-column: 2;
+  grid-row: 1;
+  margin-right: 0.35rem;
+}
+
+.recovery-code-input {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 1.5rem;
+  font-weight: 800;
+  letter-spacing: 0.35em;
+  text-align: center;
+}
+
+@media (max-width: 900px) {
+  .vault-protection-card {
+    align-items: stretch;
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .vault-protection-card > button {
+    grid-column: span 1;
+  }
+}
+
+@media (max-width: 680px) {
+  .passwords-header-actions,
+  .passwords-header-actions button,
+  .vault-protection-card > button {
+    width: 100%;
+  }
+
+  .vault-protection-card {
+    grid-template-columns: 1fr;
+  }
+
+  .vault-protection-icon {
+    justify-self: start;
+  }
+
+  .vault-drawer > footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
