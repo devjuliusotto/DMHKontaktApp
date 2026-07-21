@@ -2,6 +2,8 @@ import type { CSSProperties } from "react";
 import type { CalendarEvent } from "../types/calendar";
 
 export const defaultCalendarColor = "blue";
+export const calendarStorageKey = "agendakontakte.calendarEvents";
+export const calendarTrashStorageKey = "agendakontakte.deletedCalendarEvents";
 
 export const calendarColorOptions = [
   { value: "blue", label: "Blau", chip: "#dceafe", border: "#2563eb" },

@@ -82,6 +82,7 @@ pub struct VaultEntry {
     description: String,
     created_at: String,
     updated_at: String,
+    deleted_at: Option<String>,
 }
 
 impl Drop for VaultEntry {
@@ -312,7 +313,7 @@ fn decrypt_entry(
 pub fn get_vault_status(app: AppHandle) -> Result<VaultStatus, String> {
     let config = load_config(&app)?;
     let entry_count = open_db(&app)?
-        .query_row("SELECT COUNT(*) FROM vault_entries", [], |row| {
+        .query_row("SELECT COUNT(*) FROM vault_entries WHERE deleted_at IS NULL", [], |row| {
             row.get::<_, i64>(0)
         })
         .map_err(|error| error.to_string())? as usize;
@@ -346,13 +347,29 @@ pub fn get_vault_status(app: AppHandle) -> Result<VaultStatus, String> {
 
 #[tauri::command]
 pub fn list_vault_entries(app: AppHandle) -> Result<Vec<VaultEntry>, String> {
+    list_vault_entries_by_state(app, false)
+}
+
+#[tauri::command]
+pub fn list_deleted_vault_entries(app: AppHandle) -> Result<Vec<VaultEntry>, String> {
+    list_vault_entries_by_state(app, true)
+}
+
+fn list_vault_entries_by_state(
+    app: AppHandle,
+    deleted: bool,
+) -> Result<Vec<VaultEntry>, String> {
     let key = ensure_vault_key(&app)?;
     let conn = open_db(&app)?;
+    let query = if deleted {
+        "SELECT id, entry_uuid, nonce, ciphertext, created_at, updated_at, deleted_at
+         FROM vault_entries WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC"
+    } else {
+        "SELECT id, entry_uuid, nonce, ciphertext, created_at, updated_at, deleted_at
+         FROM vault_entries WHERE deleted_at IS NULL ORDER BY updated_at DESC"
+    };
     let mut statement = conn
-        .prepare(
-            "SELECT id, entry_uuid, nonce, ciphertext, created_at, updated_at
-             FROM vault_entries ORDER BY updated_at DESC",
-        )
+        .prepare(query)
         .map_err(|error| error.to_string())?;
     let encrypted_rows = statement
         .query_map([], |row| {
@@ -363,6 +380,7 @@ pub fn list_vault_entries(app: AppHandle) -> Result<Vec<VaultEntry>, String> {
                 row.get::<_, Vec<u8>>(3)?,
                 row.get::<_, String>(4)?,
                 row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
             ))
         })
         .map_err(|error| error.to_string())?
@@ -372,7 +390,7 @@ pub fn list_vault_entries(app: AppHandle) -> Result<Vec<VaultEntry>, String> {
     encrypted_rows
         .into_iter()
         .map(
-            |(id, entry_uuid, nonce, ciphertext, created_at, updated_at)| {
+            |(id, entry_uuid, nonce, ciphertext, created_at, updated_at, deleted_at)| {
                 let mut secret = decrypt_entry(&key, &entry_uuid, &nonce, &ciphertext)?;
                 Ok(VaultEntry {
                     id,
@@ -383,6 +401,7 @@ pub fn list_vault_entries(app: AppHandle) -> Result<Vec<VaultEntry>, String> {
                     description: std::mem::take(&mut secret.description),
                     created_at,
                     updated_at,
+                    deleted_at,
                 })
             },
         )
@@ -407,7 +426,7 @@ pub fn save_vault_entry(app: AppHandle, mut entry: VaultEntryInput) -> Result<i6
     if let Some(id) = id {
         let entry_uuid = conn
             .query_row(
-                "SELECT entry_uuid FROM vault_entries WHERE id = ?1",
+                "SELECT entry_uuid FROM vault_entries WHERE id = ?1 AND deleted_at IS NULL",
                 [id],
                 |row| row.get::<_, String>(0),
             )
@@ -441,11 +460,34 @@ pub fn save_vault_entry(app: AppHandle, mut entry: VaultEntryInput) -> Result<i6
 #[tauri::command]
 pub fn delete_vault_entry(app: AppHandle, id: i64) -> Result<(), String> {
     ensure_vault_key(&app)?;
+    let timestamp = now();
     let changed = open_db(&app)?
-        .execute("DELETE FROM vault_entries WHERE id = ?1", [id])
+        .execute(
+            "UPDATE vault_entries SET deleted_at = ?1, updated_at = ?1
+             WHERE id = ?2 AND deleted_at IS NULL",
+            params![timestamp, id],
+        )
         .map_err(|error| format!("Der Kennwort-Eintrag konnte nicht gelöscht werden: {error}"))?;
     if changed == 0 {
         return Err("Der Kennwort-Eintrag wurde nicht gefunden.".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn restore_vault_entry(app: AppHandle, id: i64) -> Result<(), String> {
+    ensure_vault_key(&app)?;
+    let changed = open_db(&app)?
+        .execute(
+            "UPDATE vault_entries SET deleted_at = NULL, updated_at = ?1
+             WHERE id = ?2 AND deleted_at IS NOT NULL",
+            params![now(), id],
+        )
+        .map_err(|error| {
+            format!("Der Kennwort-Eintrag konnte nicht wiederhergestellt werden: {error}")
+        })?;
+    if changed == 0 {
+        return Err("Der gelöschte Kennwort-Eintrag wurde nicht gefunden.".to_string());
     }
     Ok(())
 }

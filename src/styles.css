@@ -931,7 +931,27 @@ td input[type="checkbox"] {
 .trash-grid {
   display: grid;
   gap: 1rem;
-  grid-template-columns: repeat(2, minmax(260px, 1fr));
+  grid-template-columns: repeat(3, minmax(250px, 1fr));
+}
+
+.trash-section {
+  min-width: 0;
+}
+
+.trash-section-title {
+  align-items: center;
+  display: flex;
+  gap: 0.45rem;
+}
+
+.trash-section-title h3 {
+  margin: 0;
+}
+
+.trash-section h4 {
+  border-top: 1px solid var(--border);
+  margin-top: 1rem;
+  padding-top: 1rem;
 }
 
 .trash-row {
@@ -941,6 +961,16 @@ td input[type="checkbox"] {
   gap: 0.7rem;
   justify-content: space-between;
   padding: 0.6rem 0;
+}
+
+.trash-row > span:not(.trash-contact-name) {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.trash-row small {
+  color: var(--accent);
 }
 
 .trash-row.selected {
@@ -3486,6 +3516,27 @@ td small {
 }
 
 .vault-drawer > footer {
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 0.6rem;
+  justify-content: flex-end;
+  padding: 1rem 1.2rem;
+}
+
+.vault-drawer-edit-form {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.vault-drawer-edit-fields {
+  align-content: start;
+  overflow-y: auto;
+  padding: 1.2rem;
+}
+
+.vault-drawer-edit-form > footer {
   border-top: 1px solid var(--border);
   display: flex;
   gap: 0.6rem;

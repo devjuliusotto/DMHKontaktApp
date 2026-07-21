@@ -184,12 +184,20 @@ export function listVaultEntries(): Promise<VaultEntry[]> {
   return invoke("list_vault_entries");
 }
 
+export function listDeletedVaultEntries(): Promise<VaultEntry[]> {
+  return invoke("list_deleted_vault_entries");
+}
+
 export function saveVaultEntry(entry: VaultEntryInput): Promise<number> {
   return invoke("save_vault_entry", { entry });
 }
 
 export function deleteVaultEntry(id: number): Promise<void> {
   return invoke("delete_vault_entry", { id });
+}
+
+export function restoreVaultEntry(id: number): Promise<void> {
+  return invoke("restore_vault_entry", { id });
 }
 
 export function configureVaultProtection(

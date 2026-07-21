@@ -17,6 +17,7 @@ export interface VaultEntry {
   description: string;
   createdAt: string;
   updatedAt: string;
+  deletedAt?: string | null;
 }
 
 export interface VaultEntryInput {

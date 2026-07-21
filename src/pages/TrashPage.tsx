@@ -1,13 +1,38 @@
-import { RotateCcw } from "lucide-react";
+import { CalendarDays, KeyRound, RotateCcw, Users } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { StatusMessage } from "../components/StatusMessage";
-import { listDeletedContacts, listDeletedGroups, restoreContact, restoreGroup } from "../services/db";
+import {
+  listDeletedContacts,
+  listDeletedGroups,
+  listDeletedVaultEntries,
+  restoreContact,
+  restoreGroup,
+  restoreVaultEntry
+} from "../services/db";
+import type { CalendarEvent } from "../types/calendar";
 import type { Contact, Group } from "../types/contact";
+import type { VaultEntry } from "../types/vault";
+import { calendarStorageKey, calendarTrashStorageKey, formatCalendarDate } from "../utils/calendar";
 import { displayName } from "../utils/contact";
 
+function readCalendarEvents(key: string): CalendarEvent[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) ?? "[]") as CalendarEvent[];
+    return Array.isArray(value) ? value : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCalendarEvents(key: string, events: CalendarEvent[]) {
+  localStorage.setItem(key, JSON.stringify(events));
+}
+
 export function TrashPage() {
+  const [deletedEvents, setDeletedEvents] = useState<CalendarEvent[]>([]);
   const [deletedContacts, setDeletedContacts] = useState<Contact[]>([]);
   const [deletedGroups, setDeletedGroups] = useState<Group[]>([]);
+  const [deletedVaultEntries, setDeletedVaultEntries] = useState<VaultEntry[]>([]);
   const [message, setMessage] = useState("");
   const [contactSelectionMode, setContactSelectionMode] = useState(false);
   const [selectedContactIds, setSelectedContactIds] = useState<Set<number>>(() => new Set());
@@ -25,14 +50,33 @@ export function TrashPage() {
   const allDeletedContactsSelected = deletedContactIds.length > 0 && selectedDeletedContactIds.length === deletedContactIds.length;
 
   const refresh = async () => {
-    const [contacts, groups] = await Promise.all([listDeletedContacts(), listDeletedGroups()]);
+    const [contacts, groups, vaultEntries] = await Promise.all([
+      listDeletedContacts(),
+      listDeletedGroups(),
+      listDeletedVaultEntries()
+    ]);
+    setDeletedEvents(readCalendarEvents(calendarTrashStorageKey));
     setDeletedContacts(contacts);
     setDeletedGroups(groups);
+    setDeletedVaultEntries(vaultEntries);
   };
 
   useEffect(() => {
     refresh().catch((error) => setMessage(`Papierkorb konnte nicht geladen werden: ${error}`));
   }, []);
+
+  const restoreDeletedEvent = (event: CalendarEvent) => {
+    const activeEvents = readCalendarEvents(calendarStorageKey).filter((entry) => entry.id !== event.id);
+    const restored = { ...event, deletedAt: null };
+    writeCalendarEvents(
+      calendarStorageKey,
+      [...activeEvents, restored].sort((left, right) => left.startsAt.localeCompare(right.startsAt))
+    );
+    const remaining = deletedEvents.filter((entry) => entry.id !== event.id);
+    writeCalendarEvents(calendarTrashStorageKey, remaining);
+    setDeletedEvents(remaining);
+    setMessage("Termin wurde wiederhergestellt.");
+  };
 
   const restoreDeletedContact = async (contact: Contact) => {
     if (!contact.id) return;
@@ -100,20 +144,39 @@ export function TrashPage() {
     await refresh();
   };
 
+  const restoreDeletedPassword = async (entry: VaultEntry) => {
+    await restoreVaultEntry(entry.id);
+    setMessage("Passwort wurde wiederhergestellt.");
+    await refresh();
+  };
+
   return (
     <div className="page">
       <header className="page-header">
         <div>
           <h2>Papierkorb</h2>
-          <p>Gelöschte Kontakte und Gruppen können hier wiederhergestellt werden.</p>
+          <p>Gelöschte Termine, Kontakte und Passwörter bleiben erhalten und können wiederhergestellt werden.</p>
         </div>
       </header>
       <StatusMessage message={message} />
       <section className="trash-panel">
         <div className="trash-grid">
-          <div>
+          <section className="trash-section">
+            <div className="trash-section-title"><CalendarDays size={21} /><h3>Gelöschte Termine</h3></div>
+            {deletedEvents.length === 0 && <p>Keine gelöschten Termine.</p>}
+            {deletedEvents.map((event) => (
+              <div className="trash-row" key={event.id}>
+                <span><strong>{event.title}</strong><small>{formatCalendarDate(event.startsAt)}</small></span>
+                <button type="button" onClick={() => restoreDeletedEvent(event)}>
+                  <RotateCcw size={18} /> Wiederherstellen
+                </button>
+              </div>
+            ))}
+          </section>
+
+          <section className="trash-section">
             <div className="trash-section-heading">
-              <h3>Gelöschte Kontakte</h3>
+              <div className="trash-section-title"><Users size={21} /><h3>Gelöschte Kontakte</h3></div>
               <div className="button-row">
                 <button type="button" onClick={toggleContactSelectionMode} disabled={deletedContacts.length === 0}>
                   {contactSelectionMode ? "Fertig" : "Auswählen"}
@@ -153,9 +216,7 @@ export function TrashPage() {
                 </button>
               </div>
             ))}
-          </div>
-          <div>
-            <h3>Gelöschte Gruppen</h3>
+            <h4>Gelöschte Gruppen</h4>
             {deletedGroups.length === 0 && <p>Keine gelöschten Gruppen.</p>}
             {deletedGroups.map((group) => (
               <div className="trash-row" key={group.id}>
@@ -165,7 +226,20 @@ export function TrashPage() {
                 </button>
               </div>
             ))}
-          </div>
+          </section>
+
+          <section className="trash-section">
+            <div className="trash-section-title"><KeyRound size={21} /><h3>Gelöschte Passwörter</h3></div>
+            {deletedVaultEntries.length === 0 && <p>Keine gelöschten Passwörter.</p>}
+            {deletedVaultEntries.map((entry) => (
+              <div className="trash-row" key={entry.id}>
+                <span><strong>{entry.platform}</strong><small>{entry.username || "Kein Benutzer"}</small></span>
+                <button type="button" onClick={() => restoreDeletedPassword(entry)}>
+                  <RotateCcw size={18} /> Wiederherstellen
+                </button>
+              </div>
+            ))}
+          </section>
         </div>
       </section>
     </div>

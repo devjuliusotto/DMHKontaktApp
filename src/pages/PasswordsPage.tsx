@@ -82,6 +82,7 @@ export function PasswordsPage({ status, onStatusChanged }: PasswordsPageProps) {
   }, []);
 
   const openNewEntry = () => {
+    setSelectedId(null);
     setEntryForm({ ...emptyEntry });
     setEntryPasswordVisible(false);
     setMessage("");
@@ -125,9 +126,10 @@ export function PasswordsPage({ status, onStatusChanged }: PasswordsPageProps) {
     try {
       await deleteVaultEntry(entry.id);
       setSelectedId(null);
+      setEntryForm(null);
       await refresh();
       setMessageType("success");
-      setMessage("Der Passwort-Eintrag wurde gelöscht.");
+      setMessage("Der Passwort-Eintrag wurde in den Papierkorb verschoben.");
     } catch (error) {
       setMessageType("error");
       setMessage(String(error));
@@ -220,6 +222,13 @@ export function PasswordsPage({ status, onStatusChanged }: PasswordsPageProps) {
     onStatusChanged(await lockVault());
   };
 
+  const closeSelectedEntry = () => {
+    setSelectedId(null);
+    setEntryForm(null);
+    setDetailPasswordVisible(false);
+    setEntryPasswordVisible(false);
+  };
+
   return (
     <div className="page passwords-page">
       <header className="page-header">
@@ -275,10 +284,11 @@ export function PasswordsPage({ status, onStatusChanged }: PasswordsPageProps) {
               {visibleEntries.map((entry) => {
                 const isRevealed = revealed.has(entry.id);
                 return (
-                  <tr className="password-row" key={entry.id} tabIndex={0} onClick={() => { setSelectedId(entry.id); setDetailPasswordVisible(false); }} onKeyDown={(event) => {
+                  <tr className="password-row" key={entry.id} tabIndex={0} onClick={() => { setSelectedId(entry.id); setEntryForm(null); setDetailPasswordVisible(false); }} onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
                       event.preventDefault();
                       setSelectedId(entry.id);
+                      setEntryForm(null);
                       setDetailPasswordVisible(false);
                     }
                   }}>
@@ -304,43 +314,61 @@ export function PasswordsPage({ status, onStatusChanged }: PasswordsPageProps) {
       </section>
 
       {selected && (
-        <div className="vault-drawer-backdrop" onMouseDown={() => setSelectedId(null)}>
+        <div className="vault-drawer-backdrop" onMouseDown={closeSelectedEntry}>
           <aside className="vault-drawer" role="dialog" aria-modal="true" aria-labelledby="vault-detail-title" onMouseDown={(event) => event.stopPropagation()}>
             <header>
               <div>
-                <span>Zugangsdaten</span>
-                <h3 id="vault-detail-title">{selected.platform}</h3>
+                <span>{entryForm?.id === selected.id ? "Zugangsdaten bearbeiten" : "Zugangsdaten"}</span>
+                <h3 id="vault-detail-title">{entryForm?.id === selected.id ? "Passwort bearbeiten" : selected.platform}</h3>
               </div>
-              <button className="icon-only" type="button" title="Schließen" onClick={() => setSelectedId(null)}><X size={22} /></button>
+              <button className="icon-only" type="button" title="Schließen" onClick={closeSelectedEntry}><X size={22} /></button>
             </header>
-            <div className="vault-detail-list">
-              <DetailField label="Plattform" value={selected.platform} onCopy={() => copyValue(selected.platform, "Plattform")} />
-              <DetailField label="Benutzer" value={selected.username || "–"} onCopy={selected.username ? () => copyValue(selected.username, "Benutzername") : undefined} />
-              <div className="vault-detail-field">
-                <span>Passwort</span>
-                <div className="vault-secret-line">
-                  <code>{detailPasswordVisible ? selected.password : maskedPassword(selected.password)}</code>
-                  <button className="icon-only compact" type="button" title="Passwort anzeigen" onClick={() => setDetailPasswordVisible((visible) => !visible)}>{detailPasswordVisible ? <EyeOff size={19} /> : <Eye size={19} />}</button>
-                  <button className="icon-only compact" type="button" title="Passwort kopieren" onClick={() => copyValue(selected.password, "Passwort")}><Copy size={19} /></button>
+            {entryForm?.id === selected.id ? (
+              <form className="vault-drawer-edit-form" onSubmit={saveEntry}>
+                <div className="form-grid vault-drawer-edit-fields">
+                  <label className="field"><span>Plattform *</span><input autoFocus value={entryForm.platform} onChange={(event) => setEntryForm({ ...entryForm, platform: event.target.value })} required /></label>
+                  <label className="field"><span>Benutzer</span><input value={entryForm.username} onChange={(event) => setEntryForm({ ...entryForm, username: event.target.value })} /></label>
+                  <label className="field wide"><span>Passwort *</span><span className="password-input-wrap"><input autoComplete="new-password" type={entryPasswordVisible ? "text" : "password"} value={entryForm.password} onChange={(event) => setEntryForm({ ...entryForm, password: event.target.value })} required /><button className="icon-only" type="button" title={entryPasswordVisible ? "Passwort verbergen" : "Passwort anzeigen"} onClick={() => setEntryPasswordVisible((visible) => !visible)}>{entryPasswordVisible ? <EyeOff size={20} /> : <Eye size={20} />}</button></span></label>
+                  <label className="field wide"><span>Link</span><input type="url" value={entryForm.url} onChange={(event) => setEntryForm({ ...entryForm, url: event.target.value })} placeholder="https://…" /></label>
+                  <label className="field wide"><span>Beschreibung</span><textarea rows={5} value={entryForm.description} onChange={(event) => setEntryForm({ ...entryForm, description: event.target.value })} /></label>
                 </div>
-              </div>
-              <div className="vault-detail-field">
-                <span>Link</span>
-                {selected.url ? (
-                  <div className="vault-link-line"><span>{selected.url}</span><button className="icon-only compact" type="button" title="Link öffnen" onClick={() => openUrl(selected.url)}><ExternalLink size={19} /></button></div>
-                ) : <p>–</p>}
-              </div>
-              <div className="vault-detail-field description"><span>Beschreibung</span><p>{selected.description || "–"}</p></div>
-            </div>
-            <footer>
-              <button type="button" onClick={() => openEditEntry(selected)}><Edit3 size={20} /> Bearbeiten</button>
-              <button className="danger-button" type="button" onClick={() => removeEntry(selected)} disabled={busy}><Trash2 size={20} /> Löschen</button>
-            </footer>
+                <footer>
+                  <button type="button" onClick={() => setEntryForm(null)}>Abbrechen</button>
+                  <button className="primary" type="submit" disabled={busy}>Änderungen speichern</button>
+                </footer>
+              </form>
+            ) : (
+              <>
+                <div className="vault-detail-list">
+                  <DetailField label="Plattform" value={selected.platform} onCopy={() => copyValue(selected.platform, "Plattform")} />
+                  <DetailField label="Benutzer" value={selected.username || "–"} onCopy={selected.username ? () => copyValue(selected.username, "Benutzername") : undefined} />
+                  <div className="vault-detail-field">
+                    <span>Passwort</span>
+                    <div className="vault-secret-line">
+                      <code>{detailPasswordVisible ? selected.password : maskedPassword(selected.password)}</code>
+                      <button className="icon-only compact" type="button" title="Passwort anzeigen" onClick={() => setDetailPasswordVisible((visible) => !visible)}>{detailPasswordVisible ? <EyeOff size={19} /> : <Eye size={19} />}</button>
+                      <button className="icon-only compact" type="button" title="Passwort kopieren" onClick={() => copyValue(selected.password, "Passwort")}><Copy size={19} /></button>
+                    </div>
+                  </div>
+                  <div className="vault-detail-field">
+                    <span>Link</span>
+                    {selected.url ? (
+                      <div className="vault-link-line"><span>{selected.url}</span><button className="icon-only compact" type="button" title="Link öffnen" onClick={() => openUrl(selected.url)}><ExternalLink size={19} /></button></div>
+                    ) : <p>–</p>}
+                  </div>
+                  <div className="vault-detail-field description"><span>Beschreibung</span><p>{selected.description || "–"}</p></div>
+                </div>
+                <footer>
+                  <button type="button" onClick={() => openEditEntry(selected)}><Edit3 size={20} /> Bearbeiten</button>
+                  <button className="danger-button" type="button" onClick={() => removeEntry(selected)} disabled={busy}><Trash2 size={20} /> Löschen</button>
+                </footer>
+              </>
+            )}
           </aside>
         </div>
       )}
 
-      {entryForm && (
+      {entryForm && !entryForm.id && (
         <div className="modal-backdrop" role="presentation">
           <form className="form-panel modal-card vault-entry-dialog" onSubmit={saveEntry}>
             <div className="panel-heading">

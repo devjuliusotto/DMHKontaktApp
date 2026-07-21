@@ -564,7 +564,8 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
             nonce BLOB NOT NULL,
             ciphertext BLOB NOT NULL,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_vault_entries_updated_at
             ON vault_entries(updated_at DESC);
@@ -577,6 +578,7 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
     ensure_column(&conn, "contacts", "outlook_entry_id", "TEXT")?;
     ensure_column(&conn, "contacts", "outlook_store_id", "TEXT")?;
     ensure_column(&conn, "groups", "deleted_at", "TEXT")?;
+    ensure_column(&conn, "vault_entries", "deleted_at", "TEXT")?;
     conn.execute_batch(
         "
         DROP INDEX IF EXISTS idx_contacts_email_unique;
@@ -3172,8 +3174,10 @@ pub fn run() {
             mail_accounts::remove_mail_account,
             vault::get_vault_status,
             vault::list_vault_entries,
+            vault::list_deleted_vault_entries,
             vault::save_vault_entry,
             vault::delete_vault_entry,
+            vault::restore_vault_entry,
             vault::configure_vault_protection,
             vault::disable_vault_protection,
             vault::unlock_vault,

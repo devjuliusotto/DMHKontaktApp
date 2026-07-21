@@ -318,8 +318,10 @@ export function SettingsPage() {
             )}
             {migrationStatus?.completed && (
               <p className="settings-state ready">
-                <CheckCircle2 size={16} /> Sicher übertragen
-                {migrationStatus.completedAt ? ` · ${new Date(migrationStatus.completedAt).toLocaleDateString("de-DE")}` : ""}
+                <CheckCircle2 size={16} />
+                {migrationStatus.completedAt
+                  ? `Zuletzt an die EDV gesendet: ${new Intl.DateTimeFormat("de-DE", { dateStyle: "medium", timeStyle: "short" }).format(new Date(migrationStatus.completedAt))}`
+                  : "Daten wurden bereits sicher an die EDV gesendet."}
               </p>
             )}
           </div>

@@ -3,9 +3,8 @@ import { useEffect, useMemo, useState } from "react";
 import { CalendarEventForm } from "../components/CalendarEventForm";
 import { StatusMessage } from "../components/StatusMessage";
 import type { CalendarEvent } from "../types/calendar";
-import { calendarColorOptions, calendarColorStyle, calendarColorValue, defaultCalendarColor, formatCalendarDate, parseCalendarDate } from "../utils/calendar";
+import { calendarColorOptions, calendarColorStyle, calendarColorValue, calendarStorageKey, calendarTrashStorageKey, defaultCalendarColor, formatCalendarDate, parseCalendarDate } from "../utils/calendar";
 
-const storageKey = "agendakontakte.calendarEvents";
 const categoriesStorageKey = "agendakontakte.calendarCategories";
 const weekdays = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
 type CalendarView = "month" | "week" | "list";
@@ -96,7 +95,7 @@ export function CalendarPage() {
   const [newCategoryColor, setNewCategoryColor] = useState(defaultCalendarColor);
 
   useEffect(() => {
-    const saved = localStorage.getItem(storageKey);
+    const saved = localStorage.getItem(calendarStorageKey);
     if (saved) {
       const storedEvents = (JSON.parse(saved) as CalendarEvent[]).map(normalizeEvent);
       setEvents(storedEvents);
@@ -154,7 +153,7 @@ export function CalendarPage() {
   const persist = (nextEvents: CalendarEvent[]) => {
     const sorted = nextEvents.map(normalizeEvent).sort((a, b) => a.startsAt.localeCompare(b.startsAt));
     setEvents(sorted);
-    localStorage.setItem(storageKey, JSON.stringify(sorted));
+    localStorage.setItem(calendarStorageKey, JSON.stringify(sorted));
   };
 
   const persistCategories = (nextCategories: CalendarCategory[]) => {
@@ -214,9 +213,21 @@ export function CalendarPage() {
 
   const deleteEvent = (event = editingEvent) => {
     if (!event || !window.confirm(`Termin "${event.title}" wirklich löschen?`)) return;
+    let deletedEvents: CalendarEvent[] = [];
+    try {
+      deletedEvents = JSON.parse(localStorage.getItem(calendarTrashStorageKey) ?? "[]") as CalendarEvent[];
+      if (!Array.isArray(deletedEvents)) deletedEvents = [];
+    } catch {
+      deletedEvents = [];
+    }
+    const deletedEvent = { ...normalizeEvent(event), deletedAt: new Date().toISOString() };
+    localStorage.setItem(
+      calendarTrashStorageKey,
+      JSON.stringify([deletedEvent, ...deletedEvents.filter((entry) => entry.id !== event.id)])
+    );
     persist(events.filter((entry) => entry.id !== event.id));
     setEditingEvent(null);
-    setMessage("Termin wurde gelöscht.");
+    setMessage("Termin wurde in den Papierkorb verschoben.");
   };
 
   return (

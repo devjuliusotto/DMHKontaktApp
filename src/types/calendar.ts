@@ -8,6 +8,7 @@ export interface CalendarEvent {
   color: string;
   category: string;
   source: string;
+  deletedAt?: string | null;
 }
 
 export interface OutlookOneTimeCalendarImportResult {
