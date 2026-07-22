@@ -35,5 +35,5 @@
     "tauri:open": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/open-tauri-dev.ps1"
   },
   "type": "module",
-  "version": "0.0.19"
+  "version": "0.0.20"
 }
