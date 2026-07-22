@@ -181,6 +181,37 @@ button:disabled {
   font-weight: 800;
 }
 
+.advanced-subtabs {
+  align-items: center;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: flex;
+  gap: 0.45rem;
+  margin: -0.35rem auto 1rem;
+  max-width: 1180px;
+  padding: 0.4rem;
+  width: 100%;
+}
+
+.advanced-subtab {
+  background: transparent;
+  border-color: transparent;
+  flex: 0 0 auto;
+  padding: 0.6rem 0.85rem;
+}
+
+.advanced-subtab:hover {
+  background: var(--surface);
+}
+
+.advanced-subtab.active {
+  background: var(--soft);
+  border-color: var(--primary);
+  color: var(--primary-dark);
+  font-weight: 800;
+}
+
 .content {
   min-width: 0;
   overflow-x: hidden;
@@ -3838,8 +3869,8 @@ td small {
   --page: #171a18;
   --surface: #222723;
   --surface-alt: #2b312c;
-  --text: #eef2ee;
-  --accent: #b8c7c1;
+  --text: #ffffff;
+  --accent: #ffffff;
   --border: #4b554d;
   --soft: #4a2636;
   color: var(--text);
@@ -3860,6 +3891,19 @@ td small {
 :root[data-color-mode="dark"] select,
 :root[data-color-mode="dark"] textarea {
   color: var(--text);
+}
+
+/* No modo escuro, regras antigas de componentes não devem reduzir o contraste. */
+:root[data-color-mode="dark"] body *,
+:root[data-color-mode="dark"] body *::before,
+:root[data-color-mode="dark"] body *::after {
+  color: #ffffff !important;
+}
+
+:root[data-color-mode="dark"] input::placeholder,
+:root[data-color-mode="dark"] textarea::placeholder {
+  color: #ffffff !important;
+  opacity: 0.82;
 }
 
 :root[data-color-mode="dark"] button,

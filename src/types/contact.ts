@@ -107,6 +107,15 @@ export interface OutlookContactImportResult {
   batchId: string;
 }
 
+export interface ThunderbirdContactImportResult {
+  found: number;
+  imported: number;
+  linkedExisting: number;
+  skippedInvalid: number;
+  addressBooks: number;
+  groupsUsed: number;
+}
+
 export interface BackupData {
   version: string;
   exportedAt: string;

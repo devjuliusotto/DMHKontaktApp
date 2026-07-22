@@ -33,3 +33,10 @@ export interface OutlookOneTimeCalendarImportResult {
   skippedInvalid: number;
   events: CalendarEvent[];
 }
+
+export interface ThunderbirdCalendarImportResult {
+  found: number;
+  skippedInvalid: number;
+  calendars: number;
+  events: CalendarEvent[];
+}

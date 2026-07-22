@@ -1,7 +1,7 @@
 import { CalendarDays, KeyRound, Settings, UserRound } from "lucide-react";
 import { t } from "../i18n";
 
-export type Page = "contacts" | "calendar" | "passwords" | "import" | "export" | "trash" | "settings";
+export type Page = "contacts" | "calendar" | "passwords" | "import" | "export" | "trash" | "settings" | "appearance" | "simple-import";
 
 const items: Array<{ page: Page; label: string; icon: typeof UserRound }> = [
   { page: "contacts", label: t.contacts, icon: UserRound },
@@ -9,7 +9,7 @@ const items: Array<{ page: Page; label: string; icon: typeof UserRound }> = [
   { page: "passwords", label: "Passwörter", icon: KeyRound }
 ];
 
-const settingsPages = new Set<Page>(["settings", "import", "export", "trash"]);
+const settingsPages = new Set<Page>(["settings", "appearance", "simple-import", "import", "export", "trash"]);
 
 interface SidebarProps {
   activePage: Page;

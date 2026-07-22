@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CalendarEvent, OutlookOneTimeCalendarImportResult } from "../types/calendar";
+import type { CalendarEvent, OutlookOneTimeCalendarImportResult, ThunderbirdCalendarImportResult } from "../types/calendar";
 import type {
   BackupData,
   Contact,
@@ -8,7 +8,8 @@ import type {
   ImportResult,
   OutlookContactImportPreview,
   OutlookContactImportRequest,
-  OutlookContactImportResult
+  OutlookContactImportResult,
+  ThunderbirdContactImportResult
 } from "../types/contact";
 import type {
   MailAccount,
@@ -142,6 +143,14 @@ export function undoLastOutlookContactImport(): Promise<number> {
 
 export function importOutlookClassicAppointmentsOnce(): Promise<OutlookOneTimeCalendarImportResult> {
   return invoke("import_outlook_classic_appointments_once");
+}
+
+export function importThunderbirdContactsOnce(): Promise<ThunderbirdContactImportResult> {
+  return invoke("import_thunderbird_contacts_once");
+}
+
+export function importThunderbirdCalendarsOnce(): Promise<ThunderbirdCalendarImportResult> {
+  return invoke("import_thunderbird_calendars_once");
 }
 
 export function scanOutlookAccounts(): Promise<OutlookAccountCandidate[]> {

@@ -1,32 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CalendarDays, CheckCircle2, ChevronDown, Download, Eye, EyeOff, LoaderCircle, Mail, RefreshCw, Send, ShieldCheck, Trash2, Undo2, UsersRound } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, Download, Eye, EyeOff, LoaderCircle, Mail, RefreshCw, Send, ShieldCheck, Trash2 } from "lucide-react";
 import { MigrationCaptureDialog } from "../components/MigrationCaptureDialog";
-import { OutlookContactImportDialog } from "../components/OutlookContactImportDialog";
-import { AppearanceSettings } from "../components/AppearanceSettings";
 import { StatusMessage } from "../components/StatusMessage";
 import {
   importOutlookAccount,
-  importOutlookClassicAppointmentsOnce,
   getMigrationCaptureStatus,
   listMailAccounts,
   revealMailPassword,
   removeMailAccount,
   scanOutlookAccounts,
-  testMailConnection,
-  undoLastOutlookContactImport
+  testMailConnection
 } from "../services/db";
-import type { CalendarEvent } from "../types/calendar";
-import type { OutlookContactImportResult } from "../types/contact";
 import type { MailAccount, MigrationCaptureResult, MigrationCaptureStatus, OutlookAccountCandidate } from "../types/mail";
-import { calendarColorFromCategory, calendarStorageKey } from "../utils/calendar";
-
-function storedCalendarEvents(): CalendarEvent[] {
-  const raw = localStorage.getItem(calendarStorageKey);
-  if (!raw) return [];
-  const value: unknown = JSON.parse(raw);
-  if (!Array.isArray(value)) throw new Error("Die lokal gespeicherten Kalenderdaten sind beschädigt.");
-  return value as CalendarEvent[];
-}
 
 export function SettingsPage() {
   const [accounts, setAccounts] = useState<MailAccount[]>([]);
@@ -36,7 +21,6 @@ export function SettingsPage() {
   const [messageType, setMessageType] = useState<"success" | "error" | "info">("info");
   const [migrationStatus, setMigrationStatus] = useState<MigrationCaptureStatus | null>(null);
   const [migrationDialogOpen, setMigrationDialogOpen] = useState(false);
-  const [contactImportDialogOpen, setContactImportDialogOpen] = useState(false);
   const [revealedPassword, setRevealedPassword] = useState<{
     accountId: number;
     accountLabel: string;
@@ -69,74 +53,6 @@ export function SettingsPage() {
     setMigrationStatus({ configured: true, completed: true, completedAt: result.completedAt });
     setMessageType("success");
     setMessage("Die E-Mail-Konfiguration wurde verschlüsselt an die EDV übertragen.");
-  };
-
-  const contactsImported = (result: OutlookContactImportResult, source: "classic" | "csv") => {
-    setMessageType("success");
-    setMessage(
-      `${result.imported} Kontakte aus ${source === "classic" ? "Outlook Classic" : "dem neuen Outlook"} wurden einmalig übernommen. `
-      + `${result.skippedExactDuplicates} bereits vorhandene und ${result.skippedConflicts} nicht ausgewählte Konflikte wurden ausgelassen. Es besteht keine Synchronisierung.`
-    );
-  };
-
-  const undoOutlookContactImport = async () => {
-    const confirmed = window.confirm(
-      "Den letzten Outlook-Kontaktimport rückgängig machen? Nur Kontakte aus diesem Importvorgang werden entfernt."
-    );
-    if (!confirmed) return;
-    setBusyAction("undo-outlook-contact-import");
-    setMessageType("info");
-    setMessage("Letzter Outlook-Kontaktimport wird rückgängig gemacht …");
-    try {
-      const deleted = await undoLastOutlookContactImport();
-      setMessageType(deleted > 0 ? "success" : "info");
-      setMessage(deleted > 0
-        ? `${deleted} Kontakte aus dem letzten Outlook-Import wurden entfernt.`
-        : "Es wurde kein Outlook-Kontaktimport gefunden, der rückgängig gemacht werden kann.");
-    } catch (error) {
-      setMessageType("error");
-      setMessage(`Der letzte Outlook-Kontaktimport konnte nicht rückgängig gemacht werden: ${error}`);
-    } finally {
-      setBusyAction(null);
-    }
-  };
-
-  const importAppointmentsOnce = async () => {
-    const confirmed = window.confirm(
-      "Alle Termine aus allen erreichbaren Kalenderordnern des aktuellen Outlook-Classic-Profils einmalig in DMH Kontakte und Kalender kopieren?\n\nOutlook wird nicht verändert und es wird keine automatische Synchronisierung eingerichtet. Bereits importierte Termine werden ausgelassen."
-    );
-    if (!confirmed) return;
-
-    setBusyAction("import-outlook-appointments-once");
-    setMessageType("info");
-    setMessage("Alle erreichbaren Outlook-Kalender werden gelesen. Dies kann einige Minuten dauern …");
-    try {
-      const result = await importOutlookClassicAppointmentsOnce();
-      const existing = storedCalendarEvents();
-      const eventsById = new Map(existing.map((event) => [event.id, event]));
-      let imported = 0;
-      let updated = 0;
-      for (const event of result.events) {
-        if (eventsById.has(event.id)) updated += 1;
-        else imported += 1;
-        eventsById.set(event.id, {
-          ...event,
-          color: calendarColorFromCategory(event.category, event.color)
-        });
-      }
-      localStorage.setItem(calendarStorageKey, JSON.stringify(Array.from(eventsById.values())));
-      setMessageType("success");
-      setMessage(
-        result.found === 0
-          ? "In den erreichbaren Outlook-Kalendern wurden keine Termine gefunden."
-          : `${imported} neue und ${updated} bereits vorhandene Outlook-Termine oder Serien wurden einmalig übernommen bzw. aktualisiert. ${result.skippedInvalid} nicht lesbare Einträge wurden ausgelassen. Es besteht noch keine automatische Synchronisierung.`
-      );
-    } catch (error) {
-      setMessageType("error");
-      setMessage(`Outlook-Termine konnten nicht importiert werden: ${error}`);
-    } finally {
-      setBusyAction(null);
-    }
   };
 
   useEffect(() => {
@@ -270,44 +186,12 @@ export function SettingsPage() {
     <div className="page settings-page">
       <header className="page-header">
         <div>
-          <h2>Einstellungen</h2>
+          <h2>Allgemein</h2>
           <p>Outlook-Daten übernehmen und E-Mail-Zugänge verwalten.</p>
         </div>
       </header>
 
       <StatusMessage message={message} type={messageType} />
-
-      <AppearanceSettings />
-
-      <section className="form-panel settings-task-panel">
-        <div className="settings-task-heading">
-          <Download size={25} aria-hidden="true" />
-          <div>
-            <h3>Aus Outlook übernehmen</h3>
-            <p>Einmalig kopieren. Outlook bleibt unverändert.</p>
-          </div>
-        </div>
-        <div className="settings-action-grid">
-          <button className="settings-action-button" type="button" onClick={() => setContactImportDialogOpen(true)} disabled={busyAction !== null}>
-            <UsersRound size={25} />
-            <span>
-              <strong>Kontakte suchen und importieren</strong>
-              <small>Quellen und mögliche Duplikate vorher prüfen</small>
-            </span>
-          </button>
-          <button className="settings-action-button" type="button" onClick={importAppointmentsOnce} disabled={busyAction !== null}>
-            {busyAction === "import-outlook-appointments-once" ? <LoaderCircle className="spin" size={25} /> : <CalendarDays size={25} />}
-            <span>
-              <strong>{busyAction === "import-outlook-appointments-once" ? "Kalender werden gelesen …" : "Termine importieren"}</strong>
-              <small>Aus allen Outlook-Kalendern</small>
-            </span>
-          </button>
-        </div>
-        <button className="settings-undo-import" type="button" onClick={undoOutlookContactImport} disabled={busyAction !== null}>
-          {busyAction === "undo-outlook-contact-import" ? <LoaderCircle className="spin" size={17} /> : <Undo2 size={17} />}
-          Letzten Outlook-Kontaktimport rückgängig machen
-        </button>
-      </section>
 
       <section className="form-panel settings-migration-panel">
         <div className="settings-task-heading">
@@ -457,11 +341,6 @@ export function SettingsPage() {
         open={migrationDialogOpen}
         onClose={() => setMigrationDialogOpen(false)}
         onCompleted={migrationCompleted}
-      />
-      <OutlookContactImportDialog
-        open={contactImportDialogOpen}
-        onClose={() => setContactImportDialogOpen(false)}
-        onImported={contactsImported}
       />
     </div>
   );

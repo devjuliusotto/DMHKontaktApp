@@ -311,12 +311,20 @@ function matchesRecurrenceDate(date: Date, start: Date, recurrence: CalendarRecu
     const difference = monthsBetween(start, date);
     if (difference < 0 || difference % interval !== 0) return false;
     if (recurrence.weekOfMonth) return days.includes(date.getDay()) && isNthWeekday(date, recurrence.weekOfMonth);
-    return date.getDate() === (recurrence.dayOfMonth ?? start.getDate());
+    const targetDay = recurrence.dayOfMonth ?? start.getDate();
+    const normalizedTargetDay = targetDay < 0
+      ? new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate() + targetDay + 1
+      : targetDay;
+    return date.getDate() === normalizedTargetDay;
   }
   const yearDifference = date.getFullYear() - start.getFullYear();
   if (yearDifference < 0 || yearDifference % interval !== 0 || date.getMonth() + 1 !== (recurrence.monthOfYear ?? start.getMonth() + 1)) return false;
   if (recurrence.weekOfMonth) return days.includes(date.getDay()) && isNthWeekday(date, recurrence.weekOfMonth);
-  return date.getDate() === (recurrence.dayOfMonth ?? start.getDate());
+  const targetDay = recurrence.dayOfMonth ?? start.getDate();
+  const normalizedTargetDay = targetDay < 0
+    ? new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate() + targetDay + 1
+    : targetDay;
+  return date.getDate() === normalizedTargetDay;
 }
 
 export function expandCalendarEvents(events: CalendarEvent[], rangeStart: Date, rangeEnd: Date): CalendarEvent[] {

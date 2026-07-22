@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { AppLockScreen } from "./components/AppLockScreen";
 import { Sidebar, type Page } from "./components/Sidebar";
 import { SettingsSubtabs } from "./components/SettingsSubtabs";
+import { AdvancedSubtabs } from "./components/AdvancedSubtabs";
 import { ContactsPage } from "./pages/ContactsPage";
 import { ExportPage } from "./pages/ExportPage";
 import { ImportPage } from "./pages/ImportPage";
@@ -10,6 +11,8 @@ import { CalendarPage } from "./pages/CalendarPage";
 import { TrashPage } from "./pages/TrashPage";
 import { UpdateNotifier } from "./components/UpdateNotifier";
 import { SettingsPage } from "./pages/SettingsPage";
+import { AppearancePage } from "./pages/AppearancePage";
+import { SimpleImportPage } from "./pages/SimpleImportPage";
 import { PasswordsPage } from "./pages/PasswordsPage";
 import { getVaultStatus } from "./services/db";
 import type { VaultStatus } from "./types/vault";
@@ -28,7 +31,7 @@ export default function App() {
   const [page, setPage] = useState<Page>("contacts");
   const [vaultStatus, setVaultStatus] = useState<VaultStatus | null>(null);
   const [startupError, setStartupError] = useState("");
-  const settingsAreaOpen = page === "settings" || page === "import" || page === "export" || page === "trash";
+  const settingsAreaOpen = page === "settings" || page === "appearance" || page === "simple-import" || page === "import" || page === "export" || page === "trash";
 
   const loadVaultStatus = () => {
     setStartupError("");
@@ -73,6 +76,7 @@ export default function App() {
       <Sidebar activePage={page} onNavigate={setPage} />
       <main className="content">
         {settingsAreaOpen && <SettingsSubtabs activePage={page} onNavigate={setPage} />}
+        {(page === "import" || page === "export") && <AdvancedSubtabs activePage={page} onNavigate={setPage} />}
         {page === "contacts" && <ContactsPage />}
         {page === "calendar" && <CalendarPage />}
         {page === "passwords" && <PasswordsPage status={vaultStatus} onStatusChanged={setVaultStatus} />}
@@ -80,6 +84,8 @@ export default function App() {
         {page === "export" && <ExportPage />}
         {page === "trash" && <TrashPage />}
         {page === "settings" && <SettingsPage />}
+        {page === "appearance" && <AppearancePage />}
+        {page === "simple-import" && <SimpleImportPage />}
       </main>
       <UpdateNotifier />
     </div>

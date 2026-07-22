@@ -1,5 +1,6 @@
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -11,6 +12,7 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 
 mod mail_accounts;
+mod thunderbird;
 mod vault;
 
 #[cfg(target_os = "windows")]
@@ -158,7 +160,7 @@ pub struct CalendarRecurrence {
     pub frequency: String,
     #[serde(default = "default_recurrence_interval")]
     pub interval: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_vec_flexible")]
     pub days_of_week: Vec<u32>,
     pub day_of_month: Option<u32>,
     pub month_of_year: Option<u32>,
@@ -169,6 +171,24 @@ pub struct CalendarRecurrence {
 
 fn default_recurrence_interval() -> u32 {
     1
+}
+
+fn deserialize_vec_flexible<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Null => Ok(Vec::new()),
+        serde_json::Value::Object(ref object) if object.is_empty() => Ok(Vec::new()),
+        serde_json::Value::Array(_) => {
+            serde_json::from_value(value).map_err(serde::de::Error::custom)
+        }
+        other => serde_json::from_value(other)
+            .map(|item| vec![item])
+            .map_err(serde::de::Error::custom),
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -328,14 +348,14 @@ struct OutlookAppointmentRecord {
     color: String,
     #[serde(default)]
     recurrence: Option<CalendarRecurrence>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_vec_flexible")]
     excluded_dates: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OutlookCalendarReadData {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_vec_flexible")]
     events: Vec<OutlookAppointmentRecord>,
     #[serde(default)]
     skipped: usize,
@@ -2987,6 +3007,8 @@ function Add-Calendar-Record($item, $folder, $storeId, $storeName, $allowRecurre
     try { $end = ([datetime]$item.End).ToString('yyyy-MM-ddTHH:mm:ss') } catch {}
     try { $categories = [string]$item.Categories } catch {}
     $recurrenceData = if ($allowRecurrence) { Get-Recurrence-Data $item } else { $null }
+    [string[]]$eventExcludedDates = @()
+    if ($recurrenceData) { [string[]]$eventExcludedDates = @($recurrenceData.excludedDates) }
     $events.Add([pscustomobject]@{
       entryId = $entryId
       storeId = $storeId
@@ -3001,7 +3023,7 @@ function Add-Calendar-Record($item, $folder, $storeId, $storeName, $allowRecurre
       category = $categories
       color = Get-Calendar-Color $categories
       recurrence = if ($recurrenceData) { $recurrenceData.recurrence } else { $null }
-      excludedDates = if ($recurrenceData) { $recurrenceData.excludedDates } else { @() }
+      excludedDates = $eventExcludedDates
     }) | Out-Null
 
     if ($recurrenceData) {
@@ -3363,6 +3385,8 @@ pub fn run() {
             preview_outlook_classic_contacts,
             import_selected_outlook_classic_contacts,
             import_outlook_classic_appointments_once,
+            thunderbird::import_thunderbird_contacts_once,
+            thunderbird::import_thunderbird_calendars_once,
             mail_accounts::scan_outlook_accounts,
             mail_accounts::list_mail_accounts,
             mail_accounts::import_outlook_account,
@@ -3454,5 +3478,31 @@ mod tests {
         let (name_status, _, _) =
             classify_outlook_contact(&fingerprints, &same_name, "Erika Muster", "");
         assert_eq!(name_status, "possible_name");
+    }
+
+    #[test]
+    fn accepts_outlook_empty_collections_serialized_as_objects() {
+        let json = r#"{
+          "events": {
+            "title": "Serientermin",
+            "startsAt": "2026-07-22T09:00:00",
+            "recurrence": {
+              "frequency": "yearly",
+              "interval": 1,
+              "daysOfWeek": {}
+            },
+            "excludedDates": {}
+          },
+          "skipped": 0
+        }"#;
+        let parsed: OutlookCalendarReadData = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.events.len(), 1);
+        assert!(parsed.events[0].excluded_dates.is_empty());
+        assert!(parsed.events[0]
+            .recurrence
+            .as_ref()
+            .unwrap()
+            .days_of_week
+            .is_empty());
     }
 }
