@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { CalendarEventForm } from "../components/CalendarEventForm";
 import { StatusMessage } from "../components/StatusMessage";
 import type { CalendarEvent } from "../types/calendar";
-import { calendarColorOptions, calendarColorStyle, calendarColorValue, calendarStorageKey, calendarTrashStorageKey, defaultCalendarColor, formatCalendarDate, parseCalendarDate } from "../utils/calendar";
+import { calendarColorOptions, calendarColorStyle, calendarColorValue, calendarStorageKey, calendarTrashStorageKey, defaultCalendarColor, expandCalendarEvents, formatCalendarDate, parseCalendarDate } from "../utils/calendar";
 
 const categoriesStorageKey = "agendakontakte.calendarCategories";
 const weekdays = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
@@ -108,9 +108,24 @@ export function CalendarPage() {
     }
   }, []);
 
+  const displayRange = useMemo(() => {
+    if (view === "month") {
+      const first = startOfWeek(new Date(cursor.getFullYear(), cursor.getMonth(), 1));
+      return { start: first, end: addDays(first, 42) };
+    }
+    if (view === "week") {
+      const first = startOfWeek(cursor);
+      return { start: first, end: addDays(first, 7) };
+    }
+    return {
+      start: new Date(cursor.getFullYear() - 1, 0, 1),
+      end: new Date(cursor.getFullYear() + 6, 0, 1)
+    };
+  }, [cursor, view]);
   const allSortedEvents = useMemo(
-    () => [...events].sort((left, right) => left.startsAt.localeCompare(right.startsAt)),
-    [events]
+    () => expandCalendarEvents(events, displayRange.start, displayRange.end)
+      .sort((left, right) => left.startsAt.localeCompare(right.startsAt)),
+    [displayRange, events]
   );
   const categoryOptions = useMemo(
     () => {
@@ -196,7 +211,8 @@ export function CalendarPage() {
   };
 
   const openEvent = (event: CalendarEvent) => {
-    setEditingEvent({ ...normalizeEvent(event), startsAt: toLocalDateTime(event.startsAt), endsAt: toLocalDateTime(event.endsAt) });
+    const master = event.recurrenceMasterId ? events.find((entry) => entry.id === event.recurrenceMasterId) ?? event : event;
+    setEditingEvent({ ...normalizeEvent(master), startsAt: toLocalDateTime(master.startsAt), endsAt: toLocalDateTime(master.endsAt) });
     setEditingIsNew(false);
   };
 
@@ -212,7 +228,10 @@ export function CalendarPage() {
   };
 
   const deleteEvent = (event = editingEvent) => {
-    if (!event || !window.confirm(`Termin "${event.title}" wirklich löschen?`)) return;
+    if (!event) return;
+    const master = event.recurrenceMasterId ? events.find((entry) => entry.id === event.recurrenceMasterId) ?? event : event;
+    const objectName = master.recurrence ? `Terminserie "${master.title}"` : `Termin "${master.title}"`;
+    if (!window.confirm(`${objectName} wirklich löschen?`)) return;
     let deletedEvents: CalendarEvent[] = [];
     try {
       deletedEvents = JSON.parse(localStorage.getItem(calendarTrashStorageKey) ?? "[]") as CalendarEvent[];
@@ -220,14 +239,35 @@ export function CalendarPage() {
     } catch {
       deletedEvents = [];
     }
-    const deletedEvent = { ...normalizeEvent(event), deletedAt: new Date().toISOString() };
+    const deletedEvent = { ...normalizeEvent(master), deletedAt: new Date().toISOString() };
     localStorage.setItem(
       calendarTrashStorageKey,
-      JSON.stringify([deletedEvent, ...deletedEvents.filter((entry) => entry.id !== event.id)])
+      JSON.stringify([deletedEvent, ...deletedEvents.filter((entry) => entry.id !== master.id)])
     );
-    persist(events.filter((entry) => entry.id !== event.id));
+    persist(events.filter((entry) => entry.id !== master.id));
     setEditingEvent(null);
-    setMessage("Termin wurde in den Papierkorb verschoben.");
+    setMessage(master.recurrence ? "Terminserie wurde in den Papierkorb verschoben." : "Termin wurde in den Papierkorb verschoben.");
+  };
+
+  const deleteAllEvents = () => {
+    if (events.length === 0 || !window.confirm(`Alle ${events.length} Termine und Terminserien in den Papierkorb verschieben?`)) return;
+    let deletedEvents: CalendarEvent[] = [];
+    try {
+      deletedEvents = JSON.parse(localStorage.getItem(calendarTrashStorageKey) ?? "[]") as CalendarEvent[];
+      if (!Array.isArray(deletedEvents)) deletedEvents = [];
+    } catch {
+      deletedEvents = [];
+    }
+    const deletedAt = new Date().toISOString();
+    const activeIds = new Set(events.map((event) => event.id));
+    const movedEvents = events.map((event) => ({ ...normalizeEvent(event), deletedAt }));
+    localStorage.setItem(calendarTrashStorageKey, JSON.stringify([
+      ...movedEvents,
+      ...deletedEvents.filter((event) => !activeIds.has(event.id))
+    ]));
+    persist([]);
+    setEditingEvent(null);
+    setMessage(`${events.length} Termine und Terminserien wurden in den Papierkorb verschoben.`);
   };
 
   return (
@@ -243,6 +283,9 @@ export function CalendarPage() {
           </button>
           <button type="button" onClick={() => setShowCategoryDialog(true)}>
             <Plus size={20} /> Kategorie erstellen
+          </button>
+          <button className="danger-button" type="button" onClick={deleteAllEvents} disabled={events.length === 0}>
+            <Trash2 size={20} /> Alle Termine löschen
           </button>
         </div>
       </header>

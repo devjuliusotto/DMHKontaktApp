@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CalendarDays, CheckCircle2, ChevronDown, Download, Eye, EyeOff, LoaderCircle, Mail, RefreshCw, Send, ShieldCheck, Trash2, Undo2, UsersRound } from "lucide-react";
 import { MigrationCaptureDialog } from "../components/MigrationCaptureDialog";
 import { OutlookContactImportDialog } from "../components/OutlookContactImportDialog";
+import { AppearanceSettings } from "../components/AppearanceSettings";
 import { StatusMessage } from "../components/StatusMessage";
 import {
   importOutlookAccount,
@@ -17,8 +18,7 @@ import {
 import type { CalendarEvent } from "../types/calendar";
 import type { OutlookContactImportResult } from "../types/contact";
 import type { MailAccount, MigrationCaptureResult, MigrationCaptureStatus, OutlookAccountCandidate } from "../types/mail";
-
-const calendarStorageKey = "agendakontakte.calendarEvents";
+import { calendarColorFromCategory, calendarStorageKey } from "../utils/calendar";
 
 function storedCalendarEvents(): CalendarEvent[] {
   const raw = localStorage.getItem(calendarStorageKey);
@@ -115,18 +115,21 @@ export function SettingsPage() {
       const existing = storedCalendarEvents();
       const eventsById = new Map(existing.map((event) => [event.id, event]));
       let imported = 0;
+      let updated = 0;
       for (const event of result.events) {
-        if (eventsById.has(event.id)) continue;
-        eventsById.set(event.id, event);
-        imported += 1;
+        if (eventsById.has(event.id)) updated += 1;
+        else imported += 1;
+        eventsById.set(event.id, {
+          ...event,
+          color: calendarColorFromCategory(event.category, event.color)
+        });
       }
       localStorage.setItem(calendarStorageKey, JSON.stringify(Array.from(eventsById.values())));
-      const duplicates = result.events.length - imported;
       setMessageType("success");
       setMessage(
         result.found === 0
           ? "In den erreichbaren Outlook-Kalendern wurden keine Termine gefunden."
-          : `${imported} von ${result.found} Outlook-Terminen wurden einmalig übernommen. ${duplicates} bereits vorhandene und ${result.skippedInvalid} nicht lesbare Einträge wurden ausgelassen. Es besteht keine Synchronisierung.`
+          : `${imported} neue und ${updated} bereits vorhandene Outlook-Termine oder Serien wurden einmalig übernommen bzw. aktualisiert. ${result.skippedInvalid} nicht lesbare Einträge wurden ausgelassen. Es besteht noch keine automatische Synchronisierung.`
       );
     } catch (error) {
       setMessageType("error");
@@ -273,6 +276,8 @@ export function SettingsPage() {
       </header>
 
       <StatusMessage message={message} type={messageType} />
+
+      <AppearanceSettings />
 
       <section className="form-panel settings-task-panel">
         <div className="settings-task-heading">

@@ -19,6 +19,7 @@ import { FormEvent, MouseEvent, useEffect, useMemo, useState } from "react";
 import { StatusMessage } from "../components/StatusMessage";
 import {
   configureVaultProtection,
+  deleteAllVaultEntries,
   deleteVaultEntry,
   disableVaultProtection,
   getVaultStatus,
@@ -106,10 +107,10 @@ export function PasswordsPage({ status, onStatusChanged }: PasswordsPageProps) {
     setBusy(true);
     setMessage("");
     try {
-      const id = await saveVaultEntry(entryForm);
+      await saveVaultEntry(entryForm);
       await refresh();
       setEntryForm(null);
-      setSelectedId(id);
+      setSelectedId(null);
       setMessageType("success");
       setMessage("Der Passwort-Eintrag wurde verschlüsselt gespeichert.");
     } catch (error) {
@@ -130,6 +131,27 @@ export function PasswordsPage({ status, onStatusChanged }: PasswordsPageProps) {
       await refresh();
       setMessageType("success");
       setMessage("Der Passwort-Eintrag wurde in den Papierkorb verschoben.");
+    } catch (error) {
+      setMessageType("error");
+      setMessage(String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeAllEntries = async () => {
+    if (entries.length === 0 || !window.confirm(`Alle ${entries.length} Passwort-Einträge in den Papierkorb verschieben?`)) return;
+    setBusy(true);
+    try {
+      const removed = await deleteAllVaultEntries();
+      setSelectedId(null);
+      setEntryForm(null);
+      setRevealed(new Set());
+      setDetailPasswordVisible(false);
+      setEntryPasswordVisible(false);
+      await refresh();
+      setMessageType("success");
+      setMessage(`${removed} Passwort-Einträge wurden in den Papierkorb verschoben.`);
     } catch (error) {
       setMessageType("error");
       setMessage(String(error));
@@ -241,6 +263,9 @@ export function PasswordsPage({ status, onStatusChanged }: PasswordsPageProps) {
             <button type="button" onClick={lockApplication}><Lock size={21} /> App sperren</button>
           )}
           <button className="primary" type="button" onClick={openNewEntry}><Plus size={22} /> Passwort hinzufügen</button>
+          <button className="danger-button" type="button" onClick={removeAllEntries} disabled={busy || entries.length === 0}>
+            <Trash2 size={21} /> Alle Passwörter löschen
+          </button>
         </div>
       </header>
 

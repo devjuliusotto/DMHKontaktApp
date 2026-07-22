@@ -1,3 +1,16 @@
+export type CalendarRecurrenceFrequency = "daily" | "weekly" | "monthly" | "yearly";
+
+export interface CalendarRecurrence {
+  frequency: CalendarRecurrenceFrequency;
+  interval: number;
+  daysOfWeek?: number[];
+  dayOfMonth?: number;
+  monthOfYear?: number;
+  weekOfMonth?: number;
+  until?: string;
+  count?: number;
+}
+
 export interface CalendarEvent {
   id: string;
   title: string;
@@ -9,6 +22,10 @@ export interface CalendarEvent {
   category: string;
   source: string;
   deletedAt?: string | null;
+  recurrence?: CalendarRecurrence | null;
+  excludedDates?: string[];
+  recurrenceMasterId?: string;
+  recurrenceId?: string;
 }
 
 export interface OutlookOneTimeCalendarImportResult {

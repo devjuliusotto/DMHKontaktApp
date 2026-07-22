@@ -82,7 +82,12 @@ button:disabled {
 .sidebar {
   background: #ffffff;
   border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
   padding: 1.2rem;
+  position: sticky;
+  top: 0;
 }
 
 .brand {
@@ -135,6 +140,43 @@ button:disabled {
 .nav-button.active {
   background: var(--soft);
   border-color: var(--primary);
+  color: var(--primary-dark);
+  font-weight: 800;
+}
+
+.sidebar-footer {
+  margin-top: auto;
+  padding-top: 1rem;
+}
+
+.settings-subtabs {
+  align-items: flex-end;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 0.35rem;
+  margin: 0 auto 1rem;
+  max-width: 1180px;
+  overflow-x: auto;
+  width: 100%;
+}
+
+.settings-subtab {
+  background: transparent;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  border-radius: 6px 6px 0 0;
+  color: var(--accent);
+  flex: 0 0 auto;
+  margin-bottom: -1px;
+  padding: 0.7rem 0.9rem;
+}
+
+.settings-subtab:hover {
+  background: var(--soft);
+}
+
+.settings-subtab.active {
+  border-bottom-color: var(--primary);
   color: var(--primary-dark);
   font-weight: 800;
 }
@@ -1333,6 +1375,35 @@ table {
   max-width: 760px;
 }
 
+.recurrence-interval-field {
+  align-items: center;
+  display: grid;
+  gap: 0.45rem;
+  grid-template-columns: auto minmax(70px, 100px) 1fr;
+}
+
+.recurrence-interval-field input {
+  min-width: 0;
+}
+
+.recurrence-weekdays {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.recurrence-weekdays button {
+  min-height: 38px;
+  min-width: 44px;
+  padding: 0.35rem 0.55rem;
+}
+
+.recurrence-weekdays button.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #ffffff;
+}
+
 .calendar-category-dialog {
   max-width: 560px;
 }
@@ -1761,6 +1832,13 @@ table {
   .sidebar {
     border-bottom: 1px solid var(--border);
     border-right: 0;
+    height: auto;
+    position: static;
+  }
+
+  .sidebar-footer {
+    margin-top: 0.55rem;
+    padding-top: 0;
   }
 
   .nav-list {
@@ -3736,5 +3814,204 @@ td small {
   .vault-drawer > footer {
     align-items: stretch;
     flex-direction: column;
+  }
+}
+
+/* Erscheinungsbild: heller/dunkler Modus und Rosa/Grün */
+:root {
+  --surface: #ffffff;
+  --surface-alt: #f7f7f8;
+  --text: #202124;
+  --on-primary: #ffffff;
+  color-scheme: light;
+}
+
+:root[data-accent="green"] {
+  --primary: #7fa552;
+  --primary-dark: #5f7f3b;
+  --on-primary: #17210f;
+  --soft: #d0dec0;
+  --border: #b9cea0;
+}
+
+:root[data-color-mode="dark"] {
+  --page: #171a18;
+  --surface: #222723;
+  --surface-alt: #2b312c;
+  --text: #eef2ee;
+  --accent: #b8c7c1;
+  --border: #4b554d;
+  --soft: #4a2636;
+  color: var(--text);
+  color-scheme: dark;
+}
+
+:root[data-color-mode="dark"][data-accent="green"] {
+  --primary: #96b572;
+  --primary-dark: #b9cea0;
+  --on-primary: #15200f;
+  --soft: #34442d;
+  --border: #566b4b;
+}
+
+:root[data-color-mode="dark"] body,
+:root[data-color-mode="dark"] button,
+:root[data-color-mode="dark"] input,
+:root[data-color-mode="dark"] select,
+:root[data-color-mode="dark"] textarea {
+  color: var(--text);
+}
+
+:root[data-color-mode="dark"] button,
+:root[data-color-mode="dark"] input,
+:root[data-color-mode="dark"] select,
+:root[data-color-mode="dark"] textarea,
+:root[data-color-mode="dark"] .sidebar,
+:root[data-color-mode="dark"] .search-field,
+:root[data-color-mode="dark"] .status,
+:root[data-color-mode="dark"] .update-notifier,
+:root[data-color-mode="dark"] .form-panel,
+:root[data-color-mode="dark"] .table-panel,
+:root[data-color-mode="dark"] .readme-page,
+:root[data-color-mode="dark"] .import-confirm-panel,
+:root[data-color-mode="dark"] .contacts-tabs,
+:root[data-color-mode="dark"] .more-menu,
+:root[data-color-mode="dark"] .bulk-add-row,
+:root[data-color-mode="dark"] .groups-panel,
+:root[data-color-mode="dark"] .trash-panel,
+:root[data-color-mode="dark"] .calendar-toolbar,
+:root[data-color-mode="dark"] .calendar-day,
+:root[data-color-mode="dark"] .calendar-week-column,
+:root[data-color-mode="dark"] .export-options,
+:root[data-color-mode="dark"] .export-confirm-panel,
+:root[data-color-mode="dark"] .simple-card,
+:root[data-color-mode="dark"] .export-card,
+:root[data-color-mode="dark"] .settings-action-button,
+:root[data-color-mode="dark"] .outlook-import-source-choice > button,
+:root[data-color-mode="dark"] .outlook-source-card,
+:root[data-color-mode="dark"] .outlook-review-row,
+:root[data-color-mode="dark"] .settings-account-row,
+:root[data-color-mode="dark"] .password-reveal-field input,
+:root[data-color-mode="dark"] .vault-protection-icon,
+:root[data-color-mode="dark"] .vault-drawer,
+:root[data-color-mode="dark"] .app-lock-card {
+  background: var(--surface);
+}
+
+:root[data-color-mode="dark"] .calendar-day.outside,
+:root[data-color-mode="dark"] .vault-protection-card,
+:root[data-color-mode="dark"] .password-table-value code,
+:root[data-color-mode="dark"] .vault-secret-line code,
+:root[data-color-mode="dark"] .vault-detail-field.description p,
+:root[data-color-mode="dark"] .outlook-import-section,
+:root[data-color-mode="dark"] .outlook-import-review,
+:root[data-color-mode="dark"] .settings-found-accounts,
+:root[data-color-mode="dark"] .settings-saved-accounts {
+  background: var(--surface-alt);
+}
+
+:root[data-color-mode="dark"] th {
+  color: var(--text);
+}
+
+:root[data-color-mode="dark"] .passwords-table tbody tr.password-row:hover td,
+:root[data-color-mode="dark"] .passwords-table tbody tr.password-row:focus td {
+  background: var(--soft);
+}
+
+:root[data-color-mode="dark"] .app-lock-screen,
+:root[data-color-mode="dark"] .app-startup-screen {
+  background: radial-gradient(circle at top, var(--surface) 0, var(--page) 60%);
+}
+
+:root[data-color-mode="dark"] .primary,
+:root[data-color-mode="dark"] .recurrence-weekdays button.active {
+  color: var(--on-primary);
+}
+
+:root[data-accent="green"] .settings-task-heading > svg,
+:root[data-accent="green"] .settings-summary-icon {
+  background: #d0dec0;
+}
+
+:root[data-accent="green"] .settings-action-button,
+:root[data-accent="green"] .outlook-import-source-choice > button {
+  border-color: #b9cea0;
+}
+
+:root[data-accent="green"] .primary,
+:root[data-accent="green"] .recurrence-weekdays button.active {
+  color: var(--on-primary);
+}
+
+:root[data-color-mode="dark"][data-accent="green"] .settings-task-heading > svg,
+:root[data-color-mode="dark"][data-accent="green"] .settings-summary-icon {
+  background: #34442d;
+}
+
+.appearance-settings {
+  display: grid;
+  gap: 1rem;
+}
+
+.appearance-setting-group {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.appearance-setting-group h4 {
+  margin: 0;
+}
+
+.appearance-options {
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.appearance-option {
+  align-items: center;
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  justify-content: stretch;
+  min-height: 72px;
+  text-align: left;
+}
+
+.appearance-option > span:not(.appearance-palette) {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.appearance-option small {
+  color: var(--accent);
+}
+
+.appearance-option.selected {
+  background: var(--soft);
+  border-color: var(--primary);
+}
+
+.appearance-check {
+  color: var(--primary-dark);
+}
+
+.appearance-palette {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  display: flex;
+  height: 38px;
+  overflow: hidden;
+  width: 72px;
+}
+
+.appearance-palette i {
+  flex: 1 1 0;
+}
+
+@media (max-width: 680px) {
+  .appearance-options {
+    grid-template-columns: 1fr;
   }
 }

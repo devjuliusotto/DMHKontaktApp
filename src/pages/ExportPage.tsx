@@ -6,17 +6,23 @@ import { t } from "../i18n";
 import { listContacts, listGroups, writeExportFile } from "../services/db";
 import type { CalendarEvent } from "../types/calendar";
 import type { Contact, Group } from "../types/contact";
-import { exportCalendarIcs } from "../utils/calendar";
+import { calendarStorageKey, exportCalendarIcs } from "../utils/calendar";
 import { exportGeneralCsv, exportNewOutlookCsv, exportOutlookClassicCsv } from "../utils/exporters";
 
 type ContactExportKind = "classic" | "new" | "general";
+type CalendarExportTarget = "apple" | "google" | "teams" | "universal";
 type ExportChoice = "calendar" | "contacts";
 
 const exportChoiceLabels: Record<ExportChoice, string> = {
   calendar: "Kalender exportieren",
   contacts: "Kontaktlisten exportieren"
 };
-const calendarStorageKey = "agendakontakte.calendarEvents";
+const calendarTargetNames: Record<CalendarExportTarget, string> = {
+  apple: "Apple Kalender",
+  google: "Google Kalender",
+  teams: "Microsoft Teams / Outlook",
+  universal: "Universelle ICS-Datei"
+};
 
 export function ExportPage() {
   const [message, setMessage] = useState("");
@@ -24,6 +30,7 @@ export function ExportPage() {
   const [selectedGroupIds, setSelectedGroupIds] = useState<number[]>([]);
   const [choice, setChoice] = useState<ExportChoice | null>(null);
   const [contactExportKind, setContactExportKind] = useState<ContactExportKind>("classic");
+  const [calendarExportTarget, setCalendarExportTarget] = useState<CalendarExportTarget>("universal");
 
   useEffect(() => {
     listGroups().then(setGroups).catch((error) => setMessage(`Gruppen konnten nicht geladen werden: ${error}`));
@@ -80,7 +87,7 @@ export function ExportPage() {
     }
   };
 
-  const runCalendarExport = async () => {
+  const runCalendarExport = async (target: CalendarExportTarget) => {
     try {
       const events = loadCalendarEvents();
       if (!events.length) {
@@ -88,12 +95,19 @@ export function ExportPage() {
         return;
       }
       const path = await save({
-        defaultPath: "DMH-Kalender.ics",
+        defaultPath: `DMH-Kalender-${target}.ics`,
         filters: [{ name: "ICS", extensions: ["ics"] }]
       });
       if (!path) return;
       await writeExportFile(path, exportCalendarIcs(events));
-      setMessage(`${events.length} Termine als ICS exportiert.`);
+      const nextStep = target === "apple"
+        ? "Importieren Sie die Datei in Apple Kalender. Dies ist eine einmalige Übertragung."
+        : target === "google"
+          ? "Importieren Sie die Datei am Computer unter Google Kalender → Einstellungen → Importieren & Exportieren."
+          : target === "teams"
+            ? "Importieren Sie die Datei in den Outlook-Kalender desselben Microsoft-365-Kontos; die Termine erscheinen danach auch im Teams-Kalender."
+            : "Die ICS-Datei kann in gängigen Kalenderprogrammen importiert werden.";
+      setMessage(`${events.length} Termine und Terminserien für ${calendarTargetNames[target]} exportiert. ${nextStep}`);
     } catch (error) {
       setMessage(`Kalenderexport fehlgeschlagen: ${error}`);
     }
@@ -101,7 +115,7 @@ export function ExportPage() {
 
   const confirmExport = () => {
     if (!choice) return;
-    if (choice === "calendar") void runCalendarExport();
+    if (choice === "calendar") void runCalendarExport(calendarExportTarget);
     if (choice === "contacts") void runContactExport(contactExportKind);
   };
 
@@ -109,6 +123,7 @@ export function ExportPage() {
     setChoice(null);
     setSelectedGroupIds([]);
     setContactExportKind("classic");
+    setCalendarExportTarget("universal");
   };
 
   return (
@@ -157,8 +172,21 @@ export function ExportPage() {
               <span className="export-step-number">1</span>
               {choice === "calendar" ? (
                 <>
-                  <h4>Kalender</h4>
-                  <p>Exportiert werden alle aktuell gespeicherten Termine inklusive Titel, Uhrzeit, Ort, Beschreibung und Kategorie.</p>
+                  <h4>Zielkalender wählen</h4>
+                  <p>Termine und vollständige Serien werden als ICS-Datei gespeichert. Die Darstellung von Kategorienfarben bestimmt anschließend der Zielkalender.</p>
+                  <div className="export-radio-list">
+                    {([
+                      ["universal", "Universelle ICS-Datei", "Für beliebige Kalenderprogramme"],
+                      ["apple", "Apple Kalender", "Einmaliger Import auf Mac oder in iCloud"],
+                      ["google", "Google Kalender", "Einmaliger Import über die Google-Kalender-Webseite"],
+                      ["teams", "Microsoft Teams / Outlook", "Import in Outlook; danach im Teams-Kalender sichtbar"]
+                    ] as Array<[CalendarExportTarget, string, string]>).map(([target, label, description]) => (
+                      <label className={calendarExportTarget === target ? "export-radio-option selected" : "export-radio-option"} key={target}>
+                        <input type="radio" name="calendar-export-target" checked={calendarExportTarget === target} onChange={() => setCalendarExportTarget(target)} />
+                        <span><strong>{label}</strong><small>{description}</small></span>
+                      </label>
+                    ))}
+                  </div>
                 </>
               ) : (
                 <>

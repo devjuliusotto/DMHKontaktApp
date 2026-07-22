@@ -475,6 +475,19 @@ pub fn delete_vault_entry(app: AppHandle, id: i64) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn delete_all_vault_entries(app: AppHandle) -> Result<usize, String> {
+    ensure_vault_key(&app)?;
+    let timestamp = now();
+    open_db(&app)?
+        .execute(
+            "UPDATE vault_entries SET deleted_at = ?1, updated_at = ?1
+             WHERE deleted_at IS NULL",
+            params![timestamp],
+        )
+        .map_err(|error| format!("Die Kennwort-Einträge konnten nicht gelöscht werden: {error}"))
+}
+
+#[tauri::command]
 pub fn restore_vault_entry(app: AppHandle, id: i64) -> Result<(), String> {
     ensure_vault_key(&app)?;
     let changed = open_db(&app)?

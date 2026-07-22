@@ -1,4 +1,4 @@
-import { CalendarDays, Download, KeyRound, Settings, Trash2, Upload, UserRound } from "lucide-react";
+import { CalendarDays, KeyRound, Settings, UserRound } from "lucide-react";
 import { t } from "../i18n";
 
 export type Page = "contacts" | "calendar" | "passwords" | "import" | "export" | "trash" | "settings";
@@ -6,12 +6,10 @@ export type Page = "contacts" | "calendar" | "passwords" | "import" | "export" |
 const items: Array<{ page: Page; label: string; icon: typeof UserRound }> = [
   { page: "contacts", label: t.contacts, icon: UserRound },
   { page: "calendar", label: "Kalender", icon: CalendarDays },
-  { page: "passwords", label: "Passwörter", icon: KeyRound },
-  { page: "import", label: t.import, icon: Upload },
-  { page: "export", label: t.export, icon: Download },
-  { page: "trash", label: "Papierkorb", icon: Trash2 },
-  { page: "settings", label: "Einstellungen", icon: Settings }
+  { page: "passwords", label: "Passwörter", icon: KeyRound }
 ];
+
+const settingsPages = new Set<Page>(["settings", "import", "export", "trash"]);
 
 interface SidebarProps {
   activePage: Page;
@@ -44,6 +42,16 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
           );
         })}
       </nav>
+      <div className="sidebar-footer">
+        <button
+          className={settingsPages.has(activePage) ? "nav-button active" : "nav-button"}
+          onClick={() => onNavigate("settings")}
+          type="button"
+        >
+          <Settings size={24} />
+          <span>{t.settings}</span>
+        </button>
+      </div>
     </aside>
   );
 }

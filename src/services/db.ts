@@ -196,6 +196,10 @@ export function deleteVaultEntry(id: number): Promise<void> {
   return invoke("delete_vault_entry", { id });
 }
 
+export function deleteAllVaultEntries(): Promise<number> {
+  return invoke("delete_all_vault_entries");
+}
+
 export function restoreVaultEntry(id: number): Promise<void> {
   return invoke("restore_vault_entry", { id });
 }

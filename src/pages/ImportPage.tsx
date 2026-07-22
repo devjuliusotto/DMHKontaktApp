@@ -8,12 +8,11 @@ import { t } from "../i18n";
 import { importContacts, importOutlookStore, listGroups, saveGroup } from "../services/db";
 import type { CalendarEvent } from "../types/calendar";
 import type { Group } from "../types/contact";
-import { calendarColorOptions, calendarColorValue, defaultCalendarColor, parseCalendarFile } from "../utils/calendar";
+import { calendarColorFromCategory, calendarColorOptions, calendarColorValue, calendarStorageKey, defaultCalendarColor, parseCalendarFile } from "../utils/calendar";
 import { parseCsvBytes, parseXlsx, type ImportPreview } from "../utils/importers";
 
 type ImportMode = "contacts" | "calendar";
 
-const calendarStorageKey = "agendakontakte.calendarEvents";
 const ungroupedLabel = "Gesammelte Adressen";
 const defaultImportCategory = "Allgemein";
 const suggestedCalendarCategories = ["Geburtstag", "Arbeit", "Sitzung", "Beratung", "PJT"];
@@ -92,7 +91,7 @@ export function ImportPage() {
           setPreview(contacts.length ? createContactPreview(contacts) : null);
           setMessage(`${contactsLabel(contacts.length)} gefunden. Bitte Kontaktgruppe wählen und prüfen.`);
         } else {
-          setMessage(`${eventsLabel(result.events.length)} gefunden. Bitte Kategorie wählen und bestätigen.`);
+          setMessage(`${eventsLabel(result.events.length)} gefunden. Originalkategorien werden beibehalten; bitte Ersatzkategorie prüfen und bestätigen.`);
         }
         return;
       }
@@ -225,7 +224,7 @@ export function ImportPage() {
           <div className="panel-heading">
             <div>
               <h3>{mode === "calendar" ? "Agenda importieren" : "Kontakte importieren"}</h3>
-              <p className="import-step-text">1. Datei auswählen · 2. {mode === "calendar" ? "Kategorie wählen" : "Ziel wählen"} · 3. Vorschau prüfen · 4. Import bestätigen</p>
+              <p className="import-step-text">1. Datei auswählen · 2. {mode === "calendar" ? "Ersatzkategorie prüfen" : "Ziel wählen"} · 3. Vorschau prüfen · 4. Import bestätigen</p>
             </div>
             <button type="button" onClick={resetImport}>Andere Importart</button>
           </div>
@@ -245,8 +244,8 @@ export function ImportPage() {
               <span className="import-step-number">2</span>
               {mode === "calendar" ? (
                 <>
-                  <h4>Kategorie wählen</h4>
-                  <p>Diese Kategorie und Farbe werden den importierten Terminen zugeordnet.</p>
+                  <h4>Ersatzkategorie wählen</h4>
+                  <p>Vorhandene Kategorien und Farben bleiben erhalten. Diese Auswahl gilt nur für Termine, bei denen die Quelldatei keine Kategorie oder Farbe enthält.</p>
                   <label className="field">
                     <span>Kategorie</span>
                     <input value={calendarCategory} onChange={(event) => setCalendarCategory(event.target.value)} list="calendar-import-categories" />
@@ -313,7 +312,7 @@ export function ImportPage() {
           <div className="import-summary">
             {preview && <strong>{preview.mapping.email ? `E-Mail-Spalte erkannt: ${preview.mapping.email}` : "Keine E-Mail-Spalte gefunden"}</strong>}
             {pendingEvents.length > 0 && <span>{pendingEvents.length} Kalendertermine erkannt</span>}
-            {pendingEvents.length > 0 && <span>Kategorie: {calendarCategory.trim() || defaultImportCategory}</span>}
+            {pendingEvents.length > 0 && <span>Ersatzkategorie: {calendarCategory.trim() || defaultImportCategory}</span>}
             {preview && <span>{contactsWithEmail.length} Kontakte mit E-Mail erkannt</span>}
             {preview && <span>{contactsWithoutEmail.length} Kontakte ohne E-Mail erkannt</span>}
             {preview && <span>Ziel: {selectedGroupId === "" ? ungroupedLabel : groups.find((group) => group.id === selectedGroupId)?.name ?? "Gruppe"}</span>}
@@ -413,18 +412,22 @@ export function ImportPage() {
 }
 
 function normalizeCalendarEvent(event: CalendarEvent): CalendarEvent {
+  const category = event.category?.trim() ?? "";
   return {
     ...event,
-    color: calendarColorValue(event.color) || defaultCalendarColor,
-    category: event.category ?? ""
+    color: calendarColorFromCategory(category, event.color),
+    category
   };
 }
 
 function applyCalendarImportCategory(event: CalendarEvent, category: string, color: string): CalendarEvent {
+  const importedCategory = event.category.trim();
   return {
     ...event,
-    category: category.trim() || defaultImportCategory,
-    color: calendarColorValue(color)
+    category: importedCategory || category.trim() || defaultImportCategory,
+    color: importedCategory || calendarColorValue(event.color) !== defaultCalendarColor
+      ? calendarColorFromCategory(importedCategory, event.color)
+      : calendarColorValue(color)
   };
 }
 

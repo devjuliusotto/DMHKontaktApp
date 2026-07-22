@@ -1,4 +1,4 @@
-import type { CalendarEvent } from "../types/calendar";
+import type { CalendarEvent, CalendarRecurrence, CalendarRecurrenceFrequency } from "../types/calendar";
 import { calendarColorOptions, calendarColorValue } from "../utils/calendar";
 
 interface CalendarEventFormProps {
@@ -12,8 +12,52 @@ interface CalendarEventFormProps {
 }
 
 export function CalendarEventForm({ value, isNew, categories, onChange, onSave, onDelete, onCancel }: CalendarEventFormProps) {
-  const update = (key: keyof CalendarEvent, fieldValue: string) => onChange({ ...value, [key]: fieldValue });
+  const update = <Key extends keyof CalendarEvent>(key: Key, fieldValue: CalendarEvent[Key]) => onChange({ ...value, [key]: fieldValue });
   const categoryNames = categories.map((category) => category.name);
+  const recurrence = value.recurrence ?? null;
+  const recurrencePreset = !recurrence
+    ? "none"
+    : recurrence.frequency === "monthly" && recurrence.interval === 6
+      ? "semiannual"
+      : recurrence.frequency;
+
+  const startDate = () => {
+    const date = new Date(value.startsAt);
+    return Number.isNaN(date.getTime()) ? new Date() : date;
+  };
+
+  const setRecurrencePreset = (preset: string) => {
+    if (preset === "none") {
+      update("recurrence", null);
+      return;
+    }
+    const start = startDate();
+    const frequency: CalendarRecurrenceFrequency = preset === "semiannual" ? "monthly" : preset as CalendarRecurrenceFrequency;
+    const next: CalendarRecurrence = {
+      frequency,
+      interval: preset === "semiannual" ? 6 : 1
+    };
+    if (frequency === "weekly") next.daysOfWeek = [start.getDay()];
+    if (frequency === "monthly") next.dayOfMonth = start.getDate();
+    if (frequency === "yearly") {
+      next.dayOfMonth = start.getDate();
+      next.monthOfYear = start.getMonth() + 1;
+    }
+    update("recurrence", next);
+  };
+
+  const updateRecurrence = (changes: Partial<CalendarRecurrence>) => {
+    if (!recurrence) return;
+    update("recurrence", { ...recurrence, ...changes });
+  };
+
+  const toggleRecurrenceWeekday = (weekday: number) => {
+    if (!recurrence) return;
+    const current = new Set(recurrence.daysOfWeek ?? [startDate().getDay()]);
+    if (current.has(weekday) && current.size > 1) current.delete(weekday);
+    else current.add(weekday);
+    updateRecurrence({ daysOfWeek: Array.from(current).sort() });
+  };
 
   const updateCategory = (categoryName: string) => {
     const category = categories.find((entry) => entry.name === categoryName);
@@ -36,6 +80,79 @@ export function CalendarEventForm({ value, isNew, categories, onChange, onSave, 
           <span>Ende</span>
           <input type="datetime-local" value={value.endsAt} onChange={(event) => update("endsAt", event.target.value)} />
         </label>
+        <label className="field">
+          <span>Wiederholung</span>
+          <select value={recurrencePreset} onChange={(event) => setRecurrencePreset(event.target.value)}>
+            <option value="none">Keine Wiederholung</option>
+            <option value="daily">Täglich</option>
+            <option value="weekly">Wöchentlich</option>
+            <option value="monthly">Monatlich</option>
+            <option value="semiannual">Halbjährlich</option>
+            <option value="yearly">Jährlich</option>
+          </select>
+        </label>
+        {recurrence && (
+          <>
+            <label className="field">
+              <span>Intervall</span>
+              <span className="recurrence-interval-field">
+                <span>Alle</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={365}
+                  value={recurrence.interval}
+                  onChange={(event) => updateRecurrence({ interval: Math.max(1, Number(event.target.value) || 1) })}
+                />
+                <span>{recurrence.frequency === "daily" ? "Tag(e)" : recurrence.frequency === "weekly" ? "Woche(n)" : recurrence.frequency === "monthly" ? "Monat(e)" : "Jahr(e)"}</span>
+              </span>
+            </label>
+            {recurrence.frequency === "weekly" && (
+              <div className="field wide">
+                <span>Wochentage</span>
+                <div className="recurrence-weekdays">
+                  {["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"].map((label, weekday) => (
+                    <button
+                      className={(recurrence.daysOfWeek ?? [startDate().getDay()]).includes(weekday) ? "active" : ""}
+                      type="button"
+                      onClick={() => toggleRecurrenceWeekday(weekday)}
+                      key={label}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            <label className="field">
+              <span>Serienende</span>
+              <select
+                value={recurrence.count ? "count" : recurrence.until ? "until" : "never"}
+                onChange={(event) => {
+                  if (event.target.value === "count") updateRecurrence({ count: 10, until: undefined });
+                  else if (event.target.value === "until") updateRecurrence({ until: value.startsAt.slice(0, 4) + "-12-31", count: undefined });
+                  else updateRecurrence({ count: undefined, until: undefined });
+                }}
+              >
+                <option value="never">Kein Enddatum</option>
+                <option value="until">Endet am</option>
+                <option value="count">Nach Anzahl</option>
+              </select>
+            </label>
+            {recurrence.until && (
+              <label className="field">
+                <span>Letzter Termin</span>
+                <input type="date" value={recurrence.until} onChange={(event) => updateRecurrence({ until: event.target.value })} />
+              </label>
+            )}
+            {recurrence.count && (
+              <label className="field">
+                <span>Anzahl Termine</span>
+                <input type="number" min={1} max={10000} value={recurrence.count} onChange={(event) => updateRecurrence({ count: Math.max(1, Number(event.target.value) || 1) })} />
+              </label>
+            )}
+          </>
+        )}
         <label className="field wide">
           <span>Ort</span>
           <input value={value.location} onChange={(event) => update("location", event.target.value)} />

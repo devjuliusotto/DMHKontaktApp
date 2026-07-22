@@ -152,6 +152,25 @@ pub struct AppSetting {
     pub value: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarRecurrence {
+    pub frequency: String,
+    #[serde(default = "default_recurrence_interval")]
+    pub interval: u32,
+    #[serde(default)]
+    pub days_of_week: Vec<u32>,
+    pub day_of_month: Option<u32>,
+    pub month_of_year: Option<u32>,
+    pub week_of_month: Option<i32>,
+    pub until: Option<String>,
+    pub count: Option<u32>,
+}
+
+fn default_recurrence_interval() -> u32 {
+    1
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CalendarEvent {
@@ -166,6 +185,10 @@ pub struct CalendarEvent {
     #[serde(default)]
     pub category: String,
     pub source: String,
+    #[serde(default)]
+    pub recurrence: Option<CalendarRecurrence>,
+    #[serde(default)]
+    pub excluded_dates: Vec<String>,
 }
 
 fn default_calendar_color() -> String {
@@ -301,6 +324,12 @@ struct OutlookAppointmentRecord {
     description: String,
     #[serde(default)]
     category: String,
+    #[serde(default = "default_calendar_color")]
+    color: String,
+    #[serde(default)]
+    recurrence: Option<CalendarRecurrence>,
+    #[serde(default)]
+    excluded_dates: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -2856,6 +2885,140 @@ $namespace = $outlook.Session
 $events = New-Object System.Collections.Generic.List[object]
 $skipped = 0
 
+function Get-Calendar-Color($categoriesText) {
+  foreach ($categoryName in @(([string]$categoriesText) -split '[,;]')) {
+    $name = $categoryName.Trim()
+    if ([string]::IsNullOrWhiteSpace($name)) { continue }
+    try {
+      switch ([int]$namespace.Categories.Item($name).Color) {
+        { $_ -in 1, 10, 16, 25 } { return 'red' }
+        { $_ -in 2, 3, 4, 17, 18, 19 } { return 'yellow' }
+        { $_ -in 5, 6, 7, 20, 21, 22 } { return 'green' }
+        { $_ -in 9, 24 } { return 'purple' }
+        { $_ -in 13, 14, 15 } { return 'gray' }
+        default { return 'blue' }
+      }
+    } catch {}
+    if ($name -match '(?i)rot|red|rosa|pink') { return 'red' }
+    if ($name -match '(?i)grün|gruen|green|türkis|tuerkis|teal|olive') { return 'green' }
+    if ($name -match '(?i)gelb|yellow|orange|peach') { return 'yellow' }
+    if ($name -match '(?i)lila|violett|purple|maroon') { return 'purple' }
+    if ($name -match '(?i)grau|gray|grey|schwarz|black|steel') { return 'gray' }
+  }
+  return 'blue'
+}
+
+function Get-Weekdays($mask) {
+  $days = New-Object System.Collections.Generic.List[int]
+  if (($mask -band 1) -ne 0) { $days.Add(0) }
+  if (($mask -band 2) -ne 0) { $days.Add(1) }
+  if (($mask -band 4) -ne 0) { $days.Add(2) }
+  if (($mask -band 8) -ne 0) { $days.Add(3) }
+  if (($mask -band 16) -ne 0) { $days.Add(4) }
+  if (($mask -band 32) -ne 0) { $days.Add(5) }
+  if (($mask -band 64) -ne 0) { $days.Add(6) }
+  return $days.ToArray()
+}
+
+function Get-Recurrence-Data($item) {
+  try {
+    if (-not [bool]$item.IsRecurring -or [int]$item.RecurrenceState -ne 1) { return $null }
+    $pattern = $item.GetRecurrencePattern()
+    $recurrenceType = [int]$pattern.RecurrenceType
+    $frequency = switch ($recurrenceType) {
+      0 { 'daily' }
+      1 { 'weekly' }
+      2 { 'monthly' }
+      3 { 'monthly' }
+      5 { 'yearly' }
+      6 { 'yearly' }
+      default { $null }
+    }
+    if (-not $frequency) { return $null }
+    $interval = [Math]::Max(1, [int]$pattern.Interval)
+    if ($recurrenceType -in 5, 6) { $interval = 1 }
+    $daysOfWeek = @()
+    if ($recurrenceType -in 1, 3, 6) { $daysOfWeek = @(Get-Weekdays ([int]$pattern.DayOfWeekMask)) }
+    $dayOfMonth = $null
+    if ($recurrenceType -in 2, 5) { $dayOfMonth = [int]$pattern.DayOfMonth }
+    $monthOfYear = $null
+    if ($recurrenceType -in 5, 6) { $monthOfYear = [int]$pattern.MonthOfYear }
+    $weekOfMonth = $null
+    if ($recurrenceType -in 3, 6) {
+      $weekOfMonth = [int]$pattern.Instance
+      if ($weekOfMonth -eq 5) { $weekOfMonth = -1 }
+    }
+    $until = $null
+    if (-not [bool]$pattern.NoEndDate) { $until = ([datetime]$pattern.PatternEndDate).ToString('yyyy-MM-dd') }
+    $excludedDates = New-Object System.Collections.Generic.List[string]
+    try {
+      $exceptions = $pattern.Exceptions
+      for ($exceptionIndex = 1; $exceptionIndex -le $exceptions.Count; $exceptionIndex++) {
+        $excludedDates.Add(([datetime]$exceptions.Item($exceptionIndex).OriginalDate).ToString('yyyy-MM-dd'))
+      }
+    } catch {}
+    return [pscustomobject]@{
+      recurrence = [pscustomobject]@{
+        frequency = $frequency
+        interval = $interval
+        daysOfWeek = $daysOfWeek
+        dayOfMonth = $dayOfMonth
+        monthOfYear = $monthOfYear
+        weekOfMonth = $weekOfMonth
+        until = $until
+        count = $null
+      }
+      excludedDates = $excludedDates.ToArray()
+    }
+  } catch { return $null }
+}
+
+function Add-Calendar-Record($item, $folder, $storeId, $storeName, $allowRecurrence, $identitySuffix) {
+  try {
+    $entryId = ''
+    $globalAppointmentId = ''
+    $start = ''
+    $end = ''
+    $categories = ''
+    try { $entryId = [string]$item.EntryID } catch {}
+    if ($identitySuffix) { $entryId = "$entryId$identitySuffix" }
+    try { $globalAppointmentId = [string]$item.GlobalAppointmentID } catch {}
+    try { $start = ([datetime]$item.Start).ToString('yyyy-MM-ddTHH:mm:ss') } catch {}
+    try { $end = ([datetime]$item.End).ToString('yyyy-MM-ddTHH:mm:ss') } catch {}
+    try { $categories = [string]$item.Categories } catch {}
+    $recurrenceData = if ($allowRecurrence) { Get-Recurrence-Data $item } else { $null }
+    $events.Add([pscustomobject]@{
+      entryId = $entryId
+      storeId = $storeId
+      storeName = $storeName
+      folderPath = [string]$folder.FolderPath
+      globalAppointmentId = $globalAppointmentId
+      title = [string]$item.Subject
+      startsAt = $start
+      endsAt = $end
+      location = [string]$item.Location
+      description = [string]$item.Body
+      category = $categories
+      color = Get-Calendar-Color $categories
+      recurrence = if ($recurrenceData) { $recurrenceData.recurrence } else { $null }
+      excludedDates = if ($recurrenceData) { $recurrenceData.excludedDates } else { @() }
+    }) | Out-Null
+
+    if ($recurrenceData) {
+      try {
+        $exceptions = $item.GetRecurrencePattern().Exceptions
+        for ($exceptionIndex = 1; $exceptionIndex -le $exceptions.Count; $exceptionIndex++) {
+          $exception = $exceptions.Item($exceptionIndex)
+          if (-not [bool]$exception.Deleted) {
+            $suffix = '-exception-' + ([datetime]$exception.OriginalDate).ToString('yyyyMMddHHmmss')
+            Add-Calendar-Record $exception.AppointmentItem $folder $storeId $storeName $false $suffix
+          }
+        }
+      } catch { $script:skipped++ }
+    }
+  } catch { $script:skipped++ }
+}
+
 function Read-Calendar-Folder($folder, $storeId, $storeName) {
   try {
     $items = $folder.Items
@@ -2863,27 +3026,7 @@ function Read-Calendar-Folder($folder, $storeId, $storeName) {
       try {
         $item = $items.Item($index)
         if ([string]$item.MessageClass -notlike 'IPM.Appointment*') { continue }
-        $entryId = ''
-        $globalAppointmentId = ''
-        $start = ''
-        $end = ''
-        try { $entryId = [string]$item.EntryID } catch {}
-        try { $globalAppointmentId = [string]$item.GlobalAppointmentID } catch {}
-        try { $start = ([datetime]$item.Start).ToString('yyyy-MM-ddTHH:mm:ss') } catch {}
-        try { $end = ([datetime]$item.End).ToString('yyyy-MM-ddTHH:mm:ss') } catch {}
-        $events.Add([pscustomobject]@{
-          entryId = $entryId
-          storeId = $storeId
-          storeName = $storeName
-          folderPath = [string]$folder.FolderPath
-          globalAppointmentId = $globalAppointmentId
-          title = [string]$item.Subject
-          startsAt = $start
-          endsAt = $end
-          location = [string]$item.Location
-          description = [string]$item.Body
-          category = [string]$item.Categories
-        }) | Out-Null
+        Add-Calendar-Record $item $folder $storeId $storeName $true ''
       } catch { $script:skipped++ }
     }
   } catch { $script:skipped++ }
@@ -3008,9 +3151,11 @@ fn import_outlook_classic_appointments_once() -> Result<OutlookOneTimeCalendarIm
             },
             location: record.location,
             description: record.description,
-            color: default_calendar_color(),
+            color: record.color,
             category: record.category,
             source,
+            recurrence: record.recurrence,
+            excluded_dates: record.excluded_dates,
         });
     }
 
@@ -3036,6 +3181,57 @@ $store = $namespace.Stores.Item($namespace.Stores.Count)
 $root = $store.GetRootFolder()
 $contacts = New-Object System.Collections.Generic.List[object]
 $events = New-Object System.Collections.Generic.List[object]
+function Get-Store-Calendar-Color($categoriesText) {{
+  foreach ($categoryName in @(([string]$categoriesText) -split '[,;]')) {{
+    $name = $categoryName.Trim()
+    if ([string]::IsNullOrWhiteSpace($name)) {{ continue }}
+    try {{
+      switch ([int]$namespace.Categories.Item($name).Color) {{
+        {{ $_ -in 1, 10, 16, 25 }} {{ return 'red' }}
+        {{ $_ -in 2, 3, 4, 17, 18, 19 }} {{ return 'yellow' }}
+        {{ $_ -in 5, 6, 7, 20, 21, 22 }} {{ return 'green' }}
+        {{ $_ -in 9, 24 }} {{ return 'purple' }}
+        {{ $_ -in 13, 14, 15 }} {{ return 'gray' }}
+        default {{ return 'blue' }}
+      }}
+    }} catch {{}}
+    if ($name -match '(?i)rot|red|rosa|pink') {{ return 'red' }}
+    if ($name -match '(?i)grün|gruen|green|türkis|tuerkis|teal|olive') {{ return 'green' }}
+    if ($name -match '(?i)gelb|yellow|orange|peach') {{ return 'yellow' }}
+    if ($name -match '(?i)lila|violett|purple|maroon') {{ return 'purple' }}
+    if ($name -match '(?i)grau|gray|grey|schwarz|black|steel') {{ return 'gray' }}
+  }}
+  return 'blue'
+}}
+function Get-Store-Weekdays($mask) {{
+  $days = New-Object System.Collections.Generic.List[int]
+  if (($mask -band 1) -ne 0) {{ $days.Add(0) }}
+  if (($mask -band 2) -ne 0) {{ $days.Add(1) }}
+  if (($mask -band 4) -ne 0) {{ $days.Add(2) }}
+  if (($mask -band 8) -ne 0) {{ $days.Add(3) }}
+  if (($mask -band 16) -ne 0) {{ $days.Add(4) }}
+  if (($mask -band 32) -ne 0) {{ $days.Add(5) }}
+  if (($mask -band 64) -ne 0) {{ $days.Add(6) }}
+  return $days.ToArray()
+}}
+function Get-Store-Recurrence($item) {{
+  try {{
+    if (-not [bool]$item.IsRecurring -or [int]$item.RecurrenceState -ne 1) {{ return $null }}
+    $pattern = $item.GetRecurrencePattern()
+    $recurrenceType = [int]$pattern.RecurrenceType
+    $frequency = switch ($recurrenceType) {{ 0 {{ 'daily' }} 1 {{ 'weekly' }} 2 {{ 'monthly' }} 3 {{ 'monthly' }} 5 {{ 'yearly' }} 6 {{ 'yearly' }} default {{ $null }} }}
+    if (-not $frequency) {{ return $null }}
+    $interval = [Math]::Max(1, [int]$pattern.Interval)
+    if ($recurrenceType -in 5, 6) {{ $interval = 1 }}
+    $daysOfWeek = if ($recurrenceType -in 1, 3, 6) {{ @(Get-Store-Weekdays ([int]$pattern.DayOfWeekMask)) }} else {{ @() }}
+    $dayOfMonth = if ($recurrenceType -in 2, 5) {{ [int]$pattern.DayOfMonth }} else {{ $null }}
+    $monthOfYear = if ($recurrenceType -in 5, 6) {{ [int]$pattern.MonthOfYear }} else {{ $null }}
+    $weekOfMonth = if ($recurrenceType -in 3, 6) {{ [int]$pattern.Instance }} else {{ $null }}
+    if ($weekOfMonth -eq 5) {{ $weekOfMonth = -1 }}
+    $until = if (-not [bool]$pattern.NoEndDate) {{ ([datetime]$pattern.PatternEndDate).ToString('yyyy-MM-dd') }} else {{ $null }}
+    return [pscustomobject]@{{ frequency = $frequency; interval = $interval; daysOfWeek = $daysOfWeek; dayOfMonth = $dayOfMonth; monthOfYear = $monthOfYear; weekOfMonth = $weekOfMonth; until = $until; count = $null }}
+  }} catch {{ return $null }}
+}}
 function Read-Folders($folder) {{
   try {{
     foreach ($item in @($folder.Items)) {{
@@ -3067,6 +3263,7 @@ function Read-Folders($folder) {{
           }}) | Out-Null
         }}
         if ($messageClass -like 'IPM.Appointment*') {{
+          $categories = [string]$item.Categories
           $events.Add([pscustomobject]@{{
             id = [string]$item.GlobalAppointmentID
             title = [string]$item.Subject
@@ -3074,9 +3271,11 @@ function Read-Folders($folder) {{
             endsAt = if ($item.End) {{ ([datetime]$item.End).ToString('o') }} else {{ '' }}
             location = [string]$item.Location
             description = [string]$item.Body
-            color = 'blue'
-            category = ''
+            color = Get-Store-Calendar-Color $categories
+            category = $categories
             source = $path
+            recurrence = Get-Store-Recurrence $item
+            excludedDates = @()
           }}) | Out-Null
         }}
       }} catch {{}}
@@ -3177,6 +3376,7 @@ pub fn run() {
             vault::list_deleted_vault_entries,
             vault::save_vault_entry,
             vault::delete_vault_entry,
+            vault::delete_all_vault_entries,
             vault::restore_vault_entry,
             vault::configure_vault_protection,
             vault::disable_vault_protection,
