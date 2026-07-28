@@ -1,11 +1,13 @@
-import { CalendarDays, ChevronLeft, ChevronRight, Edit, List, Plus, Rows3, Trash2, X } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, Edit, List, ListChecks, Plus, Rows3, Trash2, Undo2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { CalendarEventForm } from "../components/CalendarEventForm";
 import { StatusMessage } from "../components/StatusMessage";
 import type { CalendarEvent } from "../types/calendar";
 import { calendarColorOptions, calendarColorStyle, calendarColorValue, calendarStorageKey, calendarTrashStorageKey, defaultCalendarColor, expandCalendarEvents, formatCalendarDate, parseCalendarDate } from "../utils/calendar";
+import { findExactCalendarDuplicateGroups, removeExactCalendarDuplicates } from "../utils/calendarDuplicates";
 
 const categoriesStorageKey = "agendakontakte.calendarCategories";
+const duplicateCleanupBackupKey = "agendakontakte.calendarExactDuplicateCleanupBackup.v1";
 const weekdays = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
 type CalendarView = "month" | "week" | "list";
 type CalendarCategory = {
@@ -13,6 +15,23 @@ type CalendarCategory = {
   color: string;
 };
 const allCategoriesValue = "__all__";
+
+interface CalendarDuplicateCleanupBackup {
+  createdAt: string;
+  removedEvents: CalendarEvent[];
+}
+
+function readDuplicateCleanupBackup(): CalendarDuplicateCleanupBackup | null {
+  const raw = localStorage.getItem(duplicateCleanupBackupKey);
+  if (!raw) return null;
+  try {
+    const value = JSON.parse(raw) as Partial<CalendarDuplicateCleanupBackup>;
+    if (typeof value.createdAt !== "string" || !Array.isArray(value.removedEvents)) return null;
+    return { createdAt: value.createdAt, removedEvents: value.removedEvents as CalendarEvent[] };
+  } catch {
+    return null;
+  }
+}
 
 function startOfDay(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate());
@@ -91,8 +110,12 @@ export function CalendarPage() {
   const [editingIsNew, setEditingIsNew] = useState(false);
   const [categoryFilter, setCategoryFilter] = useState(allCategoriesValue);
   const [showCategoryDialog, setShowCategoryDialog] = useState(false);
+  const [showDuplicateDialog, setShowDuplicateDialog] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
   const [newCategoryColor, setNewCategoryColor] = useState(defaultCalendarColor);
+  const [duplicateCleanupBackup, setDuplicateCleanupBackup] = useState<CalendarDuplicateCleanupBackup | null>(
+    () => readDuplicateCleanupBackup()
+  );
 
   useEffect(() => {
     const saved = localStorage.getItem(calendarStorageKey);
@@ -142,6 +165,11 @@ export function CalendarPage() {
       : allSortedEvents.filter((event) => event.category.trim() === categoryFilter),
     [allSortedEvents, categoryFilter]
   );
+  const exactDuplicateGroups = useMemo(() => findExactCalendarDuplicateGroups(events), [events]);
+  const exactDuplicateCopies = useMemo(
+    () => exactDuplicateGroups.reduce((total, group) => total + group.copies - 1, 0),
+    [exactDuplicateGroups]
+  );
 
   const monthDays = useMemo(() => {
     const first = new Date(cursor.getFullYear(), cursor.getMonth(), 1);
@@ -179,6 +207,57 @@ export function CalendarPage() {
     const sorted = Array.from(byName.values()).sort((left, right) => left.name.localeCompare(right.name, "de"));
     setCategories(sorted);
     localStorage.setItem(categoriesStorageKey, JSON.stringify(sorted));
+  };
+
+  const reviewExactDuplicates = () => {
+    if (exactDuplicateCopies === 0) {
+      setMessage("Keine in allen Kalenderfeldern exakt gleichen Duplikate gefunden.");
+      return;
+    }
+    setShowDuplicateDialog(true);
+  };
+
+  const cleanupExactDuplicates = () => {
+    const result = removeExactCalendarDuplicates(events);
+    if (result.removedEvents.length === 0) {
+      setShowDuplicateDialog(false);
+      setMessage("Keine exakt gleichen Duplikate gefunden.");
+      return;
+    }
+
+    const previousBackup = readDuplicateCleanupBackup();
+    const backup: CalendarDuplicateCleanupBackup = {
+      createdAt: previousBackup?.createdAt ?? new Date().toISOString(),
+      removedEvents: [...(previousBackup?.removedEvents ?? []), ...result.removedEvents]
+    };
+    localStorage.setItem(duplicateCleanupBackupKey, JSON.stringify(backup));
+    setDuplicateCleanupBackup(backup);
+    persist(result.events);
+    setShowDuplicateDialog(false);
+    setMessage(
+      `${result.removedEvents.length} exakt gleiche überzählige ${result.removedEvents.length === 1 ? "Kopie wurde" : "Kopien wurden"} entfernt und vollständig für „Rückgängig“ gesichert.`
+    );
+  };
+
+  const undoDuplicateCleanup = () => {
+    const backup = readDuplicateCleanupBackup();
+    if (!backup?.removedEvents.length) {
+      setDuplicateCleanupBackup(null);
+      setMessage("Keine Sicherung einer Duplikatbereinigung gefunden.");
+      return;
+    }
+    if (!window.confirm(`${backup.removedEvents.length} zuvor entfernte Kalenderkopien wiederherstellen? Bestehende oder inzwischen geänderte Termine werden nicht überschrieben.`)) return;
+
+    const usedIds = new Set(events.map((event) => event.id));
+    const restoredEvents = backup.removedEvents.map((event) => {
+      const id = usedIds.has(event.id) ? crypto.randomUUID() : event.id;
+      usedIds.add(id);
+      return id === event.id ? event : { ...event, id };
+    });
+    persist([...events, ...restoredEvents]);
+    localStorage.removeItem(duplicateCleanupBackupKey);
+    setDuplicateCleanupBackup(null);
+    setMessage(`${restoredEvents.length} Kalenderkopien wurden aus der Sicherung wiederhergestellt.`);
   };
 
   const createCategory = () => {
@@ -287,6 +366,14 @@ export function CalendarPage() {
           <button className="danger-button" type="button" onClick={deleteAllEvents} disabled={events.length === 0}>
             <Trash2 size={20} /> Alle Termine löschen
           </button>
+          <button type="button" onClick={reviewExactDuplicates}>
+            <ListChecks size={20} /> Exakte Duplikate prüfen
+          </button>
+          {duplicateCleanupBackup && (
+            <button type="button" onClick={undoDuplicateCleanup}>
+              <Undo2 size={20} /> Bereinigung rückgängig
+            </button>
+          )}
         </div>
       </header>
       <StatusMessage message={message} />
@@ -317,6 +404,47 @@ export function CalendarPage() {
                 <button className="primary" type="button" onClick={createCategory}>Speichern</button>
                 <button type="button" onClick={() => setShowCategoryDialog(false)}>Abbrechen</button>
               </div>
+            </section>
+          </div>
+        </div>
+      )}
+
+      {showDuplicateDialog && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="calendar-duplicate-title">
+          <div className="modal-card calendar-duplicate-dialog">
+            <section className="form-panel">
+              <div className="panel-heading">
+                <div>
+                  <h3 id="calendar-duplicate-title">Exakte Kalenderduplikate</h3>
+                  <p>{exactDuplicateCopies} überzählige {exactDuplicateCopies === 1 ? "Kopie" : "Kopien"} in {exactDuplicateGroups.length} {exactDuplicateGroups.length === 1 ? "Gruppe" : "Gruppen"} gefunden.</p>
+                </div>
+                <button className="icon-only" type="button" aria-label="Schließen" onClick={() => setShowDuplicateDialog(false)}>
+                  <X size={22} />
+                </button>
+              </div>
+
+              <div className="calendar-duplicate-safety" role="note">
+                Entfernt wird nur eine überzählige Kopie, wenn Titel, Beginn, Ende, Ort, Beschreibung, Farbe, Kategorie und Quelle Zeichen für Zeichen gleich sind. Die technische ID darf verschieden sein. Schon eine Abweichung – auch bei Sekunden – erhält beide Termine.
+              </div>
+
+              <ul className="calendar-duplicate-list">
+                {exactDuplicateGroups.slice(0, 10).map((group) => (
+                  <li key={`${group.event.id}-${group.copies}`}>
+                    <strong>{group.event.title}</strong>
+                    <span>{formatCalendarDate(group.event.startsAt)} · {group.copies} identische Kopien</span>
+                    {group.event.source && <small>{group.event.source}</small>}
+                  </li>
+                ))}
+              </ul>
+              {exactDuplicateGroups.length > 10 && <p>Weitere {exactDuplicateGroups.length - 10} Gruppen werden nach denselben strengen Regeln behandelt.</p>}
+
+              <div className="button-row">
+                <button type="button" onClick={() => setShowDuplicateDialog(false)}>Abbrechen</button>
+                <button className="danger-button" type="button" onClick={cleanupExactDuplicates}>
+                  <Trash2 size={18} /> {exactDuplicateCopies} überzählige {exactDuplicateCopies === 1 ? "Kopie" : "Kopien"} entfernen
+                </button>
+              </div>
+              <p className="calendar-duplicate-backup-note">Vor dem Entfernen werden sämtliche Kopien vollständig lokal gesichert und können über „Bereinigung rückgängig“ wiederhergestellt werden.</p>
             </section>
           </div>
         </div>

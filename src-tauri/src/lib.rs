@@ -9,6 +9,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
 mod mail_accounts;
@@ -66,6 +67,7 @@ fn url_encode_component(value: &str) -> String {
 struct AppState {
     db_path: Mutex<PathBuf>,
     vault: Mutex<vault::VaultRuntime>,
+    outlook_contact_cache: Mutex<Option<CachedOutlookContacts>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -319,6 +321,12 @@ struct OutlookReadData {
     skipped: usize,
 }
 
+#[derive(Debug)]
+struct CachedOutlookContacts {
+    captured_at: Instant,
+    data: OutlookReadData,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OutlookAppointmentRecord {
@@ -412,8 +420,6 @@ pub struct OutlookContactImportPreview {
 #[serde(rename_all = "camelCase")]
 pub struct OutlookContactImportRequest {
     pub selected_source_ids: Vec<String>,
-    #[serde(default)]
-    pub included_conflict_ids: Vec<String>,
     #[serde(default = "default_true")]
     pub create_source_groups: bool,
 }
@@ -434,12 +440,12 @@ pub struct OutlookContactImportResult {
     pub batch_id: String,
 }
 
-#[derive(Debug)]
-struct ContactFingerprint {
-    display_name: String,
-    normalized_name: String,
-    email: String,
-    phones: Vec<String>,
+#[derive(Debug, Default)]
+struct ContactFingerprintIndex {
+    exact_contacts: HashMap<String, String>,
+    emails: HashMap<String, String>,
+    phones: HashMap<String, String>,
+    names: HashMap<String, String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -876,6 +882,42 @@ fn delete_contact(app: AppHandle, id: i64) -> Result<(), String> {
     Ok(())
 }
 
+fn soft_delete_contacts(
+    conn: &mut Connection,
+    ids: &[i64],
+    timestamp: &str,
+) -> Result<usize, String> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+
+    let tx = conn.transaction().map_err(|err| err.to_string())?;
+    let deleted = {
+        let mut statement = tx
+            .prepare(
+                "UPDATE contacts
+                 SET deleted_at = ?1, updated_at = ?1
+                 WHERE id = ?2 AND deleted_at IS NULL",
+            )
+            .map_err(|err| err.to_string())?;
+        let mut deleted = 0usize;
+        for id in ids {
+            deleted += statement
+                .execute(params![timestamp, id])
+                .map_err(|err| err.to_string())?;
+        }
+        deleted
+    };
+    tx.commit().map_err(|err| err.to_string())?;
+    Ok(deleted)
+}
+
+#[tauri::command]
+fn delete_contacts(app: AppHandle, ids: Vec<i64>) -> Result<usize, String> {
+    let mut conn = open_db(&app)?;
+    soft_delete_contacts(&mut conn, &ids, &now())
+}
+
 #[tauri::command]
 fn restore_contact(app: AppHandle, id: i64) -> Result<(), String> {
     let conn = open_db(&app)?;
@@ -1018,10 +1060,12 @@ fn list_deleted_groups(app: AppHandle) -> Result<Vec<Group>, String> {
 #[tauri::command]
 fn import_contacts(app: AppHandle, payload: ImportPayload) -> Result<ImportResult, String> {
     let mut conn = open_db(&app)?;
+    let mut fingerprints = load_contact_fingerprints(&conn)?;
     let tx = conn.transaction().map_err(|err| err.to_string())?;
     let timestamp = now();
     let batch_id = format!("import-{}", Utc::now().timestamp_millis());
     let mut imported = 0usize;
+    let mut skipped_duplicates = 0usize;
 
     for contact in payload.contacts {
         let email = contact.email.trim().to_lowercase();
@@ -1032,6 +1076,14 @@ fn import_contacts(app: AppHandle, payload: ImportPayload) -> Result<ImportResul
         } else {
             contact.display_name.trim().to_string()
         };
+        if fingerprints.exact_contacts.contains_key(&contact_exact_key(
+            &contact,
+            &display_name,
+            &email,
+        )) {
+            skipped_duplicates += 1;
+            continue;
+        }
 
         tx.execute(
             "
@@ -1061,6 +1113,7 @@ fn import_contacts(app: AppHandle, payload: ImportPayload) -> Result<ImportResul
         )
         .map_err(|err| err.to_string())?;
         let contact_id = tx.last_insert_rowid();
+        add_fingerprint(&mut fingerprints, &contact, &display_name, &email);
         for group_id in contact.group_ids {
             tx.execute(
                 "INSERT OR IGNORE INTO contact_groups (contact_id, group_id) VALUES (?, ?)",
@@ -1073,14 +1126,20 @@ fn import_contacts(app: AppHandle, payload: ImportPayload) -> Result<ImportResul
 
     tx.execute(
         "INSERT INTO import_history (batch_id, source_file, imported_count, skipped_count, created_at) VALUES (?, ?, ?, ?, ?)",
-        params![batch_id, payload.source_file, imported as i64, 0, timestamp],
+        params![
+            batch_id,
+            payload.source_file,
+            imported as i64,
+            skipped_duplicates as i64,
+            timestamp
+        ],
     )
     .map_err(|err| err.to_string())?;
     tx.commit().map_err(|err| err.to_string())?;
 
     Ok(ImportResult {
         imported,
-        skipped_duplicates: 0,
+        skipped_duplicates,
         batch_id,
     })
 }
@@ -1641,6 +1700,26 @@ for ($storeIndex = 1; $storeIndex -le $namespace.Stores.Count; $storeIndex++) {
         .map_err(|err| format!("Outlook-Kontakte konnten nicht ausgewertet werden: {err}"))
 }
 
+fn cache_outlook_contacts(app: &AppHandle, data: OutlookReadData) {
+    if let Ok(mut cache) = app.state::<AppState>().outlook_contact_cache.lock() {
+        *cache = Some(CachedOutlookContacts {
+            captured_at: Instant::now(),
+            data,
+        });
+    }
+}
+
+fn take_cached_outlook_contacts(app: &AppHandle) -> Option<OutlookReadData> {
+    let state = app.state::<AppState>();
+    let mut cache = state.outlook_contact_cache.lock().ok()?;
+    let cached = cache.take()?;
+    if cached.captured_at.elapsed() <= Duration::from_secs(15 * 60) {
+        Some(cached.data)
+    } else {
+        None
+    }
+}
+
 fn outlook_record_to_contact(record: &OutlookContactRecord) -> ContactInput {
     ContactInput {
         id: None,
@@ -1741,79 +1820,109 @@ fn contact_phone_keys(contact: &ContactInput) -> Vec<String> {
     phones
 }
 
-fn load_contact_fingerprints(conn: &Connection) -> Result<Vec<ContactFingerprint>, String> {
+fn contact_exact_key(contact: &ContactInput, display_name: &str, email: &str) -> String {
+    serde_json::to_string(&[
+        contact.first_name.as_str(),
+        contact.last_name.as_str(),
+        display_name,
+        email,
+        contact.phone.as_str(),
+        contact.mobile_phone.as_str(),
+        contact.street.as_str(),
+        contact.postal_code.as_str(),
+        contact.city.as_str(),
+        contact.country.as_str(),
+        contact.short_info.as_str(),
+        contact.notes.as_str(),
+    ])
+    .expect("Kontaktfelder müssen als JSON serialisierbar sein")
+}
+
+fn load_contact_fingerprints(conn: &Connection) -> Result<ContactFingerprintIndex, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT display_name, email, phone, mobile_phone
+            "SELECT first_name, last_name, display_name, email, phone, mobile_phone,
+                    street, postal_code, city, country, short_info, notes
              FROM contacts
              WHERE deleted_at IS NULL",
         )
         .map_err(|err| err.to_string())?;
     let rows = stmt
         .query_map([], |row| {
-            let phone: String = row.get(2)?;
-            let mobile_phone: String = row.get(3)?;
-            let mut phones = Vec::new();
-            for value in [&phone, &mobile_phone] {
-                let normalized = normalize_phone_for_match(value);
-                if !normalized.is_empty() && !phones.contains(&normalized) {
-                    phones.push(normalized);
-                }
-            }
-            let display_name = row.get::<_, String>(0)?.trim().to_string();
-            Ok(ContactFingerprint {
-                normalized_name: display_name.to_lowercase(),
-                display_name,
-                email: row.get::<_, String>(1)?.trim().to_lowercase(),
-                phones,
+            Ok(ContactInput {
+                id: None,
+                first_name: row.get(0)?,
+                last_name: row.get(1)?,
+                display_name: row.get(2)?,
+                email: row.get(3)?,
+                phone: row.get(4)?,
+                mobile_phone: row.get(5)?,
+                street: row.get(6)?,
+                postal_code: row.get(7)?,
+                city: row.get(8)?,
+                country: row.get(9)?,
+                short_info: row.get(10)?,
+                notes: row.get(11)?,
+                group_ids: Vec::new(),
             })
         })
         .map_err(|err| err.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|err| err.to_string())
+    let mut fingerprints = ContactFingerprintIndex::default();
+    for row in rows {
+        let contact = row.map_err(|err| err.to_string())?;
+        let display_name = normalize_contact_display_name(&contact);
+        let email = contact.email.trim().to_lowercase();
+        add_fingerprint(&mut fingerprints, &contact, &display_name, &email);
+    }
+    Ok(fingerprints)
 }
 
 fn classify_outlook_contact(
-    fingerprints: &[ContactFingerprint],
+    fingerprints: &ContactFingerprintIndex,
     contact: &ContactInput,
     display_name: &str,
     email: &str,
 ) -> (String, String, Option<String>) {
+    let exact_key = contact_exact_key(contact, display_name, email);
+    if let Some(existing_name) = fingerprints.exact_contacts.get(&exact_key) {
+        return (
+            "duplicate_exact".to_string(),
+            "Alle Kontaktfelder sind zu 100 % identisch.".to_string(),
+            Some(existing_name.clone()),
+        );
+    }
+
     if !email.is_empty() {
-        if let Some(existing) = fingerprints.iter().find(|existing| existing.email == email) {
+        if let Some(existing_name) = fingerprints.emails.get(email) {
             return (
-                "duplicate_email".to_string(),
-                "Diese E-Mail-Adresse ist bereits vorhanden.".to_string(),
-                Some(existing.display_name.clone()),
+                "different".to_string(),
+                "Gleiche E-Mail-Adresse, aber mindestens ein anderes Kontaktfeld. Beide Kontakte bleiben erhalten.".to_string(),
+                Some(existing_name.clone()),
             );
         }
     }
 
     let phone_keys = contact_phone_keys(contact);
     if !phone_keys.is_empty() {
-        if let Some(existing) = fingerprints.iter().find(|existing| {
-            phone_keys
-                .iter()
-                .any(|phone| existing.phones.iter().any(|value| value == phone))
-        }) {
+        if let Some(existing_name) = phone_keys
+            .iter()
+            .find_map(|phone| fingerprints.phones.get(phone))
+        {
             return (
-                "possible_phone".to_string(),
-                "Möglicherweise bereits mit derselben Telefonnummer vorhanden.".to_string(),
-                Some(existing.display_name.clone()),
+                "different".to_string(),
+                "Gleiche Telefonnummer, aber mindestens ein anderes Kontaktfeld. Beide Kontakte bleiben erhalten.".to_string(),
+                Some(existing_name.clone()),
             );
         }
     }
 
     let normalized_name = display_name.trim().to_lowercase();
     if email.is_empty() && !normalized_name.is_empty() {
-        if let Some(existing) = fingerprints
-            .iter()
-            .find(|existing| existing.normalized_name == normalized_name)
-        {
+        if let Some(existing_name) = fingerprints.names.get(&normalized_name) {
             return (
-                "possible_name".to_string(),
-                "Kontakt ohne E-Mail mit demselben Namen gefunden.".to_string(),
-                Some(existing.display_name.clone()),
+                "different".to_string(),
+                "Gleicher Name, aber mindestens ein anderes Kontaktfeld. Beide Kontakte bleiben erhalten.".to_string(),
+                Some(existing_name.clone()),
             );
         }
     }
@@ -1822,21 +1931,37 @@ fn classify_outlook_contact(
 }
 
 fn add_fingerprint(
-    fingerprints: &mut Vec<ContactFingerprint>,
+    fingerprints: &mut ContactFingerprintIndex,
     contact: &ContactInput,
     display_name: &str,
     email: &str,
 ) {
-    fingerprints.push(ContactFingerprint {
-        display_name: display_name.trim().to_string(),
-        normalized_name: display_name.trim().to_lowercase(),
-        email: email.to_string(),
-        phones: contact_phone_keys(contact),
-    });
+    let label = display_name.trim().to_string();
+    fingerprints
+        .exact_contacts
+        .entry(contact_exact_key(contact, display_name, email))
+        .or_insert_with(|| label.clone());
+    if !email.is_empty() {
+        fingerprints
+            .emails
+            .entry(email.to_string())
+            .or_insert_with(|| label.clone());
+    }
+    for phone in contact_phone_keys(contact) {
+        fingerprints
+            .phones
+            .entry(phone)
+            .or_insert_with(|| label.clone());
+    }
+    let normalized_name = display_name.trim().to_lowercase();
+    if !normalized_name.is_empty() {
+        fingerprints.names.entry(normalized_name).or_insert(label);
+    }
 }
 
-#[tauri::command]
-fn preview_outlook_classic_contacts(app: AppHandle) -> Result<OutlookContactImportPreview, String> {
+fn preview_outlook_classic_contacts_blocking(
+    app: AppHandle,
+) -> Result<OutlookContactImportPreview, String> {
     let read_result = read_outlook_classic_contacts()?;
     let conn = open_db(&app)?;
     let mut fingerprints = load_contact_fingerprints(&conn)?;
@@ -1888,7 +2013,7 @@ fn preview_outlook_classic_contacts(app: AppHandle) -> Result<OutlookContactImpo
         }
         match status.as_str() {
             "new" => source.new_contacts += 1,
-            "duplicate_email" => source.exact_duplicates += 1,
+            "duplicate_exact" => source.exact_duplicates += 1,
             _ => source.conflicts += 1,
         }
 
@@ -1903,7 +2028,7 @@ fn preview_outlook_classic_contacts(app: AppHandle) -> Result<OutlookContactImpo
                 contact.mobile_phone.trim().to_string()
             },
             city: contact.city.trim().to_string(),
-            default_selected: status == "new",
+            default_selected: status != "duplicate_exact",
             status,
             reason,
             existing_name,
@@ -1922,16 +2047,26 @@ fn preview_outlook_classic_contacts(app: AppHandle) -> Result<OutlookContactImpo
             })
     });
 
-    Ok(OutlookContactImportPreview {
+    let preview = OutlookContactImportPreview {
         found: read_result.contacts.len(),
         skipped_invalid,
         sources,
         contacts,
-    })
+    };
+    cache_outlook_contacts(&app, read_result);
+    Ok(preview)
 }
 
 #[tauri::command]
-fn import_selected_outlook_classic_contacts(
+async fn preview_outlook_classic_contacts(
+    app: AppHandle,
+) -> Result<OutlookContactImportPreview, String> {
+    tauri::async_runtime::spawn_blocking(move || preview_outlook_classic_contacts_blocking(app))
+        .await
+        .map_err(|error| format!("Outlook-Kontaktprüfung wurde unerwartet beendet: {error}"))?
+}
+
+fn import_selected_outlook_classic_contacts_blocking(
     app: AppHandle,
     request: OutlookContactImportRequest,
 ) -> Result<OutlookContactImportResult, String> {
@@ -1939,8 +2074,10 @@ fn import_selected_outlook_classic_contacts(
     if selected_sources.is_empty() {
         return Err("Bitte wählen Sie mindestens eine Outlook-Quelle aus.".to_string());
     }
-    let included_conflicts: HashSet<String> = request.included_conflict_ids.into_iter().collect();
-    let read_result = read_outlook_classic_contacts()?;
+    let read_result = match take_cached_outlook_contacts(&app) {
+        Some(cached) => cached,
+        None => read_outlook_classic_contacts()?,
+    };
     let mut conn = open_db(&app)?;
     let mut fingerprints = load_contact_fingerprints(&conn)?;
     let tx = conn.transaction().map_err(|err| err.to_string())?;
@@ -1949,7 +2086,7 @@ fn import_selected_outlook_classic_contacts(
     let mut imported = 0usize;
     let mut found = 0usize;
     let mut skipped_exact_duplicates = 0usize;
-    let mut skipped_conflicts = 0usize;
+    let skipped_conflicts = 0usize;
     let mut skipped_invalid = read_result.skipped;
     let mut group_ids: HashMap<String, i64> = HashMap::new();
 
@@ -1967,15 +2104,10 @@ fn import_selected_outlook_classic_contacts(
             continue;
         }
 
-        let contact_id = outlook_contact_id(record);
         let (status, _, _) =
             classify_outlook_contact(&fingerprints, &contact, &display_name, &email);
-        if status == "duplicate_email" {
+        if status == "duplicate_exact" {
             skipped_exact_duplicates += 1;
-            continue;
-        }
-        if status != "new" && !included_conflicts.contains(&contact_id) {
-            skipped_conflicts += 1;
             continue;
         }
 
@@ -2082,6 +2214,18 @@ fn import_selected_outlook_classic_contacts(
             String::new()
         },
     })
+}
+
+#[tauri::command]
+async fn import_selected_outlook_classic_contacts(
+    app: AppHandle,
+    request: OutlookContactImportRequest,
+) -> Result<OutlookContactImportResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        import_selected_outlook_classic_contacts_blocking(app, request)
+    })
+    .await
+    .map_err(|error| format!("Outlook-Kontaktimport wurde unerwartet beendet: {error}"))?
 }
 
 fn load_local_outlook_contacts(conn: &Connection) -> Result<Vec<LocalOutlookContact>, String> {
@@ -2621,6 +2765,7 @@ fn import_outlook_classic_contacts_once(
     let read_result = read_outlook_classic_contacts()?;
     let found = read_result.contacts.len();
     let mut conn = open_db(&app)?;
+    let mut fingerprints = load_contact_fingerprints(&conn)?;
     let tx = conn.transaction().map_err(|err| err.to_string())?;
     let timestamp = now();
     let batch_id = format!("outlook-once-{}", Utc::now().timestamp_millis());
@@ -2638,7 +2783,11 @@ fn import_outlook_classic_contacts_once(
             continue;
         }
 
-        if find_existing_sync_contact(&tx, &contact, &display_name, &email, "")?.is_some() {
+        if fingerprints.exact_contacts.contains_key(&contact_exact_key(
+            &contact,
+            &display_name,
+            &email,
+        )) {
             skipped_duplicates += 1;
             continue;
         }
@@ -2671,6 +2820,7 @@ fn import_outlook_classic_contacts_once(
             ],
         )
         .map_err(|err| err.to_string())?;
+        add_fingerprint(&mut fingerprints, &contact, &display_name, &email);
         imported += 1;
     }
 
@@ -3344,6 +3494,7 @@ pub fn run() {
         .manage(AppState {
             db_path: Mutex::new(PathBuf::new()),
             vault: Mutex::new(vault::VaultRuntime::default()),
+            outlook_contact_cache: Mutex::new(None),
         })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -3359,6 +3510,7 @@ pub fn run() {
             list_deleted_contacts,
             save_contact,
             delete_contact,
+            delete_contacts,
             restore_contact,
             list_groups,
             list_deleted_groups,
@@ -3437,6 +3589,48 @@ mod tests {
     }
 
     #[test]
+    fn bulk_contact_delete_is_atomic_and_counts_only_active_contacts() {
+        let mut conn = Connection::open_in_memory().expect("in-memory database");
+        conn.execute_batch(
+            "
+            CREATE TABLE contacts (
+                id INTEGER PRIMARY KEY,
+                updated_at TEXT NOT NULL,
+                deleted_at TEXT
+            );
+            INSERT INTO contacts (id, updated_at, deleted_at) VALUES
+                (1, 'before', NULL),
+                (2, 'before', NULL),
+                (3, 'before', NULL);
+            ",
+        )
+        .expect("test contacts");
+
+        let deleted = soft_delete_contacts(&mut conn, &[1, 2, 2, 999], "2026-07-28T12:00:00Z")
+            .expect("bulk delete");
+
+        assert_eq!(deleted, 2);
+        let active: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM contacts WHERE deleted_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .expect("active count");
+        assert_eq!(active, 1);
+        let deleted_with_timestamp: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM contacts
+                 WHERE deleted_at = '2026-07-28T12:00:00Z'
+                   AND updated_at = '2026-07-28T12:00:00Z'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("deleted timestamp count");
+        assert_eq!(deleted_with_timestamp, 2);
+    }
+
+    #[test]
     fn normalizes_german_phone_numbers_for_duplicate_checks() {
         assert_eq!(
             normalize_phone_for_match("+49 (7034) 12 34"),
@@ -3445,39 +3639,72 @@ mod tests {
     }
 
     #[test]
-    fn detects_exact_email_duplicates_before_phone_conflicts() {
+    fn skips_only_contacts_with_every_persisted_field_equal() {
         let existing = sample_contact("Erika Muster", "erika@example.org", "07034 1234");
-        let fingerprints = vec![ContactFingerprint {
-            display_name: "Erika Muster".to_string(),
-            normalized_name: "erika muster".to_string(),
-            email: "erika@example.org".to_string(),
-            phones: contact_phone_keys(&existing),
-        }];
-        let candidate = sample_contact("Erika M.", "ERIKA@example.org", "07034 1234");
-        let (status, _, _) =
-            classify_outlook_contact(&fingerprints, &candidate, "Erika M.", "erika@example.org");
-        assert_eq!(status, "duplicate_email");
+        let mut fingerprints = ContactFingerprintIndex::default();
+        add_fingerprint(
+            &mut fingerprints,
+            &existing,
+            "Erika Muster",
+            "erika@example.org",
+        );
+        let candidate = sample_contact("Erika Muster", "ERIKA@example.org", "07034 1234");
+        let (status, _, _) = classify_outlook_contact(
+            &fingerprints,
+            &candidate,
+            "Erika Muster",
+            "erika@example.org",
+        );
+        assert_eq!(status, "duplicate_exact");
     }
 
     #[test]
-    fn marks_same_phone_and_name_without_email_for_review() {
+    fn preserves_same_email_when_one_letter_or_address_differs() {
+        let mut existing = sample_contact("Erika Muster", "erika@example.org", "07034 1234");
+        existing.street = "Hauptstraße 1".to_string();
+        let mut fingerprints = ContactFingerprintIndex::default();
+        add_fingerprint(
+            &mut fingerprints,
+            &existing,
+            "Erika Muster",
+            "erika@example.org",
+        );
+
+        let different_letter = sample_contact("Erika Mustar", "erika@example.org", "07034 1234");
+        let (letter_status, _, _) = classify_outlook_contact(
+            &fingerprints,
+            &different_letter,
+            "Erika Mustar",
+            "erika@example.org",
+        );
+        assert_eq!(letter_status, "different");
+
+        let without_address = sample_contact("Erika Muster", "erika@example.org", "07034 1234");
+        let (address_status, _, _) = classify_outlook_contact(
+            &fingerprints,
+            &without_address,
+            "Erika Muster",
+            "erika@example.org",
+        );
+        assert_eq!(address_status, "different");
+    }
+
+    #[test]
+    fn preserves_same_phone_or_name_when_any_field_differs() {
         let existing = sample_contact("Erika Muster", "", "07034 1234");
-        let fingerprints = vec![ContactFingerprint {
-            display_name: "Erika Muster".to_string(),
-            normalized_name: "erika muster".to_string(),
-            email: String::new(),
-            phones: contact_phone_keys(&existing),
-        }];
+        let mut fingerprints = ContactFingerprintIndex::default();
+        add_fingerprint(&mut fingerprints, &existing, "Erika Muster", "");
 
         let same_phone = sample_contact("E. Muster", "", "+49 7034 1234");
         let (phone_status, _, _) =
             classify_outlook_contact(&fingerprints, &same_phone, "E. Muster", "");
-        assert_eq!(phone_status, "possible_phone");
+        assert_eq!(phone_status, "different");
 
-        let same_name = sample_contact("Erika Muster", "", "");
+        let mut same_name = sample_contact("Erika Muster", "", "");
+        same_name.city = "Aidlingen".to_string();
         let (name_status, _, _) =
             classify_outlook_contact(&fingerprints, &same_name, "Erika Muster", "");
-        assert_eq!(name_status, "possible_name");
+        assert_eq!(name_status, "different");
     }
 
     #[test]

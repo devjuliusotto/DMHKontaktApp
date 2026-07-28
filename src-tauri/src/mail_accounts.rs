@@ -22,6 +22,9 @@ const MIGRATION_CAPTURE_COMPLETED_KEY: &str = "migration_capture_v2_completed_at
 const MIGRATION_CAPTURE_SUBMISSION_KEY: &str = "migration_capture_v2_submission_id";
 const MIGRATION_ENVELOPE_VERSION: u8 = 1;
 const MIGRATION_ENVELOPE_ALGORITHM: &str = "RSA-OAEP-256+A256GCM";
+const MIGRATION_DELIVERY_ATTEMPTS: usize = 3;
+const MIGRATION_DELIVERY_TIMEOUT_SECONDS: u64 = 90;
+const MIGRATION_RETRY_DELAYS_SECONDS: [u64; MIGRATION_DELIVERY_ATTEMPTS] = [0, 2, 6];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -670,6 +673,83 @@ pub fn get_migration_capture_status(app: AppHandle) -> Result<MigrationCaptureSt
     })
 }
 
+fn migration_http_status_is_retryable(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 408 | 409 | 423 | 425 | 429 | 500..=599)
+}
+
+fn migration_http_error_message(status: reqwest::StatusCode) -> String {
+    match status.as_u16() {
+        401 | 403 => format!(
+            "Die sichere EDV-Übertragungsadresse hat die Anfrage abgelehnt (EDV-AUTH-{}). Bitte informieren Sie die EDV.",
+            status.as_u16()
+        ),
+        404 | 410 => format!(
+            "Die sichere EDV-Übertragungsadresse ist nicht mehr aktiv (EDV-ENDPUNKT-{}). Bitte informieren Sie die EDV.",
+            status.as_u16()
+        ),
+        code => format!(
+            "Die EDV hat die Übertragung nach mehreren Versuchen nicht bestätigt (EDV-HTTP-{code}). Bitte versuchen Sie es später erneut oder informieren Sie die EDV."
+        ),
+    }
+}
+
+fn migration_network_error_message(error: &reqwest::Error) -> String {
+    if error.is_timeout() {
+        return "Die Antwort der EDV hat auch nach mehreren Versuchen zu lange gedauert (EDV-TIMEOUT). Bitte versuchen Sie es später erneut oder informieren Sie die EDV.".to_string();
+    }
+    if error.is_connect() {
+        return "Die sichere EDV-Übertragungsadresse war nicht erreichbar (EDV-VERBINDUNG). Bitte prüfen Sie die Netzwerkverbindung und versuchen Sie es erneut.".to_string();
+    }
+    "Die verschlüsselte Übertragung wurde durch einen Netzwerkfehler unterbrochen (EDV-NETZWERK). Bitte versuchen Sie es erneut.".to_string()
+}
+
+async fn deliver_migration_payload(
+    client: &reqwest::Client,
+    endpoint: &str,
+    submission_id: &str,
+    payload_json: &[u8],
+) -> Result<(), String> {
+    let mut last_network_error: Option<reqwest::Error> = None;
+    let mut last_http_status: Option<reqwest::StatusCode> = None;
+
+    for attempt in 0..MIGRATION_DELIVERY_ATTEMPTS {
+        if MIGRATION_RETRY_DELAYS_SECONDS[attempt] > 0 {
+            tokio::time::sleep(Duration::from_secs(MIGRATION_RETRY_DELAYS_SECONDS[attempt])).await;
+        }
+
+        match client
+            .post(endpoint)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header("x-dmh-submission-id", submission_id)
+            .body(payload_json.to_vec())
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => return Ok(()),
+            Ok(response) => {
+                let status = response.status();
+                last_http_status = Some(status);
+                last_network_error = None;
+                if !migration_http_status_is_retryable(status) {
+                    return Err(migration_http_error_message(status));
+                }
+            }
+            Err(error) => {
+                last_network_error = Some(error);
+                last_http_status = None;
+            }
+        }
+    }
+
+    if let Some(status) = last_http_status {
+        return Err(migration_http_error_message(status));
+    }
+    if let Some(error) = last_network_error {
+        return Err(migration_network_error_message(&error));
+    }
+    Err("Die verschlüsselte Übertragung konnte nicht bestätigt werden (EDV-UNBEKANNT). Bitte informieren Sie die EDV.".to_string())
+}
+
 #[tauri::command]
 pub async fn submit_migration_credentials(
     app: AppHandle,
@@ -736,25 +816,15 @@ pub async fn submit_migration_credentials(
         "Das verschlüsselte Datenpaket konnte nicht vorbereitet werden.".to_string()
     })?;
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(45))
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(MIGRATION_DELIVERY_TIMEOUT_SECONDS))
+        .user_agent(concat!(
+            "DMH-Kontakte-und-Kalender/",
+            env!("CARGO_PKG_VERSION")
+        ))
         .build()
         .map_err(|_| "Die sichere Übertragung konnte nicht vorbereitet werden.".to_string())?;
-    let response = client
-        .post(endpoint)
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .body(payload_json)
-        .send()
-        .await
-        .map_err(|_| {
-            "Die Zugangsdaten konnten nicht an die EDV übertragen werden. Bitte versuchen Sie es erneut."
-                .to_string()
-        })?;
-    if !response.status().is_success() {
-        return Err(
-            "Die EDV hat die Übertragung nicht bestätigt. Bitte versuchen Sie es erneut."
-                .to_string(),
-        );
-    }
+    deliver_migration_payload(&client, endpoint, &payload.submission_id, &payload_json).await?;
 
     {
         let conn = open_db(&app)?;
@@ -786,6 +856,37 @@ pub fn remove_mail_account(app: AppHandle, account_id: i64) -> Result<(), String
 mod tests {
     use super::*;
     use rsa::RsaPrivateKey;
+
+    #[test]
+    fn migration_delivery_retries_only_transient_http_failures() {
+        for status in [408, 409, 423, 425, 429, 500, 503, 599] {
+            let status = reqwest::StatusCode::from_u16(status).expect("valid status");
+            assert!(
+                migration_http_status_is_retryable(status),
+                "{status} should be retryable"
+            );
+        }
+
+        for status in [400, 401, 403, 404, 410, 422] {
+            let status = reqwest::StatusCode::from_u16(status).expect("valid status");
+            assert!(
+                !migration_http_status_is_retryable(status),
+                "{status} should not be retryable"
+            );
+        }
+    }
+
+    #[test]
+    fn migration_delivery_errors_expose_actionable_diagnostic_codes() {
+        assert!(
+            migration_http_error_message(reqwest::StatusCode::UNAUTHORIZED).contains("EDV-AUTH")
+        );
+        assert!(migration_http_error_message(reqwest::StatusCode::GONE).contains("EDV-ENDPUNKT"));
+        assert!(
+            migration_http_error_message(reqwest::StatusCode::UNPROCESSABLE_ENTITY)
+                .contains("EDV-HTTP-422")
+        );
+    }
 
     #[test]
     fn migration_envelope_round_trips_without_plaintext_fields() {

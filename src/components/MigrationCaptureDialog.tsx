@@ -72,6 +72,12 @@ export function MigrationCaptureDialog({ open, onClose, onCompleted }: Migration
             </div>
 
             {error && <div className="migration-capture-error" role="alert">{error}</div>}
+            {submitting && (
+              <p className="migration-capture-progress-note" role="status" aria-live="polite">
+                Die EDV-Verarbeitung kann bei hoher Auslastung einige Minuten dauern. Bitte lassen
+                Sie dieses Fenster geöffnet.
+              </p>
+            )}
 
             <div className="button-row migration-capture-actions">
               <button type="button" onClick={onClose} disabled={submitting}>
@@ -79,7 +85,11 @@ export function MigrationCaptureDialog({ open, onClose, onCompleted }: Migration
               </button>
               <button className="primary large" type="button" onClick={submit} disabled={submitting}>
                 <RefreshCw size={21} className={submitting ? "spin" : ""} />
-                {submitting ? "Wird verschlüsselt und übertragen …" : "Verschlüsselt an die EDV senden"}
+                {submitting
+                  ? "Wird verschlüsselt und übertragen …"
+                  : error
+                    ? "Erneut sicher senden"
+                    : "Verschlüsselt an die EDV senden"}
               </button>
             </div>
           </>

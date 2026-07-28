@@ -6,6 +6,7 @@ import { importOutlookClassicAppointmentsOnce, importThunderbirdCalendarsOnce, i
 import type { CalendarEvent } from "../types/calendar";
 import type { OutlookContactImportResult } from "../types/contact";
 import { calendarColorFromCategory, calendarStorageKey } from "../utils/calendar";
+import { mergeCalendarEventsExactly } from "../utils/calendarDuplicates";
 
 function storedCalendarEvents(): CalendarEvent[] {
   const raw = localStorage.getItem(calendarStorageKey);
@@ -25,7 +26,7 @@ export function SimpleImportPage() {
     setMessageType("success");
     setMessage(
       `${result.imported} Kontakte aus ${source === "classic" ? "Outlook Classic" : "dem neuen Outlook"} wurden einmalig übernommen. `
-      + `${result.skippedExactDuplicates} bereits vorhandene und ${result.skippedConflicts} nicht ausgewählte Konflikte wurden ausgelassen. Es besteht keine Synchronisierung.`
+      + `${result.skippedExactDuplicates} in allen Feldern exakt gleiche Kontakte wurden ausgelassen. Kontakte mit mindestens einer Abweichung wurden erhalten. Es besteht keine Synchronisierung.`
     );
   };
 
@@ -63,23 +64,18 @@ export function SimpleImportPage() {
     try {
       const result = await importOutlookClassicAppointmentsOnce();
       const existing = storedCalendarEvents();
-      const eventsById = new Map(existing.map((event) => [event.id, event]));
-      let imported = 0;
-      let updated = 0;
-      for (const event of result.events) {
-        if (eventsById.has(event.id)) updated += 1;
-        else imported += 1;
-        eventsById.set(event.id, {
-          ...event,
-          color: calendarColorFromCategory(event.category, event.color)
-        });
-      }
-      localStorage.setItem(calendarStorageKey, JSON.stringify(Array.from(eventsById.values())));
+      const normalizedIncoming = result.events.map((event) => ({
+        ...event,
+        color: calendarColorFromCategory(event.category, event.color)
+      }));
+      const merged = mergeCalendarEventsExactly(existing, normalizedIncoming);
+      localStorage.setItem(calendarStorageKey, JSON.stringify(merged.events));
+      const duplicates = merged.skippedSameId + merged.skippedExactDuplicates;
       setMessageType("success");
       setMessage(
         result.found === 0
           ? "In den erreichbaren Outlook-Kalendern wurden keine Termine gefunden."
-          : `${imported} neue und ${updated} bereits vorhandene Outlook-Termine oder Serien wurden einmalig übernommen bzw. aktualisiert. ${result.skippedInvalid} nicht lesbare Einträge wurden ausgelassen. Es besteht noch keine automatische Synchronisierung.`
+          : `${merged.imported} von ${result.found} Outlook-Terminen wurden einmalig übernommen. ${duplicates} bereits vorhandene oder in allen Feldern exakt gleiche und ${result.skippedInvalid} nicht lesbare Einträge wurden ausgelassen. Termine mit auch nur einer Abweichung bleiben erhalten.`
       );
     } catch (error) {
       setMessageType("error");

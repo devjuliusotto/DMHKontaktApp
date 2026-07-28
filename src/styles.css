@@ -1439,6 +1439,49 @@ table {
   max-width: 560px;
 }
 
+.calendar-duplicate-dialog {
+  max-width: 760px;
+}
+
+.calendar-duplicate-safety {
+  background: #f0f7ff;
+  border: 1px solid #b8d8f5;
+  border-radius: 8px;
+  color: #174c75;
+  line-height: 1.55;
+  padding: 0.85rem 1rem;
+}
+
+.calendar-duplicate-list {
+  display: grid;
+  gap: 0.55rem;
+  list-style: none;
+  margin: 1rem 0;
+  max-height: 330px;
+  overflow: auto;
+  padding: 0;
+}
+
+.calendar-duplicate-list li {
+  background: #fafbfc;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.65rem 0.75rem;
+}
+
+.calendar-duplicate-list span,
+.calendar-duplicate-list small,
+.calendar-duplicate-backup-note {
+  color: var(--muted);
+}
+
+.calendar-duplicate-backup-note {
+  font-size: 0.82rem;
+  margin: 0.75rem 0 0;
+}
+
 .calendar-form-actions .danger-button {
   border-color: #b3261e;
   color: #9a1b15;
@@ -2554,8 +2597,27 @@ td small {
   flex-direction: column;
   gap: 0.55rem;
   justify-content: center;
-  min-height: 250px;
+  min-height: 300px;
+  padding: 1.25rem;
   text-align: center;
+}
+
+.outlook-import-progress {
+  background: linear-gradient(180deg, #fff 0%, #fff9fc 100%);
+  border: 1px solid #ead5df;
+  border-radius: 12px;
+  margin-top: 1rem;
+}
+
+.outlook-import-progress-icon {
+  align-items: center;
+  background: #f8eaf1;
+  border-radius: 50%;
+  display: flex;
+  height: 72px;
+  justify-content: center;
+  margin-bottom: 0.25rem;
+  width: 72px;
 }
 
 .outlook-import-progress svg,
@@ -2563,10 +2625,71 @@ td small {
   color: var(--primary);
 }
 
+.outlook-import-progress strong {
+  color: var(--primary-dark);
+  font-size: 1.08rem;
+}
+
 .outlook-import-progress span,
 .outlook-import-success span {
   color: var(--accent);
   font-size: 0.88rem;
+}
+
+.outlook-import-progress span {
+  line-height: 1.5;
+  max-width: 610px;
+}
+
+.outlook-import-indeterminate {
+  background: #ead7e0;
+  border-radius: 999px;
+  height: 7px;
+  margin: 0.65rem 0 0.25rem;
+  max-width: 460px;
+  overflow: hidden;
+  position: relative;
+  width: min(80%, 460px);
+}
+
+.outlook-import-indeterminate i {
+  animation: outlook-progress-slide 1.4s ease-in-out infinite;
+  background: linear-gradient(90deg, #a72160, var(--primary), #d05b91);
+  border-radius: inherit;
+  bottom: 0;
+  display: block;
+  position: absolute;
+  top: 0;
+  width: 38%;
+}
+
+.outlook-import-progress small {
+  color: var(--accent);
+  font-size: 0.78rem;
+}
+
+.outlook-import-elapsed {
+  align-items: center;
+  color: var(--primary-dark) !important;
+  display: inline-flex;
+  gap: 0.35rem;
+}
+
+.outlook-import-elapsed svg {
+  height: 16px;
+  width: 16px;
+}
+
+@keyframes outlook-progress-slide {
+  0% {
+    left: -40%;
+  }
+  50% {
+    left: 62%;
+  }
+  100% {
+    left: -40%;
+  }
 }
 
 .outlook-import-error {
@@ -2742,13 +2865,17 @@ td small {
   border-bottom: 0;
 }
 
-.outlook-review-row.status-possible_phone,
-.outlook-review-row.status-possible_name {
+.outlook-review-row.status-different {
   background: #fffaf1;
 }
 
-.outlook-review-row.status-duplicate_email {
+.outlook-review-row.status-duplicate_exact {
   background: #f7f8f9;
+}
+
+.outlook-review-row.status-duplicate_exact .outlook-review-status {
+  background: #eceff2;
+  color: #5f6872;
 }
 
 .outlook-review-status {
@@ -2762,15 +2889,9 @@ td small {
   width: 28px;
 }
 
-.status-possible_phone .outlook-review-status,
-.status-possible_name .outlook-review-status {
+.status-different .outlook-review-status {
   background: #fff0cf;
   color: #925d00;
-}
-
-.status-duplicate_email .outlook-review-status {
-  background: #e8ecef;
-  color: #68737c;
 }
 
 .outlook-review-person,
@@ -3257,6 +3378,12 @@ td small {
   padding: 0.8rem;
 }
 
+.migration-capture-progress-note {
+  color: var(--muted);
+  line-height: 1.45;
+  margin: 0;
+}
+
 .migration-capture-actions {
   align-items: stretch;
   justify-content: flex-end;
@@ -3291,7 +3418,8 @@ td small {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .spin {
+  .spin,
+  .outlook-import-indeterminate i {
     animation: none;
   }
 }

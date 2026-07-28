@@ -9,6 +9,7 @@ import {
   clearContactGroups,
   deleteAllContacts,
   deleteContact,
+  deleteContacts,
   deleteGroup,
   getAppSetting,
   listContacts,
@@ -87,6 +88,7 @@ export function ContactsPage() {
   const [rememberEmailApp, setRememberEmailApp] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedContactIds, setSelectedContactIds] = useState<Set<number>>(() => new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   const [draggedContactIds, setDraggedContactIds] = useState<number[]>([]);
   const [dragOverGroupKey, setDragOverGroupKey] = useState<GroupSelection | null>(null);
   const [dragPreview, setDragPreview] = useState<DragPreview | null>(null);
@@ -239,6 +241,37 @@ export function ContactsPage() {
     setMessage(`${count} Kontakte wurden lokal in den Papierkorb verschoben.`);
     setMessageType("success");
     await refresh();
+  };
+
+  const removeSelectedContacts = async () => {
+    const contactIds = selectedVisibleContactIds;
+    if (contactIds.length === 0) return;
+
+    const confirmed = window.confirm(
+      contactIds.length === 1
+        ? "Den ausgewählten Kontakt wirklich in den Papierkorb verschieben?"
+        : `${contactIds.length} ausgewählte Kontakte wirklich in den Papierkorb verschieben?`
+    );
+    if (!confirmed) return;
+
+    setBulkDeleting(true);
+    try {
+      const deleted = await deleteContacts(contactIds);
+      setSelectedContactIds(new Set());
+      setSelectionMode(false);
+      setMessage(
+        deleted === 1
+          ? "1 ausgewählter Kontakt wurde in den Papierkorb verschoben."
+          : `${deleted} ausgewählte Kontakte wurden in den Papierkorb verschoben.`
+      );
+      setMessageType("success");
+      await refresh();
+    } catch (error) {
+      setMessage(`Ausgewählte Kontakte konnten nicht gelöscht werden: ${error}`);
+      setMessageType("error");
+    } finally {
+      setBulkDeleting(false);
+    }
   };
 
   const copyEmail = async (email: string) => {
@@ -457,13 +490,29 @@ export function ContactsPage() {
         <div className="button-row contacts-actions">
           {tab === "groups" && (
             <>
-              <button className={selectionMode ? "primary" : ""} type="button" onClick={toggleSelectionMode}>
+              <button
+                className={selectionMode ? "primary" : ""}
+                type="button"
+                onClick={toggleSelectionMode}
+                disabled={bulkDeleting}
+              >
                 {selectionMode ? "Fertig" : "Auswählen"}
               </button>
               {selectionMode && (
                 <>
-                  <button type="button" onClick={toggleSelectAllVisible} disabled={visibleContactIds.length === 0}>
+                  <button type="button" onClick={toggleSelectAllVisible} disabled={bulkDeleting || visibleContactIds.length === 0}>
                     {allVisibleContactsSelected ? "Auswahl aufheben" : "Alle auswählen"}
+                  </button>
+                  <button
+                    className="danger-button"
+                    type="button"
+                    onClick={removeSelectedContacts}
+                    disabled={bulkDeleting || selectedVisibleContactIds.length === 0}
+                  >
+                    <Trash2 size={19} />
+                    {bulkDeleting
+                      ? "Wird gelöscht …"
+                      : `Ausgewählte löschen (${selectedVisibleContactIds.length})`}
                   </button>
                   <span className="selection-count">{selectedVisibleContactIds.length} ausgewählt</span>
                 </>

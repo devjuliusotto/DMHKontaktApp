@@ -57,7 +57,7 @@ export interface OutlookOneTimeContactImportResult {
   skippedInvalid: number;
 }
 
-export type OutlookContactPreviewStatus = "new" | "duplicate_email" | "possible_phone" | "possible_name";
+export type OutlookContactPreviewStatus = "new" | "different" | "duplicate_exact";
 
 export interface OutlookContactSourcePreview {
   id: string;
@@ -93,7 +93,6 @@ export interface OutlookContactImportPreview {
 
 export interface OutlookContactImportRequest {
   selectedSourceIds: string[];
-  includedConflictIds: string[];
   createSourceGroups: boolean;
 }
 

@@ -41,6 +41,10 @@ export function deleteContact(id: number): Promise<void> {
   return invoke("delete_contact", { id });
 }
 
+export function deleteContacts(ids: number[]): Promise<number> {
+  return invoke("delete_contacts", { ids });
+}
+
 export function restoreContact(id: number): Promise<void> {
   return invoke("restore_contact", { id });
 }

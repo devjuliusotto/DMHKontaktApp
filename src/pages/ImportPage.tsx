@@ -9,6 +9,7 @@ import { importContacts, importOutlookStore, listGroups, saveGroup } from "../se
 import type { CalendarEvent } from "../types/calendar";
 import type { Group } from "../types/contact";
 import { calendarColorFromCategory, calendarColorOptions, calendarColorValue, calendarStorageKey, defaultCalendarColor, parseCalendarFile } from "../utils/calendar";
+import { mergeCalendarEventsExactly } from "../utils/calendarDuplicates";
 import { parseCsvBytes, parseXlsx, type ImportPreview } from "../utils/importers";
 
 type ImportMode = "contacts" | "calendar";
@@ -147,12 +148,15 @@ export function ImportPage() {
   };
 
   const savePendingEvents = () => {
-    if (!pendingEvents.length) return 0;
+    if (!pendingEvents.length) return { imported: 0, skipped: 0 };
     const existing = JSON.parse(localStorage.getItem(calendarStorageKey) ?? "[]") as CalendarEvent[];
-    const eventsById = new Map(existing.map((event) => [event.id, event]));
-    for (const event of pendingEvents) eventsById.set(event.id, applyCalendarImportCategory(event, calendarCategory, calendarColor));
-    localStorage.setItem(calendarStorageKey, JSON.stringify(Array.from(eventsById.values())));
-    return pendingEvents.length;
+    const incoming = pendingEvents.map((event) => applyCalendarImportCategory(event, calendarCategory, calendarColor));
+    const merged = mergeCalendarEventsExactly(existing, incoming);
+    localStorage.setItem(calendarStorageKey, JSON.stringify(merged.events));
+    return {
+      imported: merged.imported,
+      skipped: merged.skippedSameId + merged.skippedExactDuplicates
+    };
   };
 
   const submit = async () => {
@@ -166,8 +170,9 @@ export function ImportPage() {
     }
 
     try {
-      const importedEvents = savePendingEvents();
+      const calendarResult = savePendingEvents();
       let importedContacts = 0;
+      let skippedContactDuplicates = 0;
 
       if (preview && selectedCount > 0 && !preview.emailColumnMissing) {
         const groupIds = selectedGroupId === "" ? [] : [selectedGroupId];
@@ -176,9 +181,18 @@ export function ImportPage() {
           .map(({ selected: _selected, ...contact }) => ({ ...contact, groupIds }));
         const result = await importContacts(fileName, rows);
         importedContacts = result.imported;
+        skippedContactDuplicates = result.skippedDuplicates;
       }
 
-      setMessage(`${contactsLabel(importedContacts)} und ${eventsLabel(importedEvents)} importiert.`);
+      setMessage(
+        `${contactsLabel(importedContacts)} und ${eventsLabel(calendarResult.imported)} importiert.`
+        + (skippedContactDuplicates > 0
+          ? ` ${contactsLabel(skippedContactDuplicates)} mit in allen Feldern exakt gleichem Inhalt wurden ausgelassen.`
+          : "")
+        + (calendarResult.skipped > 0
+          ? ` ${eventsLabel(calendarResult.skipped)} mit gleicher ID oder exakt gleichen Feldern wurden sicher ausgelassen.`
+          : "")
+      );
       resetImport();
     } catch (error) {
       setMessage(`Import fehlgeschlagen: ${error}`);

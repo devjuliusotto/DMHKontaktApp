@@ -12,6 +12,7 @@ import {
   Laptop,
   LoaderCircle,
   Search,
+  Timer,
   UsersRound,
   X
 } from "lucide-react";
@@ -32,6 +33,7 @@ import type {
   OutlookContactPreviewItem,
   OutlookContactPreviewStatus
 } from "../types/contact";
+import { contactExactContentKey } from "../utils/contactDuplicates";
 import { parseCsvBytes } from "../utils/importers";
 
 interface OutlookContactImportDialogProps {
@@ -41,7 +43,7 @@ interface OutlookContactImportDialogProps {
 }
 
 type ImportSource = "choose" | "classic" | "csv";
-type ReviewFilter = "conflicts" | "all" | "new" | "duplicates" | "without-email";
+type ReviewFilter = "differences" | "all" | "new" | "duplicates" | "without-email";
 
 const pageSize = 50;
 const csvSourceId = "new-outlook-csv";
@@ -51,12 +53,12 @@ export function OutlookContactImportDialog({ open: isOpen, onClose, onImported }
   const [source, setSource] = useState<ImportSource>("choose");
   const [preview, setPreview] = useState<OutlookContactImportPreview | null>(null);
   const [selectedSourceIds, setSelectedSourceIds] = useState<Set<string>>(new Set());
-  const [includedConflictIds, setIncludedConflictIds] = useState<Set<string>>(new Set());
   const [createSourceGroups, setCreateSourceGroups] = useState(true);
-  const [reviewFilter, setReviewFilter] = useState<ReviewFilter>("conflicts");
+  const [reviewFilter, setReviewFilter] = useState<ReviewFilter>("all");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [busy, setBusy] = useState<"scan" | "import" | null>(null);
+  const [busyElapsedSeconds, setBusyElapsedSeconds] = useState(0);
   const [error, setError] = useState("");
   const [result, setResult] = useState<OutlookContactImportResult | null>(null);
   const [csvFileName, setCsvFileName] = useState("");
@@ -66,9 +68,8 @@ export function OutlookContactImportDialog({ open: isOpen, onClose, onImported }
     setSource("choose");
     setPreview(null);
     setSelectedSourceIds(new Set());
-    setIncludedConflictIds(new Set());
     setCreateSourceGroups(true);
-    setReviewFilter("conflicts");
+    setReviewFilter("all");
     setSearch("");
     setPage(1);
     setBusy(null);
@@ -91,14 +92,28 @@ export function OutlookContactImportDialog({ open: isOpen, onClose, onImported }
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [busy, isOpen, onClose]);
 
+  useEffect(() => {
+    if (!busy) {
+      setBusyElapsedSeconds(0);
+      return;
+    }
+    const startedAt = Date.now();
+    setBusyElapsedSeconds(0);
+    const interval = window.setInterval(
+      () => setBusyElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000)),
+      1000
+    );
+    return () => window.clearInterval(interval);
+  }, [busy]);
+
   const selectedContacts = useMemo(() => {
     if (!preview) return [];
-    return preview.contacts.filter((contact) => {
-      if (!selectedSourceIds.has(contact.sourceId)) return false;
-      if (contact.status === "new") return true;
-      return isReviewableConflict(contact.status) && includedConflictIds.has(contact.id);
-    });
-  }, [includedConflictIds, preview, selectedSourceIds]);
+    return preview.contacts.filter(
+      (contact) =>
+        selectedSourceIds.has(contact.sourceId)
+        && (contact.status === "new" || contact.status === "different")
+    );
+  }, [preview, selectedSourceIds]);
 
   const selectedSourceContacts = useMemo(
     () => preview?.contacts.filter((contact) => selectedSourceIds.has(contact.sourceId)) ?? [],
@@ -109,9 +124,9 @@ export function OutlookContactImportDialog({ open: isOpen, onClose, onImported }
     const needle = search.trim().toLocaleLowerCase("de");
     return selectedSourceContacts.filter((contact) => {
       const matchesFilter = reviewFilter === "all"
-        || (reviewFilter === "conflicts" && isReviewableConflict(contact.status))
+        || (reviewFilter === "differences" && contact.status === "different")
         || (reviewFilter === "new" && contact.status === "new")
-        || (reviewFilter === "duplicates" && contact.status === "duplicate_email")
+        || (reviewFilter === "duplicates" && contact.status === "duplicate_exact")
         || (reviewFilter === "without-email" && !contact.email);
       if (!matchesFilter) return false;
       if (!needle) return true;
@@ -139,6 +154,7 @@ export function OutlookContactImportDialog({ open: isOpen, onClose, onImported }
     setError("");
     setPreview(null);
     try {
+      await waitForNextPaint();
       const nextPreview = await previewOutlookClassicContacts();
       setPreview(nextPreview);
       setSelectedSourceIds(new Set(nextPreview.sources.map((item) => item.id)));
@@ -163,6 +179,7 @@ export function OutlookContactImportDialog({ open: isOpen, onClose, onImported }
       }
 
       setBusy("scan");
+      await waitForNextPaint();
       const bytes = await readFile(path);
       const parsed = parseCsvBytes(bytes);
       const existing = await listContacts();
@@ -188,15 +205,6 @@ export function OutlookContactImportDialog({ open: isOpen, onClose, onImported }
     });
   };
 
-  const toggleConflict = (contactId: string) => {
-    setIncludedConflictIds((current) => {
-      const next = new Set(current);
-      if (next.has(contactId)) next.delete(contactId);
-      else next.add(contactId);
-      return next;
-    });
-  };
-
   const submit = async () => {
     if (!preview || selectedSourceIds.size === 0 || selectedContacts.length === 0) {
       setError("Bitte wählen Sie mindestens eine Quelle mit importierbaren Kontakten aus.");
@@ -204,7 +212,7 @@ export function OutlookContactImportDialog({ open: isOpen, onClose, onImported }
     }
     if (selectedContacts.length > 500) {
       const confirmed = window.confirm(
-        `Es werden ${selectedContacts.length} Kontakte einmalig importiert. Bei großen Kontaktbeständen kann dies einige Minuten dauern. Möchten Sie fortfahren?`
+        `Es werden ${selectedContacts.length} Kontakte einmalig importiert. Bei sehr großen Kontaktbeständen kann dies bis zu 5 Minuten dauern. Möchten Sie fortfahren?`
       );
       if (!confirmed) return;
     }
@@ -212,22 +220,13 @@ export function OutlookContactImportDialog({ open: isOpen, onClose, onImported }
     setBusy("import");
     setError("");
     try {
+      await waitForNextPaint();
       let importResult: OutlookContactImportResult;
       if (source === "classic") {
-        const backendResult = await importSelectedOutlookClassicContacts({
+        importResult = await importSelectedOutlookClassicContacts({
           selectedSourceIds: Array.from(selectedSourceIds),
-          includedConflictIds: Array.from(includedConflictIds),
           createSourceGroups
         });
-        importResult = {
-          ...backendResult,
-          skippedExactDuplicates: backendResult.skippedExactDuplicates
-            + selectedSourceContacts.filter((contact) => contact.status === "duplicate_email").length,
-          skippedConflicts: backendResult.skippedConflicts
-            + selectedSourceContacts.filter(
-              (contact) => isReviewableConflict(contact.status) && !includedConflictIds.has(contact.id)
-            ).length
-        };
       } else {
         let groupIds: number[] = [];
         if (createSourceGroups) {
@@ -246,15 +245,12 @@ export function OutlookContactImportDialog({ open: isOpen, onClose, onImported }
           .filter((contact): contact is ContactInput => Boolean(contact))
           .map((contact) => ({ ...contact, groupIds }));
         const csvResult = await importContacts(`Outlook Kontaktimport (Neues Outlook CSV: ${csvFileName})`, rows);
-        const duplicateCount = selectedSourceContacts.filter((contact) => contact.status === "duplicate_email").length;
-        const omittedConflictCount = selectedSourceContacts.filter(
-          (contact) => isReviewableConflict(contact.status) && !includedConflictIds.has(contact.id)
-        ).length;
+        const duplicateCount = selectedSourceContacts.filter((contact) => contact.status === "duplicate_exact").length;
         importResult = {
           found: preview.found,
           imported: csvResult.imported,
-          skippedExactDuplicates: duplicateCount,
-          skippedConflicts: omittedConflictCount,
+          skippedExactDuplicates: duplicateCount + csvResult.skippedDuplicates,
+          skippedConflicts: 0,
           skippedInvalid: preview.skippedInvalid,
           groupsUsed: groupIds.length,
           batchId: csvResult.batchId
@@ -316,11 +312,28 @@ export function OutlookContactImportDialog({ open: isOpen, onClose, onImported }
           </button>
         )}
 
-        {busy === "scan" && (
-          <div className="outlook-import-progress" role="status">
-            <LoaderCircle className="spin" size={34} />
-            <strong>{source === "classic" ? "Outlook-Kontaktordner werden geprüft …" : "CSV-Kontakte werden geprüft …"}</strong>
-            <span>Bei großen Kontaktbeständen kann dies einige Minuten dauern.</span>
+        {busy && (
+          <div className="outlook-import-progress" role="status" aria-live="polite">
+            <div className="outlook-import-progress-icon">
+              <LoaderCircle className="spin" size={38} />
+            </div>
+            <strong>
+              {busy === "import"
+                ? "Kontakte werden sicher importiert …"
+                : source === "classic"
+                  ? "Outlook-Kontaktordner werden eingelesen …"
+                  : "CSV-Kontakte werden geprüft …"}
+            </strong>
+            <span>
+              {source === "classic"
+                ? "Bei sehr großen Beständen mit etwa 10.000 Kontakten kann dieser Vorgang bis zu 5 Minuten dauern."
+                : "Die Kontakte werden vollständig geprüft. Das kann je nach Dateigröße etwas dauern."}
+            </span>
+            <div className="outlook-import-indeterminate" aria-hidden="true"><i /></div>
+            <small className="outlook-import-elapsed">
+              <Timer size={16} /> Laufzeit: {formatElapsedTime(busyElapsedSeconds)}
+            </small>
+            <small>Die App arbeitet weiter. Bitte Outlook und dieses Fenster geöffnet lassen.</small>
           </div>
         )}
 
@@ -330,13 +343,13 @@ export function OutlookContactImportDialog({ open: isOpen, onClose, onImported }
           </div>
         )}
 
-        {preview && !result && busy !== "scan" && (
+        {preview && !result && !busy && (
           <>
             <div className="outlook-import-summary" aria-label="Zusammenfassung">
               <span><strong>{preview.found}</strong> gefunden</span>
               <span><strong>{preview.contacts.filter((item) => item.status === "new").length}</strong> neu</span>
-              <span><strong>{preview.contacts.filter((item) => item.status === "duplicate_email").length}</strong> vorhanden</span>
-              <span><strong>{preview.contacts.filter((item) => isReviewableConflict(item.status)).length}</strong> zu prüfen</span>
+              <span><strong>{preview.contacts.filter((item) => item.status === "duplicate_exact").length}</strong> 100 % identisch</span>
+              <span><strong>{preview.contacts.filter((item) => item.status === "different").length}</strong> abweichend</span>
             </div>
 
             <section className="outlook-import-section">
@@ -358,7 +371,7 @@ export function OutlookContactImportDialog({ open: isOpen, onClose, onImported }
                     </span>
                     <span className="outlook-source-counts">
                       <strong>{item.total}</strong>
-                      <small>{item.newContacts} neu · {item.conflicts} prüfen · {item.exactDuplicates} vorhanden</small>
+                      <small>{item.newContacts} neu · {item.conflicts} abweichend · {item.exactDuplicates} exakt gleich</small>
                     </span>
                   </label>
                 ))}
@@ -369,7 +382,7 @@ export function OutlookContactImportDialog({ open: isOpen, onClose, onImported }
               <div className="outlook-import-section-heading">
                 <div>
                   <span className="step-number">2</span>
-                  <div><h4>Konflikte prüfen</h4><p>Gleiche E-Mail-Adressen werden nie doppelt importiert.</p></div>
+                  <div><h4>Exakte Duplikate prüfen</h4><p>Nur in allen Kontaktfeldern zu 100 % identische Einträge werden ausgelassen. Jede Abweichung bleibt erhalten.</p></div>
                 </div>
               </div>
               <div className="outlook-review-toolbar">
@@ -378,36 +391,29 @@ export function OutlookContactImportDialog({ open: isOpen, onClose, onImported }
                   <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Name, E-Mail oder Telefon suchen" />
                 </label>
                 <select value={reviewFilter} onChange={(event) => setReviewFilter(event.target.value as ReviewFilter)} aria-label="Kontakte filtern">
-                  <option value="conflicts">Nur Konflikte</option>
+                  <option value="differences">Nur abweichende Kontakte</option>
                   <option value="all">Alle Kontakte</option>
                   <option value="new">Nur neue</option>
-                  <option value="duplicates">Bereits vorhanden</option>
+                  <option value="duplicates">Nur 100 % identische</option>
                   <option value="without-email">Ohne E-Mail</option>
                 </select>
               </div>
 
               <div className="outlook-review-list">
                 {visibleContacts.map((contact) => {
-                  const reviewable = isReviewableConflict(contact.status);
-                  const included = includedConflictIds.has(contact.id);
                   return (
                     <article className={`outlook-review-row status-${contact.status}`} key={contact.id}>
                       <span className="outlook-review-status" aria-hidden="true">
-                        {contact.status === "new" ? <Check size={17} /> : <AlertTriangle size={17} />}
+                        {contact.status === "duplicate_exact" ? <AlertTriangle size={17} /> : <Check size={17} />}
                       </span>
                       <div className="outlook-review-person">
                         <strong>{contact.displayName || "Ohne Namen"}</strong>
                         <span>{contact.email || contact.phone || "Keine E-Mail oder Telefonnummer"}</span>
                         <small>{contact.reason}{contact.existingName ? ` · Gefunden: ${contact.existingName}` : ""}</small>
                       </div>
-                      {reviewable && (
-                        <label className="outlook-conflict-decision">
-                          <input type="checkbox" checked={included} onChange={() => toggleConflict(contact.id)} />
-                          Trotzdem importieren
-                        </label>
-                      )}
-                      {contact.status === "duplicate_email" && <span className="outlook-skip-label">Wird ausgelassen</span>}
+                      {contact.status === "duplicate_exact" && <span className="outlook-skip-label">Wird ausgelassen</span>}
                       {contact.status === "new" && <span className="outlook-new-label">Wird importiert</span>}
+                      {contact.status === "different" && <span className="outlook-new-label">Wird zusätzlich importiert</span>}
                     </article>
                   );
                 })}
@@ -447,7 +453,7 @@ export function OutlookContactImportDialog({ open: isOpen, onClose, onImported }
             <CheckCircle2 size={48} />
             <h4>Import abgeschlossen</h4>
             <p><strong>{result.imported}</strong> Kontakte wurden übernommen.</p>
-            <span>{result.skippedExactDuplicates} vorhandene und {result.skippedConflicts} nicht ausgewählte Konflikte wurden ausgelassen.</span>
+            <span>{result.skippedExactDuplicates} zu 100 % identische Kontakte wurden ausgelassen. Kontakte mit Abweichungen wurden erhalten.</span>
             <button className="primary" type="button" onClick={onClose}>Schließen</button>
           </div>
         )}
@@ -456,8 +462,16 @@ export function OutlookContactImportDialog({ open: isOpen, onClose, onImported }
   );
 }
 
-function isReviewableConflict(status: OutlookContactPreviewStatus) {
-  return status === "possible_phone" || status === "possible_name";
+function waitForNextPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    window.requestAnimationFrame(() => window.setTimeout(resolve, 0));
+  });
+}
+
+function formatElapsedTime(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60).toString().padStart(2, "0");
+  const seconds = (totalSeconds % 60).toString().padStart(2, "0");
+  return `${minutes}:${seconds}`;
 }
 
 function normalizePhone(value: string) {
@@ -468,14 +482,27 @@ function normalizePhone(value: string) {
 }
 
 function contactName(contact: Pick<ContactInput, "displayName" | "firstName" | "lastName">) {
-  return contact.displayName.trim() || `${contact.firstName} ${contact.lastName}`.trim();
+  return contact.displayName.trim()
+    || `${contact.firstName.trim()} ${contact.lastName.trim()}`.trim();
 }
 
-interface CsvFingerprint {
-  name: string;
-  label: string;
-  email: string;
-  phones: string[];
+interface CsvFingerprintIndex {
+  exactContacts: Map<string, string>;
+  names: Map<string, string>;
+  emails: Map<string, string>;
+  phones: Map<string, string>;
+}
+
+function addCsvFingerprint(index: CsvFingerprintIndex, contact: Contact | ContactInput) {
+  const label = contactName(contact);
+  const email = contact.email.trim().toLocaleLowerCase("de");
+  index.exactContacts.set(contactExactContentKey(contact), label);
+  if (email && !index.emails.has(email)) index.emails.set(email, label);
+  const normalizedName = label.toLocaleLowerCase("de");
+  if (normalizedName && !index.names.has(normalizedName)) index.names.set(normalizedName, label);
+  for (const phone of [normalizePhone(contact.phone), normalizePhone(contact.mobilePhone)].filter(Boolean)) {
+    if (!index.phones.has(phone)) index.phones.set(phone, label);
+  }
 }
 
 function createCsvPreview(
@@ -483,12 +510,13 @@ function createCsvPreview(
   existing: Contact[],
   fileName: string
 ): { preview: OutlookContactImportPreview; contactMap: Map<string, ContactInput> } {
-  const fingerprints: CsvFingerprint[] = existing.map((contact) => ({
-    name: contactName(contact).toLocaleLowerCase("de"),
-    label: contactName(contact),
-    email: contact.email.trim().toLocaleLowerCase("de"),
-    phones: [normalizePhone(contact.phone), normalizePhone(contact.mobilePhone)].filter(Boolean)
-  }));
+  const fingerprints: CsvFingerprintIndex = {
+    exactContacts: new Map(),
+    names: new Map(),
+    emails: new Map(),
+    phones: new Map()
+  };
+  for (const contact of existing) addCsvFingerprint(fingerprints, contact);
   const contacts: OutlookContactPreviewItem[] = [];
   const contactMap = new Map<string, ContactInput>();
   let skippedInvalid = 0;
@@ -501,6 +529,7 @@ function createCsvPreview(
     const displayName = contactName(contact);
     const email = contact.email.trim().toLocaleLowerCase("de");
     const phones = [normalizePhone(contact.phone), normalizePhone(contact.mobilePhone)].filter(Boolean);
+    const exactKey = contactExactContentKey({ ...contact, displayName, email });
     if (!displayName && !email && phones.length === 0) {
       skippedInvalid += 1;
       return;
@@ -509,25 +538,31 @@ function createCsvPreview(
     let status: OutlookContactPreviewStatus = "new";
     let reason = "Neuer Kontakt";
     let existingName: string | null = null;
-    const emailMatch = email ? fingerprints.find((item) => item.email === email) : undefined;
-    const phoneMatch = phones.length ? fingerprints.find((item) => phones.some((phone) => item.phones.includes(phone))) : undefined;
+    const emailMatch = email ? fingerprints.emails.get(email) : undefined;
+    const phoneMatch = phones.length ? phones.map((phone) => fingerprints.phones.get(phone)).find(Boolean) : undefined;
     const normalizedName = displayName.toLocaleLowerCase("de");
-    const nameMatch = !email && normalizedName ? fingerprints.find((item) => item.name === normalizedName) : undefined;
+    const nameMatch = !email && normalizedName ? fingerprints.names.get(normalizedName) : undefined;
+    const exactMatch = fingerprints.exactContacts.get(exactKey);
 
-    if (emailMatch) {
-      status = "duplicate_email";
-      reason = "Diese E-Mail-Adresse ist bereits vorhanden.";
-      existingName = emailMatch.label;
+    if (exactMatch) {
+      status = "duplicate_exact";
+      reason = "Alle Kontaktfelder sind zu 100 % identisch.";
+      existingName = exactMatch;
       exactDuplicates += 1;
+    } else if (emailMatch) {
+      status = "different";
+      reason = "Gleiche E-Mail-Adresse, aber mindestens ein anderes Kontaktfeld. Beide Kontakte bleiben erhalten.";
+      existingName = emailMatch;
+      conflicts += 1;
     } else if (phoneMatch) {
-      status = "possible_phone";
-      reason = "Möglicherweise bereits mit derselben Telefonnummer vorhanden.";
-      existingName = phoneMatch.label;
+      status = "different";
+      reason = "Gleiche Telefonnummer, aber mindestens ein anderes Kontaktfeld. Beide Kontakte bleiben erhalten.";
+      existingName = phoneMatch;
       conflicts += 1;
     } else if (nameMatch) {
-      status = "possible_name";
-      reason = "Kontakt ohne E-Mail mit demselben Namen gefunden.";
-      existingName = nameMatch.label;
+      status = "different";
+      reason = "Gleicher Name, aber mindestens ein anderes Kontaktfeld. Beide Kontakte bleiben erhalten.";
+      existingName = nameMatch;
       conflicts += 1;
     } else {
       newContacts += 1;
@@ -544,10 +579,10 @@ function createCsvPreview(
       status,
       reason,
       existingName,
-      defaultSelected: status === "new"
+      defaultSelected: status !== "duplicate_exact"
     });
     contactMap.set(id, { ...contact, email });
-    fingerprints.push({ name: normalizedName, label: displayName, email, phones });
+    addCsvFingerprint(fingerprints, { ...contact, displayName, email });
   });
 
   return {
