@@ -36,6 +36,16 @@ pub(crate) struct VaultRuntime {
     login_blocked_until: Option<Instant>,
 }
 
+pub(crate) fn clear_runtime(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let mut runtime = state
+        .vault
+        .lock()
+        .map_err(|_| "Der Passwort-Speicher konnte nicht zurückgesetzt werden.".to_string())?;
+    *runtime = VaultRuntime::default();
+    Ok(())
+}
+
 struct RecoveryChallenge {
     code_hash: [u8; 32],
     expires_at: Instant,
@@ -313,9 +323,11 @@ fn decrypt_entry(
 pub fn get_vault_status(app: AppHandle) -> Result<VaultStatus, String> {
     let config = load_config(&app)?;
     let entry_count = open_db(&app)?
-        .query_row("SELECT COUNT(*) FROM vault_entries WHERE deleted_at IS NULL", [], |row| {
-            row.get::<_, i64>(0)
-        })
+        .query_row(
+            "SELECT COUNT(*) FROM vault_entries WHERE deleted_at IS NULL",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
         .map_err(|error| error.to_string())? as usize;
     let session_unlocked = current_session_key(&app)?.is_some();
     let Some(config) = config else {
@@ -355,10 +367,7 @@ pub fn list_deleted_vault_entries(app: AppHandle) -> Result<Vec<VaultEntry>, Str
     list_vault_entries_by_state(app, true)
 }
 
-fn list_vault_entries_by_state(
-    app: AppHandle,
-    deleted: bool,
-) -> Result<Vec<VaultEntry>, String> {
+fn list_vault_entries_by_state(app: AppHandle, deleted: bool) -> Result<Vec<VaultEntry>, String> {
     let key = ensure_vault_key(&app)?;
     let conn = open_db(&app)?;
     let query = if deleted {
@@ -368,9 +377,7 @@ fn list_vault_entries_by_state(
         "SELECT id, entry_uuid, nonce, ciphertext, created_at, updated_at, deleted_at
          FROM vault_entries WHERE deleted_at IS NULL ORDER BY updated_at DESC"
     };
-    let mut statement = conn
-        .prepare(query)
-        .map_err(|error| error.to_string())?;
+    let mut statement = conn.prepare(query).map_err(|error| error.to_string())?;
     let encrypted_rows = statement
         .query_map([], |row| {
             Ok((

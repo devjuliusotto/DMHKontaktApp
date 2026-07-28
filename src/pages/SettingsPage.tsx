@@ -1,15 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, ChevronDown, Download, Eye, EyeOff, LoaderCircle, Mail, RefreshCw, Send, ShieldCheck, Trash2 } from "lucide-react";
+import { save } from "@tauri-apps/plugin-dialog";
+import { AlertTriangle, CheckCircle2, ChevronDown, Download, Eye, EyeOff, FileText, Mail, RefreshCw, RotateCcw, Send, ShieldCheck, Trash2 } from "lucide-react";
 import { MigrationCaptureDialog } from "../components/MigrationCaptureDialog";
 import { StatusMessage } from "../components/StatusMessage";
 import {
+  getMigrationDiagnosticLog,
   importOutlookAccount,
   getMigrationCaptureStatus,
   listMailAccounts,
   revealMailPassword,
   removeMailAccount,
+  resetLocalAppData,
+  resetMigrationCaptureStatus,
+  restartApp,
   scanOutlookAccounts,
-  testMailConnection
+  testMailConnection,
+  writeExportFile
 } from "../services/db";
 import type { MailAccount, MigrationCaptureResult, MigrationCaptureStatus, OutlookAccountCandidate } from "../types/mail";
 
@@ -53,6 +59,80 @@ export function SettingsPage() {
     setMigrationStatus({ configured: true, completed: true, completedAt: result.completedAt });
     setMessageType("success");
     setMessage("Die E-Mail-Konfiguration wurde verschlüsselt an die EDV übertragen.");
+  };
+
+  const migrationFailed = (error: string) => {
+    setMessageType("error");
+    setMessage(`EDV-Übertragung fehlgeschlagen: ${error} Exportieren Sie den Diagnosebericht unten und senden Sie ihn an die EDV.`);
+  };
+
+  const exportMigrationDiagnostic = async () => {
+    setBusyAction("export-diagnostic");
+    setMessage("");
+    try {
+      const content = await getMigrationDiagnosticLog();
+      const target = await save({
+        defaultPath: `DMH-EDV-Diagnose-${new Date().toISOString().slice(0, 10)}.log`,
+        filters: [{ name: "Diagnosebericht", extensions: ["log", "txt"] }]
+      });
+      if (!target) return;
+      await writeExportFile(target, content);
+      setMessageType("success");
+      setMessage("Der datenschutzfreundliche EDV-Diagnosebericht wurde gespeichert.");
+    } catch (error) {
+      setMessageType("error");
+      setMessage(`Diagnosebericht konnte nicht gespeichert werden: ${error}`);
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const reopenMigrationCapture = async () => {
+    const confirmed = window.confirm(
+      "EDV-Übertragung erneut freigeben?\n\nDer bisherige lokale Abschlussvermerk wird entfernt. Die vorhandene Übertragungs-ID bleibt erhalten, damit die EDV einen erneuten Versand möglichst als denselben Vorgang erkennen kann."
+    );
+    if (!confirmed) return;
+
+    setBusyAction("reopen-migration");
+    setMessage("");
+    try {
+      const status = await resetMigrationCaptureStatus();
+      setMigrationStatus(status);
+      setMessageType("success");
+      setMessage("„Sicher an EDV senden“ ist wieder freigegeben.");
+    } catch (error) {
+      setMessageType("error");
+      setMessage(`EDV-Übertragung konnte nicht erneut freigegeben werden: ${error}`);
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const resetApplication = async () => {
+    const confirmed = window.confirm(
+      "App vollständig zurücksetzen?\n\nDabei werden unwiderruflich alle lokalen Kontakte, Gruppen, Kalender, Papierkorb-Daten, E-Mail-Konten, vom App angelegten Credential-Manager-Einträge, Passwort-Speicher-Einträge, Einstellungen, Importverläufe, automatischen Sicherungen und Diagnoseberichte dieses Apps gelöscht.\n\nDaten in Outlook und Exchange sowie die installierte App selbst bleiben unverändert."
+    );
+    if (!confirmed) return;
+    const typed = window.prompt(
+      "Letzte Sicherheitsabfrage: Tippen Sie ZURÜCKSETZEN, um alle lokalen App-Daten zu löschen."
+    );
+    if (typed !== "ZURÜCKSETZEN") {
+      setMessageType("info");
+      setMessage("Zurücksetzen wurde abgebrochen. Es wurden keine Daten gelöscht.");
+      return;
+    }
+
+    setBusyAction("reset-application");
+    setMessage("");
+    try {
+      await resetLocalAppData();
+      localStorage.clear();
+      await restartApp();
+    } catch (error) {
+      setMessageType("error");
+      setMessage(`App konnte nicht vollständig zurückgesetzt werden: ${error}`);
+      setBusyAction(null);
+    }
   };
 
   useEffect(() => {
@@ -225,6 +305,43 @@ export function SettingsPage() {
         </button>
       </section>
 
+      <details className="form-panel settings-support-panel">
+        <summary>
+          <span className="settings-summary-icon"><FileText size={24} aria-hidden="true" /></span>
+          <div>
+            <h3>EDV-Diagnose und erneutes Senden</h3>
+            <p>Fehlerursache sicher eingrenzen oder die Übertragung erneut freigeben</p>
+          </div>
+          <ChevronDown className="settings-summary-chevron" size={21} aria-hidden="true" />
+        </summary>
+        <div className="settings-support-content">
+          <div className="settings-diagnostic-note">
+            <ShieldCheck size={20} aria-hidden="true" />
+            <p>
+              Der Diagnosebericht enthält ausschließlich technische Schritte, Zeitangaben,
+              Statuscodes und eine Diagnose-ID – keine Kennwörter, E-Mail-Adressen,
+              Servernamen oder übertragenen Inhalte.
+            </p>
+          </div>
+          <div className="inline-actions">
+            <button
+              type="button"
+              onClick={exportMigrationDiagnostic}
+              disabled={busyAction !== null}
+            >
+              <FileText size={18} /> Diagnosebericht speichern
+            </button>
+            <button
+              type="button"
+              onClick={reopenMigrationCapture}
+              disabled={busyAction !== null || !migrationStatus?.configured}
+            >
+              <RotateCcw size={18} /> EDV-Übertragung erneut freigeben
+            </button>
+          </div>
+        </div>
+      </details>
+
       <details className="form-panel settings-mail-panel">
         <summary>
           <span className="settings-summary-icon"><Mail size={24} aria-hidden="true" /></span>
@@ -294,6 +411,28 @@ export function SettingsPage() {
         </div>
       </details>
 
+      <section className="form-panel settings-reset-panel">
+        <div className="settings-task-heading">
+          <AlertTriangle size={25} aria-hidden="true" />
+          <div>
+            <h3>App vollständig zurücksetzen</h3>
+            <p>
+              Löscht sämtliche lokalen App-Daten und startet die App anschließend wie bei der
+              ersten Verwendung. Dadurch wird auch „Sicher an EDV senden“ wieder verfügbar.
+              Outlook und Exchange werden nicht verändert.
+            </p>
+          </div>
+        </div>
+        <button
+          className="danger-button"
+          type="button"
+          onClick={resetApplication}
+          disabled={busyAction !== null}
+        >
+          <Trash2 size={18} /> Alle lokalen Daten löschen und App neu starten
+        </button>
+      </section>
+
       {revealedPassword && (
         <div className="modal-backdrop" role="presentation" onMouseDown={() => setRevealedPassword(null)}>
           <section
@@ -341,6 +480,7 @@ export function SettingsPage() {
         open={migrationDialogOpen}
         onClose={() => setMigrationDialogOpen(false)}
         onCompleted={migrationCompleted}
+        onFailed={migrationFailed}
       />
     </div>
   );

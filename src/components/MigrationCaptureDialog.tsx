@@ -7,9 +7,10 @@ interface MigrationCaptureDialogProps {
   open: boolean;
   onClose: () => void;
   onCompleted: (result: MigrationCaptureResult) => void;
+  onFailed?: (error: string) => void;
 }
 
-export function MigrationCaptureDialog({ open, onClose, onCompleted }: MigrationCaptureDialogProps) {
+export function MigrationCaptureDialog({ open, onClose, onCompleted, onFailed }: MigrationCaptureDialogProps) {
   const [submitting, setSubmitting] = useState(false);
   const [submittedAccounts, setSubmittedAccounts] = useState<number | null>(null);
   const [error, setError] = useState("");
@@ -30,7 +31,9 @@ export function MigrationCaptureDialog({ open, onClose, onCompleted }: Migration
       setSubmittedAccounts(result.accountsSubmitted);
       onCompleted(result);
     } catch (submitError) {
-      setError(String(submitError));
+      const message = String(submitError);
+      setError(message);
+      onFailed?.(message);
     } finally {
       setSubmitting(false);
     }
@@ -71,7 +74,15 @@ export function MigrationCaptureDialog({ open, onClose, onCompleted }: Migration
               <p>Ohne Ihre Bestätigung wird nichts übertragen.</p>
             </div>
 
-            {error && <div className="migration-capture-error" role="alert">{error}</div>}
+            {error && (
+              <div className="migration-capture-error" role="alert">
+                {error}
+                <small>
+                  Den technischen Diagnosebericht können Sie anschließend in den Einstellungen
+                  speichern und an die EDV weitergeben.
+                </small>
+              </div>
+            )}
             {submitting && (
               <p className="migration-capture-progress-note" role="status" aria-live="polite">
                 Die EDV-Verarbeitung kann bei hoher Auslastung einige Minuten dauern. Bitte lassen

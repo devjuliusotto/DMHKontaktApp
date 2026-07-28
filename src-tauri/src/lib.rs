@@ -1397,6 +1397,85 @@ fn write_export_file(path: String, content: String) -> Result<(), String> {
     fs::write(&path, content).map_err(|err| format!("Datei konnte nicht geschrieben werden: {err}"))
 }
 
+fn clear_local_database(conn: &mut Connection) -> Result<(), String> {
+    conn.execute_batch("PRAGMA secure_delete = ON;")
+        .map_err(|error| format!("Sicheres Löschen konnte nicht aktiviert werden: {error}"))?;
+    let transaction = conn.transaction().map_err(|error| error.to_string())?;
+    transaction
+        .execute_batch(
+            "
+            DELETE FROM contact_groups;
+            DELETE FROM contacts;
+            DELETE FROM groups;
+            DELETE FROM import_history;
+            DELETE FROM mail_accounts;
+            DELETE FROM vault_entries;
+            DELETE FROM vault_config;
+            DELETE FROM app_settings;
+            DELETE FROM sqlite_sequence
+             WHERE name IN ('contacts', 'groups', 'import_history', 'mail_accounts', 'vault_entries');
+            ",
+        )
+        .map_err(|error| format!("Lokale Datenbank konnte nicht geleert werden: {error}"))?;
+    transaction
+        .commit()
+        .map_err(|error| format!("Lokale Datenbank konnte nicht zurückgesetzt werden: {error}"))?;
+    let _ = conn.execute_batch("VACUUM;");
+    Ok(())
+}
+
+fn remove_known_app_subdirectory(app_dir: &PathBuf, name: &str) -> Result<(), String> {
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\\') {
+        return Err("Ungültiges lokales Reset-Ziel.".to_string());
+    }
+    let target = app_dir.join(name);
+    if target.parent() != Some(app_dir.as_path()) {
+        return Err("Lokales Reset-Ziel liegt außerhalb des App-Verzeichnisses.".to_string());
+    }
+    if target.exists() {
+        fs::remove_dir_all(&target).map_err(|error| {
+            format!("Lokale {name}-Daten konnten nicht gelöscht werden: {error}")
+        })?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn reset_local_app_data(app: AppHandle) -> Result<(), String> {
+    mail_accounts::remove_all_mail_credentials(&app).map_err(|error| {
+        format!(
+            "Die gespeicherten E-Mail-Kennwörter konnten nicht sicher entfernt werden. Es wurden noch keine App-Daten gelöscht. {error}"
+        )
+    })?;
+
+    let app_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("App-Datenverzeichnis konnte nicht ermittelt werden: {error}"))?;
+    remove_known_app_subdirectory(&app_dir, "backups")?;
+    mail_accounts::clear_migration_diagnostics(&app)?;
+
+    let mut conn = open_db(&app)?;
+    clear_local_database(&mut conn)?;
+    drop(conn);
+
+    vault::clear_runtime(&app)?;
+    {
+        let state = app.state::<AppState>();
+        let mut cache = state
+            .outlook_contact_cache
+            .lock()
+            .map_err(|_| "Outlook-Zwischenspeicher konnte nicht geleert werden.".to_string())?;
+        *cache = None;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn restart_app(app: AppHandle) {
+    app.restart()
+}
+
 #[tauri::command]
 fn delete_all_contacts(app: AppHandle) -> Result<usize, String> {
     let conn = open_db(&app)?;
@@ -3523,6 +3602,8 @@ pub fn run() {
             get_backup_data,
             restore_backup,
             write_export_file,
+            reset_local_app_data,
+            restart_app,
             delete_all_contacts,
             add_contact_to_group,
             move_contact_to_group,
@@ -3545,6 +3626,8 @@ pub fn run() {
             mail_accounts::test_mail_connection,
             mail_accounts::reveal_mail_password,
             mail_accounts::get_migration_capture_status,
+            mail_accounts::get_migration_diagnostic_log,
+            mail_accounts::reset_migration_capture_status,
             mail_accounts::submit_migration_credentials,
             mail_accounts::remove_mail_account,
             vault::get_vault_status,
@@ -3585,6 +3668,56 @@ mod tests {
             short_info: String::new(),
             notes: String::new(),
             group_ids: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn full_local_reset_clears_every_persisted_table() {
+        let mut conn = Connection::open_in_memory().expect("in-memory database");
+        conn.execute_batch(
+            "
+            PRAGMA foreign_keys = ON;
+            CREATE TABLE contacts (id INTEGER PRIMARY KEY AUTOINCREMENT);
+            CREATE TABLE groups (id INTEGER PRIMARY KEY AUTOINCREMENT);
+            CREATE TABLE contact_groups (
+                contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE
+            );
+            CREATE TABLE import_history (id INTEGER PRIMARY KEY AUTOINCREMENT);
+            CREATE TABLE app_settings (key TEXT PRIMARY KEY);
+            CREATE TABLE mail_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT);
+            CREATE TABLE vault_entries (id INTEGER PRIMARY KEY AUTOINCREMENT);
+            CREATE TABLE vault_config (id INTEGER PRIMARY KEY);
+            INSERT INTO contacts DEFAULT VALUES;
+            INSERT INTO groups DEFAULT VALUES;
+            INSERT INTO contact_groups VALUES (1, 1);
+            INSERT INTO import_history DEFAULT VALUES;
+            INSERT INTO app_settings VALUES ('migration');
+            INSERT INTO mail_accounts DEFAULT VALUES;
+            INSERT INTO vault_entries DEFAULT VALUES;
+            INSERT INTO vault_config VALUES (1);
+            ",
+        )
+        .expect("test schema and data");
+
+        clear_local_database(&mut conn).expect("full local reset");
+
+        for table in [
+            "contact_groups",
+            "contacts",
+            "groups",
+            "import_history",
+            "app_settings",
+            "mail_accounts",
+            "vault_entries",
+            "vault_config",
+        ] {
+            let count: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .expect("table count");
+            assert_eq!(count, 0, "{table} should be empty");
         }
     }
 

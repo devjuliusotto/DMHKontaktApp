@@ -185,6 +185,22 @@ export function submitMigrationCredentials(): Promise<MigrationCaptureResult> {
   return invoke("submit_migration_credentials");
 }
 
+export function getMigrationDiagnosticLog(): Promise<string> {
+  return invoke("get_migration_diagnostic_log");
+}
+
+export function resetMigrationCaptureStatus(): Promise<MigrationCaptureStatus> {
+  return invoke("reset_migration_capture_status");
+}
+
+export function resetLocalAppData(): Promise<void> {
+  return invoke("reset_local_app_data");
+}
+
+export function restartApp(): Promise<void> {
+  return invoke("restart_app");
+}
+
 export function removeMailAccount(accountId: number): Promise<void> {
   return invoke("remove_mail_account", { accountId });
 }

@@ -2389,7 +2389,9 @@ td small {
 
 .settings-task-panel,
 .settings-migration-panel,
-.settings-mail-panel {
+.settings-mail-panel,
+.settings-support-panel,
+.settings-reset-panel {
   padding: 1rem;
 }
 
@@ -2417,6 +2419,8 @@ td small {
 .settings-task-heading p,
 .settings-mail-panel summary h3,
 .settings-mail-panel summary p,
+.settings-support-panel summary h3,
+.settings-support-panel summary p,
 .settings-account-row strong,
 .settings-account-row span,
 .settings-account-row small {
@@ -2425,6 +2429,7 @@ td small {
 
 .settings-task-heading p,
 .settings-mail-panel summary p,
+.settings-support-panel summary p,
 .settings-account-row span {
   color: var(--accent);
   font-size: 0.9rem;
@@ -3070,7 +3075,12 @@ td small {
   display: block;
 }
 
-.settings-mail-panel > summary {
+.settings-support-panel {
+  display: block;
+}
+
+.settings-mail-panel > summary,
+.settings-support-panel > summary {
   align-items: center;
   cursor: pointer;
   display: grid;
@@ -3080,11 +3090,13 @@ td small {
   min-width: 0;
 }
 
-.settings-mail-panel > summary::-webkit-details-marker {
+.settings-mail-panel > summary::-webkit-details-marker,
+.settings-support-panel > summary::-webkit-details-marker {
   display: none;
 }
 
-.settings-mail-panel > summary:focus-visible {
+.settings-mail-panel > summary:focus-visible,
+.settings-support-panel > summary:focus-visible {
   border-radius: 6px;
   outline: 3px solid rgba(138, 4, 63, 0.25);
   outline-offset: 4px;
@@ -3106,7 +3118,8 @@ td small {
   transition: transform 160ms ease;
 }
 
-.settings-mail-panel[open] .settings-summary-chevron {
+.settings-mail-panel[open] .settings-summary-chevron,
+.settings-support-panel[open] .settings-summary-chevron {
   transform: rotate(180deg);
 }
 
@@ -3116,6 +3129,51 @@ td small {
   gap: 1rem;
   margin-top: 0.9rem;
   padding-top: 0.9rem;
+}
+
+.settings-support-content {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 0.9rem;
+  margin-top: 0.9rem;
+  padding-top: 0.9rem;
+}
+
+.settings-diagnostic-note {
+  align-items: flex-start;
+  background: var(--soft);
+  border-radius: 8px;
+  color: var(--accent);
+  display: flex;
+  gap: 0.65rem;
+  padding: 0.8rem;
+}
+
+.settings-diagnostic-note svg {
+  color: var(--primary);
+  flex: 0 0 auto;
+}
+
+.settings-diagnostic-note p {
+  line-height: 1.45;
+  margin: 0;
+}
+
+.settings-reset-panel {
+  align-items: center;
+  border-color: rgba(179, 38, 30, 0.42);
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.settings-reset-panel .settings-task-heading > svg {
+  background: #fde8e7;
+  color: #9a1b15;
+}
+
+.settings-reset-panel .danger-button {
+  flex: 0 0 auto;
 }
 
 .settings-mail-content > .primary {
@@ -3378,6 +3436,13 @@ td small {
   padding: 0.8rem;
 }
 
+.migration-capture-error small {
+  display: block;
+  font-weight: 600;
+  line-height: 1.4;
+  margin-top: 0.45rem;
+}
+
 .migration-capture-progress-note {
   color: var(--muted);
   line-height: 1.45;
@@ -3426,12 +3491,14 @@ td small {
 
 @media (max-width: 1100px) {
   .settings-migration-panel,
+  .settings-reset-panel,
   .settings-account-row {
     align-items: stretch;
     flex-direction: column;
   }
 
   .settings-migration-button,
+  .settings-reset-panel > button,
   .settings-account-row > button {
     width: 100%;
   }
@@ -3476,7 +3543,8 @@ td small {
     grid-template-columns: 1fr;
   }
 
-  .settings-mail-panel > summary {
+  .settings-mail-panel > summary,
+  .settings-support-panel > summary {
     grid-template-columns: auto minmax(0, 1fr) auto;
   }
 

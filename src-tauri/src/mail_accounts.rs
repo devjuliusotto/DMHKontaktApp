@@ -9,7 +9,14 @@ use rsa::{BigUint, Oaep, RsaPublicKey};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::Sha256;
-use std::{env, fs, path::PathBuf, time::Duration};
+use std::{
+    collections::HashSet,
+    env, fs,
+    fs::OpenOptions,
+    io::Write,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
@@ -25,6 +32,130 @@ const MIGRATION_ENVELOPE_ALGORITHM: &str = "RSA-OAEP-256+A256GCM";
 const MIGRATION_DELIVERY_ATTEMPTS: usize = 3;
 const MIGRATION_DELIVERY_TIMEOUT_SECONDS: u64 = 90;
 const MIGRATION_RETRY_DELAYS_SECONDS: [u64; MIGRATION_DELIVERY_ATTEMPTS] = [0, 2, 6];
+const MIGRATION_DIAGNOSTIC_DIRECTORY: &str = "diagnostics";
+const MIGRATION_DIAGNOSTIC_FILE: &str = "edv-transfer.log";
+const MIGRATION_DIAGNOSTIC_PREVIOUS_FILE: &str = "edv-transfer.previous.log";
+const MIGRATION_DIAGNOSTIC_MAX_BYTES: u64 = 256 * 1024;
+
+fn migration_diagnostic_paths(app: &AppHandle) -> Result<(PathBuf, PathBuf), String> {
+    let directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Diagnoseverzeichnis konnte nicht ermittelt werden: {error}"))?
+        .join(MIGRATION_DIAGNOSTIC_DIRECTORY);
+    Ok((
+        directory.join(MIGRATION_DIAGNOSTIC_FILE),
+        directory.join(MIGRATION_DIAGNOSTIC_PREVIOUS_FILE),
+    ))
+}
+
+fn sanitize_diagnostic_value(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .take(160)
+        .collect()
+}
+
+fn append_migration_diagnostic(
+    app: &AppHandle,
+    diagnostic_id: &str,
+    stage: &str,
+    result: &str,
+    detail: &str,
+) {
+    let Ok((current_path, previous_path)) = migration_diagnostic_paths(app) else {
+        return;
+    };
+    let Some(directory) = current_path.parent() else {
+        return;
+    };
+    if fs::create_dir_all(directory).is_err() {
+        return;
+    }
+    if fs::metadata(&current_path)
+        .is_ok_and(|metadata| metadata.len() >= MIGRATION_DIAGNOSTIC_MAX_BYTES)
+    {
+        let _ = fs::remove_file(&previous_path);
+        let _ = fs::rename(&current_path, &previous_path);
+    }
+    let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(current_path)
+    else {
+        return;
+    };
+    let _ = writeln!(
+        file,
+        "{}\tapp={}\tdiagnostic={}\tstage={}\tresult={}\tdetail={}",
+        chrono::Utc::now().to_rfc3339(),
+        env!("CARGO_PKG_VERSION"),
+        sanitize_diagnostic_value(diagnostic_id),
+        sanitize_diagnostic_value(stage),
+        sanitize_diagnostic_value(result),
+        sanitize_diagnostic_value(detail)
+    );
+}
+
+fn migration_stage_error(
+    app: &AppHandle,
+    diagnostic_id: &str,
+    stage: &str,
+    detail: &str,
+    message: String,
+) -> String {
+    append_migration_diagnostic(app, diagnostic_id, stage, "error", detail);
+    message
+}
+
+fn short_diagnostic_id(diagnostic_id: &str) -> &str {
+    diagnostic_id.get(..8).unwrap_or(diagnostic_id)
+}
+
+#[tauri::command]
+pub fn get_migration_diagnostic_log(app: AppHandle) -> Result<String, String> {
+    let (current_path, previous_path) = migration_diagnostic_paths(&app)?;
+    let mut sections = vec![
+        "DMH EDV-Übertragungsdiagnose".to_string(),
+        "Der Bericht enthält keine Kennwörter, E-Mail-Adressen, Servernamen oder übertragenen Inhalte.".to_string(),
+        String::new(),
+    ];
+    for (label, path) in [
+        ("Vorheriger Bericht", previous_path),
+        ("Aktueller Bericht", current_path),
+    ] {
+        if !path.exists() {
+            continue;
+        }
+        let content = fs::read_to_string(path)
+            .map_err(|error| format!("Diagnosebericht konnte nicht gelesen werden: {error}"))?;
+        sections.push(format!("--- {label} ---"));
+        sections.push(content);
+    }
+    if sections.len() == 3 {
+        sections.push("Noch kein Übertragungsversuch protokolliert.".to_string());
+    }
+    Ok(sections.join("\n"))
+}
+
+pub(crate) fn clear_migration_diagnostics(app: &AppHandle) -> Result<(), String> {
+    let (current_path, _) = migration_diagnostic_paths(app)?;
+    let Some(directory) = current_path.parent() else {
+        return Ok(());
+    };
+    if directory.exists() {
+        fs::remove_dir_all(directory)
+            .map_err(|error| format!("Diagnoseberichte konnten nicht gelöscht werden: {error}"))?;
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -673,6 +804,26 @@ pub fn get_migration_capture_status(app: AppHandle) -> Result<MigrationCaptureSt
     })
 }
 
+#[tauri::command]
+pub fn reset_migration_capture_status(app: AppHandle) -> Result<MigrationCaptureStatus, String> {
+    let conn = open_db(&app)?;
+    conn.execute(
+        "DELETE FROM app_settings WHERE key = ?1",
+        [MIGRATION_CAPTURE_COMPLETED_KEY],
+    )
+    .map_err(|error| format!("EDV-Übertragung konnte nicht erneut freigegeben werden: {error}"))?;
+    let diagnostic_id = Uuid::new_v4().to_string();
+    append_migration_diagnostic(
+        &app,
+        &diagnostic_id,
+        "manual_reopen",
+        "success",
+        "completion_state_cleared_submission_id_preserved",
+    );
+    drop(conn);
+    get_migration_capture_status(app)
+}
+
 fn migration_http_status_is_retryable(status: reqwest::StatusCode) -> bool {
     matches!(status.as_u16(), 408 | 409 | 423 | 425 | 429 | 500..=599)
 }
@@ -704,6 +855,8 @@ fn migration_network_error_message(error: &reqwest::Error) -> String {
 }
 
 async fn deliver_migration_payload(
+    app: &AppHandle,
+    diagnostic_id: &str,
     client: &reqwest::Client,
     endpoint: &str,
     submission_id: &str,
@@ -717,17 +870,45 @@ async fn deliver_migration_payload(
             tokio::time::sleep(Duration::from_secs(MIGRATION_RETRY_DELAYS_SECONDS[attempt])).await;
         }
 
+        let started = Instant::now();
         match client
             .post(endpoint)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .header("x-dmh-submission-id", submission_id)
+            .header("x-dmh-diagnostic-id", diagnostic_id)
             .body(payload_json.to_vec())
             .send()
             .await
         {
-            Ok(response) if response.status().is_success() => return Ok(()),
+            Ok(response) if response.status().is_success() => {
+                append_migration_diagnostic(
+                    app,
+                    diagnostic_id,
+                    "http_delivery",
+                    "success",
+                    &format!(
+                        "attempt={} status={} duration_ms={}",
+                        attempt + 1,
+                        response.status().as_u16(),
+                        started.elapsed().as_millis()
+                    ),
+                );
+                return Ok(());
+            }
             Ok(response) => {
                 let status = response.status();
+                append_migration_diagnostic(
+                    app,
+                    diagnostic_id,
+                    "http_delivery",
+                    "error",
+                    &format!(
+                        "attempt={} status={} duration_ms={}",
+                        attempt + 1,
+                        status.as_u16(),
+                        started.elapsed().as_millis()
+                    ),
+                );
                 last_http_status = Some(status);
                 last_network_error = None;
                 if !migration_http_status_is_retryable(status) {
@@ -735,6 +916,25 @@ async fn deliver_migration_payload(
                 }
             }
             Err(error) => {
+                let kind = if error.is_timeout() {
+                    "timeout"
+                } else if error.is_connect() {
+                    "connect"
+                } else {
+                    "network"
+                };
+                append_migration_diagnostic(
+                    app,
+                    diagnostic_id,
+                    "http_delivery",
+                    "error",
+                    &format!(
+                        "attempt={} kind={} duration_ms={}",
+                        attempt + 1,
+                        kind,
+                        started.elapsed().as_millis()
+                    ),
+                );
                 last_network_error = Some(error);
                 last_http_status = None;
             }
@@ -754,51 +954,165 @@ async fn deliver_migration_payload(
 pub async fn submit_migration_credentials(
     app: AppHandle,
 ) -> Result<MigrationCaptureResult, String> {
-    let endpoint = migration_capture_endpoint().ok_or_else(|| {
-        "Die zeitlich begrenzte E-Mail-Migration ist in diesem Build nicht aktiviert.".to_string()
-    })?;
+    let diagnostic_id = Uuid::new_v4().to_string();
+    append_migration_diagnostic(
+        &app,
+        &diagnostic_id,
+        "submission",
+        "started",
+        "user_confirmed",
+    );
+    match submit_migration_credentials_inner(app.clone(), &diagnostic_id).await {
+        Ok(result) => {
+            append_migration_diagnostic(&app, &diagnostic_id, "submission", "success", "completed");
+            Ok(result)
+        }
+        Err(message) => {
+            append_migration_diagnostic(
+                &app,
+                &diagnostic_id,
+                "submission",
+                "error",
+                "not_completed",
+            );
+            Err(format!(
+                "{message} Diagnose-ID: {}.",
+                short_diagnostic_id(&diagnostic_id)
+            ))
+        }
+    }
+}
 
+async fn submit_migration_credentials_inner(
+    app: AppHandle,
+    diagnostic_id: &str,
+) -> Result<MigrationCaptureResult, String> {
+    let endpoint = migration_capture_endpoint().ok_or_else(|| {
+        migration_stage_error(
+            &app,
+            diagnostic_id,
+            "endpoint_configuration",
+            "not_configured",
+            "Die zeitlich begrenzte E-Mail-Migration ist in diesem Build nicht aktiviert."
+                .to_string(),
+        )
+    })?;
     let submission_id = {
-        let conn = open_db(&app)?;
-        if let Some(completed_at) = get_migration_setting(&conn, MIGRATION_CAPTURE_COMPLETED_KEY)? {
+        let conn = open_db(&app).map_err(|message| {
+            migration_stage_error(
+                &app,
+                diagnostic_id,
+                "local_database",
+                "open_failed",
+                message,
+            )
+        })?;
+        if let Some(completed_at) = get_migration_setting(&conn, MIGRATION_CAPTURE_COMPLETED_KEY)
+            .map_err(|message| {
+                migration_stage_error(
+                    &app,
+                    diagnostic_id,
+                    "submission_state",
+                    "read_failed",
+                    message,
+                )
+            })?
+        {
+            append_migration_diagnostic(
+                &app,
+                diagnostic_id,
+                "submission_state",
+                "success",
+                "already_completed",
+            );
             return Ok(MigrationCaptureResult {
                 accounts_submitted: 0,
                 completed_at,
             });
         }
 
-        match get_migration_setting(&conn, MIGRATION_CAPTURE_SUBMISSION_KEY)? {
+        match get_migration_setting(&conn, MIGRATION_CAPTURE_SUBMISSION_KEY).map_err(|message| {
+            migration_stage_error(
+                &app,
+                diagnostic_id,
+                "submission_state",
+                "read_failed",
+                message,
+            )
+        })? {
             Some(value) => value,
             None => {
                 let value = Uuid::new_v4().to_string();
-                set_migration_setting(&conn, MIGRATION_CAPTURE_SUBMISSION_KEY, &value)?;
+                set_migration_setting(&conn, MIGRATION_CAPTURE_SUBMISSION_KEY, &value).map_err(
+                    |message| {
+                        migration_stage_error(
+                            &app,
+                            diagnostic_id,
+                            "submission_state",
+                            "write_failed",
+                            message,
+                        )
+                    },
+                )?;
                 value
             }
         }
     };
 
-    let candidates = scan_outlook_accounts(app.clone())?;
+    let candidates = scan_outlook_accounts(app.clone()).map_err(|message| {
+        migration_stage_error(&app, diagnostic_id, "outlook_scan", "scan_failed", message)
+    })?;
     let candidates = candidates
         .into_iter()
         .filter(|candidate| candidate.password_available)
         .collect::<Vec<_>>();
     if candidates.is_empty() {
-        return Err(
+        return Err(migration_stage_error(
+            &app,
+            diagnostic_id,
+            "outlook_scan",
+            "no_saved_password",
             "In Outlook Classic wurde kein IMAP-Konto mit gespeichertem Kennwort gefunden."
                 .to_string(),
-        );
+        ));
     }
+    append_migration_diagnostic(
+        &app,
+        diagnostic_id,
+        "outlook_scan",
+        "success",
+        &format!("eligible_accounts={}", candidates.len()),
+    );
 
     let captured_at = chrono::Utc::now().to_rfc3339();
     let computer = env::var("COMPUTERNAME").unwrap_or_else(|_| "Windows-PC".to_string());
     let mut accounts = Vec::with_capacity(candidates.len());
 
     for candidate in candidates {
-        let account = import_outlook_account(app.clone(), candidate.source_account_id)?;
+        let account = import_outlook_account(app.clone(), candidate.source_account_id).map_err(
+            |message| {
+                migration_stage_error(
+                    &app,
+                    diagnostic_id,
+                    "outlook_import",
+                    "account_import_failed",
+                    message,
+                )
+            },
+        )?;
         let mut revealed = run_secret_helper(
             &app,
             &["reveal".to_string(), account.credential_reference.clone()],
-        )?;
+        )
+        .map_err(|message| {
+            migration_stage_error(
+                &app,
+                diagnostic_id,
+                "credential_reveal",
+                "credential_unavailable",
+                message,
+            )
+        })?;
         accounts.push(MigrationAccountSubmission {
             account_name: account.account_name,
             email: account.email,
@@ -811,9 +1125,24 @@ pub async fn submit_migration_credentials(
 
     let accounts_submitted = accounts.len();
     let payload =
-        encrypt_migration_accounts(submission_id, captured_at.clone(), computer, accounts)?;
+        encrypt_migration_accounts(submission_id, captured_at.clone(), computer, accounts)
+            .map_err(|message| {
+                migration_stage_error(
+                    &app,
+                    diagnostic_id,
+                    "encryption",
+                    "encryption_failed",
+                    message,
+                )
+            })?;
     let payload_json = serde_json::to_vec(&payload).map_err(|_| {
-        "Das verschlüsselte Datenpaket konnte nicht vorbereitet werden.".to_string()
+        migration_stage_error(
+            &app,
+            diagnostic_id,
+            "serialization",
+            "serialization_failed",
+            "Das verschlüsselte Datenpaket konnte nicht vorbereitet werden.".to_string(),
+        )
     })?;
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(15))
@@ -823,12 +1152,49 @@ pub async fn submit_migration_credentials(
             env!("CARGO_PKG_VERSION")
         ))
         .build()
-        .map_err(|_| "Die sichere Übertragung konnte nicht vorbereitet werden.".to_string())?;
-    deliver_migration_payload(&client, endpoint, &payload.submission_id, &payload_json).await?;
+        .map_err(|_| {
+            migration_stage_error(
+                &app,
+                diagnostic_id,
+                "http_client",
+                "client_build_failed",
+                "Die sichere Übertragung konnte nicht vorbereitet werden.".to_string(),
+            )
+        })?;
+    deliver_migration_payload(
+        &app,
+        diagnostic_id,
+        &client,
+        endpoint,
+        &payload.submission_id,
+        &payload_json,
+    )
+    .await
+    .map_err(|message| {
+        migration_stage_error(&app, diagnostic_id, "delivery", "delivery_failed", message)
+    })?;
 
     {
-        let conn = open_db(&app)?;
-        set_migration_setting(&conn, MIGRATION_CAPTURE_COMPLETED_KEY, &captured_at)?;
+        let conn = open_db(&app).map_err(|message| {
+            migration_stage_error(
+                &app,
+                diagnostic_id,
+                "completion_state",
+                "database_open_failed",
+                message,
+            )
+        })?;
+        set_migration_setting(&conn, MIGRATION_CAPTURE_COMPLETED_KEY, &captured_at).map_err(
+            |message| {
+                migration_stage_error(
+                    &app,
+                    diagnostic_id,
+                    "completion_state",
+                    "write_failed",
+                    message,
+                )
+            },
+        )?;
     }
 
     Ok(MigrationCaptureResult {
@@ -852,10 +1218,47 @@ pub fn remove_mail_account(app: AppHandle, account_id: i64) -> Result<(), String
     Ok(())
 }
 
+pub(crate) fn remove_all_mail_credentials(app: &AppHandle) -> Result<usize, String> {
+    let conn = open_db(app)?;
+    let mut statement = conn
+        .prepare(
+            "SELECT credential_reference, outgoing_credential_reference
+             FROM mail_accounts",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    let references = rows
+        .into_iter()
+        .flat_map(|(incoming, outgoing)| std::iter::once(incoming).chain(outgoing))
+        .filter(|reference| !reference.trim().is_empty())
+        .collect::<HashSet<_>>();
+    if references.is_empty() {
+        return Ok(0);
+    }
+    let mut arguments = vec!["delete".to_string()];
+    arguments.extend(references.iter().cloned());
+    let _: serde_json::Value = run_helper(app, &arguments)?;
+    Ok(references.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use rsa::RsaPrivateKey;
+
+    #[test]
+    fn diagnostic_fields_cannot_inject_lines_and_are_bounded() {
+        let sanitized = sanitize_diagnostic_value(&format!("stage\r\n{}", "x".repeat(300)));
+        assert!(!sanitized.contains('\r'));
+        assert!(!sanitized.contains('\n'));
+        assert_eq!(sanitized.chars().count(), 160);
+    }
 
     #[test]
     fn migration_delivery_retries_only_transient_http_failures() {
