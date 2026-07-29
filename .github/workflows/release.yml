@@ -69,8 +69,10 @@ jobs:
       - name: Abhängigkeiten installieren
         run: npm ci
 
-      - name: Versionsnummern prüfen
-        run: node scripts/check-version.mjs "${{ inputs.version }}"
+      - name: Offizielle Versionsnummer setzen und prüfen
+        run: |
+          node scripts/set-version.mjs "${{ inputs.version }}"
+          node scripts/check-version.mjs "${{ inputs.version }}"
 
       - name: Farbschemas prüfen
         run: npm run theme:check
@@ -131,8 +133,10 @@ jobs:
       - name: Abhängigkeiten installieren
         run: npm ci
 
-      - name: Versionsnummer erneut prüfen
-        run: node scripts/check-version.mjs "${{ inputs.version }}"
+      - name: Offizielle Versionsnummer erneut setzen und prüfen
+        run: |
+          node scripts/set-version.mjs "${{ inputs.version }}"
+          node scripts/check-version.mjs "${{ inputs.version }}"
 
       - name: EDV-Endpunkt validieren
         shell: pwsh

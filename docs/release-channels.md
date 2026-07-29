@@ -36,10 +36,9 @@ O ambiente `production` funciona como o último portão humano. Se a conta/plano
 1. Criar um branch de funcionalidade a partir de `staging`.
 2. Implementar e testar localmente.
 3. Abrir PR para `staging`. O workflow `CI` valida frontend, formatação e testes Rust.
-4. Antes do ciclo de teste de uma futura versão oficial, definir a versão final pretendida e commitar a mudança:
+4. Antes do ciclo de teste, confirmar apenas que a versão-base já existente no código está consistente:
 
    ```powershell
-   npm run version:set -- 0.1.1
    npm run version:check
    ```
 
@@ -52,12 +51,14 @@ O ambiente `production` funciona como o último portão humano. Se a conta/plano
 8. Quando aprovada, mesclar `staging` em `main` sem fazer novas alterações de conteúdo.
 9. Em **Actions > Offizielle Windows-Version veröffentlichen > Run workflow**, selecionar `main` e informar `0.1.1`.
 10. Aprovar o ambiente `production`. O workflow só libera a versão se:
-    - todas as versões do código forem iguais;
+    - a versão informada for aplicada e conferida automaticamente em todos os manifestos e lockfiles do build;
     - testes e build passarem;
     - o endpoint EDV de produção estiver configurado;
     - a árvore de arquivos de `main` for exatamente igual à release Admin Test mais recente.
 
 Uma correção feita depois do teste exige uma nova Admin Test antes da release oficial. Isso é intencional.
+
+Não crie manualmente commits ou tags do tipo `Release vX.Y.Z`. O workflow oficial cria a tag e a release. A versão final é aplicada apenas no ambiente temporário de build, depois da comparação com o Admin Test; por isso o conteúdo testado continua sendo exatamente o conteúdo publicado.
 
 ## Teste local isolado
 
@@ -89,11 +90,11 @@ A Sicherung inclui contatos, grupos, calendário e preferências permitidas. Ela
 - Oficial: `0.1.0`, `0.1.1`, `0.2.0`.
 - Admin Test: `0.1.1-beta.1`, `0.1.1-beta.2`, `0.1.1-rc.1`.
 
-O número oficial fica salvo no código. O sufixo beta é aplicado apenas no servidor temporário de build; portanto, publicar um Admin Test não suja o branch com números descartáveis.
+A versão-base fica consistente no código. Tanto o sufixo beta do Admin Test quanto o número final escolhido para a release oficial são aplicados no servidor temporário de build; portanto, publicar uma versão não cria commits descartáveis nem deixa manifestos e lockfiles divergentes.
 
 ## Primeira publicação 0.1.0
 
-1. Rodar `npm run version:check` e confirmar `0.1.0`.
+1. Rodar `npm run version:check` e confirmar que todos os arquivos mostram a mesma versão-base.
 2. Publicar `0.1.0-beta.1` do branch `staging`.
 3. Instalar o Admin Test e importar uma Sicherung real.
 4. Testar contatos, calendário, importações, restauração e atualização automática.
