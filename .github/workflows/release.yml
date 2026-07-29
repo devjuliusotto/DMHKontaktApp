@@ -75,10 +75,26 @@ jobs:
       - name: Farbschemas prüfen
         run: npm run theme:check
 
+      - name: Microsoft-365-Konfiguration validieren
+        shell: pwsh
+        env:
+          M365_CLIENT_ID: ${{ vars.M365_CLIENT_ID }}
+          M365_TENANT_ID: ${{ vars.M365_TENANT_ID }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:M365_CLIENT_ID)) {
+            throw "Repository variable M365_CLIENT_ID fehlt."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:M365_TENANT_ID)) {
+            throw "Repository variable M365_TENANT_ID fehlt."
+          }
+
       - name: Frontend bauen
         run: npm run build
 
       - name: Rust-Tests
+        env:
+          M365_CLIENT_ID: ${{ vars.M365_CLIENT_ID }}
+          M365_TENANT_ID: ${{ vars.M365_TENANT_ID }}
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib
 
   release-windows:
@@ -140,6 +156,8 @@ jobs:
           VITE_APP_CHANNEL: stable
           VITE_SOURCE_COMMIT: ${{ github.sha }}
           DMH_RELEASE_CHANNEL: stable
+          M365_CLIENT_ID: ${{ vars.M365_CLIENT_ID }}
+          M365_TENANT_ID: ${{ vars.M365_TENANT_ID }}
         with:
           tagName: v${{ inputs.version }}
           releaseName: DMH Kontakte und Kalender v${{ inputs.version }}

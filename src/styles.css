@@ -2444,6 +2444,220 @@ td small {
   max-width: 980px;
 }
 
+.m365-page {
+  max-width: 980px;
+}
+
+.m365-loading {
+  align-items: center;
+  display: flex;
+  gap: 0.7rem;
+  justify-content: center;
+  min-height: 150px;
+}
+
+.m365-loading p,
+.m365-configuration-card h3,
+.m365-configuration-card p,
+.m365-hero h3,
+.m365-hero p,
+.m365-account-summary h3,
+.m365-account-summary p,
+.m365-roadmap-card h3,
+.m365-roadmap-card > p,
+.m365-privacy-note p,
+.m365-waiting {
+  margin: 0;
+}
+
+.m365-configuration-card,
+.m365-connect-card,
+.m365-device-card,
+.m365-account-card,
+.m365-roadmap-card {
+  padding: 1.15rem;
+}
+
+.m365-configuration-card {
+  align-items: flex-start;
+  display: flex;
+  gap: 0.9rem;
+}
+
+.m365-configuration-card p,
+.m365-hero p,
+.m365-account-summary p,
+.m365-roadmap-card > p {
+  color: var(--accent);
+  line-height: 1.5;
+}
+
+.m365-card-icon {
+  align-items: center;
+  background: var(--soft);
+  border-radius: 12px;
+  color: var(--primary);
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 52px;
+  justify-content: center;
+  width: 52px;
+}
+
+.m365-card-icon.microsoft {
+  background: var(--info-surface);
+  color: var(--info-text);
+}
+
+.m365-connect-card,
+.m365-device-card,
+.m365-roadmap-card {
+  display: grid;
+  gap: 1rem;
+}
+
+.m365-hero {
+  align-items: center;
+  display: flex;
+  gap: 0.9rem;
+}
+
+.m365-privacy-note {
+  align-items: flex-start;
+  background: var(--info-surface);
+  border: 1px solid var(--info-border);
+  border-radius: 8px;
+  color: var(--info-text);
+  display: flex;
+  gap: 0.65rem;
+  padding: 0.85rem;
+}
+
+.m365-privacy-note svg {
+  flex: 0 0 auto;
+  margin-top: 0.1rem;
+}
+
+.m365-connect-button {
+  justify-self: start;
+}
+
+.m365-device-code-row {
+  align-items: center;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.85rem;
+  justify-content: space-between;
+  padding: 1rem;
+}
+
+.m365-device-code-row strong {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: clamp(1.45rem, 3vw, 2.15rem);
+  letter-spacing: 0.12em;
+  overflow-wrap: anywhere;
+}
+
+.m365-device-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.m365-waiting {
+  align-items: center;
+  color: var(--accent);
+  display: flex;
+  gap: 0.5rem;
+}
+
+.m365-account-card {
+  align-items: center;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.m365-account-summary {
+  align-items: center;
+  display: flex;
+  gap: 0.85rem;
+  min-width: 0;
+}
+
+.m365-account-summary > div:last-child {
+  min-width: 0;
+}
+
+.m365-account-summary h3,
+.m365-account-summary p {
+  overflow-wrap: anywhere;
+}
+
+.m365-avatar {
+  align-items: center;
+  background: var(--primary);
+  border-radius: 50%;
+  color: var(--on-primary);
+  display: flex;
+  flex: 0 0 auto;
+  font-size: 1.35rem;
+  font-weight: 800;
+  height: 54px;
+  justify-content: center;
+  width: 54px;
+}
+
+.m365-connected-label {
+  align-items: center;
+  color: var(--success-text);
+  display: inline-flex;
+  font-size: 0.84rem;
+  font-weight: 800;
+  gap: 0.3rem;
+}
+
+.m365-capabilities {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.m365-capabilities article {
+  align-items: center;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  padding: 0.8rem;
+}
+
+.m365-capabilities article > svg {
+  color: var(--primary);
+}
+
+.m365-capabilities strong,
+.m365-capabilities span {
+  display: block;
+}
+
+.m365-capabilities span {
+  color: var(--accent);
+  font-size: 0.88rem;
+}
+
+.m365-capabilities small {
+  background: var(--soft);
+  border-radius: 999px;
+  color: var(--primary-dark);
+  font-weight: 800;
+  padding: 0.25rem 0.55rem;
+}
+
 .settings-task-panel,
 .settings-migration-panel,
 .settings-mail-panel,
@@ -3623,6 +3837,30 @@ td small {
   .password-reveal-heading {
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .m365-configuration-card,
+  .m365-hero,
+  .m365-account-card,
+  .m365-account-summary {
+    align-items: stretch;
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .m365-account-card .inline-actions,
+  .m365-connect-button,
+  .m365-device-actions button {
+    width: 100%;
+  }
+
+  .m365-capabilities article {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .m365-capabilities small {
+    grid-column: 2;
+    justify-self: start;
   }
 }
 

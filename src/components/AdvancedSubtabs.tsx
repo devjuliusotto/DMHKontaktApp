@@ -1,13 +1,14 @@
-import { Download, Upload } from "lucide-react";
+import { Cloud, Download, Upload } from "lucide-react";
 import type { Page } from "./Sidebar";
 
-const items: Array<{ page: "import" | "export"; label: string; icon: typeof Upload }> = [
+const items: Array<{ page: "import" | "export" | "m365"; label: string; icon: typeof Upload }> = [
   { page: "import", label: "Importieren", icon: Upload },
-  { page: "export", label: "Exportieren", icon: Download }
+  { page: "export", label: "Exportieren", icon: Download },
+  { page: "m365", label: "Microsoft 365", icon: Cloud }
 ];
 
 interface AdvancedSubtabsProps {
-  activePage: "import" | "export";
+  activePage: "import" | "export" | "m365";
   onNavigate: (page: Page) => void;
 }
 

@@ -71,6 +71,19 @@ jobs:
       - name: Farbschemas prüfen
         run: npm run theme:check
 
+      - name: Microsoft-365-Konfiguration validieren
+        shell: pwsh
+        env:
+          M365_CLIENT_ID: ${{ vars.M365_CLIENT_ID }}
+          M365_TENANT_ID: ${{ vars.M365_TENANT_ID }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:M365_CLIENT_ID)) {
+            throw "Repository variable M365_CLIENT_ID fehlt."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:M365_TENANT_ID)) {
+            throw "Repository variable M365_TENANT_ID fehlt."
+          }
+
       - name: Testversion nur im Build setzen
         run: node scripts/set-version.mjs "${{ inputs.version }}"
 
@@ -83,6 +96,8 @@ jobs:
       - name: Rust-Tests
         env:
           DMH_RELEASE_CHANNEL: admin-test
+          M365_CLIENT_ID: ${{ vars.M365_CLIENT_ID }}
+          M365_TENANT_ID: ${{ vars.M365_TENANT_ID }}
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib
 
       - name: Bisherigen rollenden Admin-Test entfernen
@@ -108,6 +123,8 @@ jobs:
           VITE_APP_CHANNEL: admin-test
           VITE_SOURCE_COMMIT: ${{ steps.source.outputs.sha }}
           DMH_RELEASE_CHANNEL: admin-test
+          M365_CLIENT_ID: ${{ vars.M365_CLIENT_ID }}
+          M365_TENANT_ID: ${{ vars.M365_TENANT_ID }}
         with:
           args: --config src-tauri/tauri.admin-test.conf.json
           tagName: admin-test

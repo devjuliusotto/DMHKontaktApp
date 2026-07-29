@@ -6,7 +6,7 @@ const items: Array<{ page: Page; label: string; icon: typeof Settings; activePag
   { page: "appearance", label: "Erscheinungsbild", icon: Palette },
   { page: "simple-import", label: "Einfach importieren", icon: Download },
   { page: "backup", label: "Sicherung", icon: ArchiveRestore },
-  { page: "import", label: "Advanced", icon: SlidersHorizontal, activePages: ["import", "export"] },
+  { page: "import", label: "Advanced", icon: SlidersHorizontal, activePages: ["import", "export", "m365"] },
   { page: "trash", label: "Papierkorb", icon: Trash2 }
 ];
 

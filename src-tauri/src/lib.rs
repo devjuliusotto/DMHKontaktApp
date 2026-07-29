@@ -12,6 +12,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
+mod m365;
 mod mail_accounts;
 mod thunderbird;
 mod vault;
@@ -68,6 +69,7 @@ struct AppState {
     db_path: Mutex<PathBuf>,
     vault: Mutex<vault::VaultRuntime>,
     outlook_contact_cache: Mutex<Option<CachedOutlookContacts>>,
+    m365: m365::Microsoft365Runtime,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1289,6 +1291,7 @@ fn load_backup_data(conn: &Connection) -> Result<BackupData, String> {
             .prepare(
                 "SELECT key, value FROM app_settings
                  WHERE key NOT LIKE 'migration_capture_%'
+                   AND key NOT LIKE 'm365_%'
                  ORDER BY key",
             )
             .map_err(|err| err.to_string())?;
@@ -1321,7 +1324,7 @@ fn get_backup_data(app: AppHandle) -> Result<BackupData, String> {
 }
 
 fn is_backup_safe_setting_key(key: &str) -> bool {
-    !key.starts_with("migration_capture_")
+    !key.starts_with("migration_capture_") && !key.starts_with("m365_")
 }
 
 fn restore_backup_settings(
@@ -1329,7 +1332,9 @@ fn restore_backup_settings(
     settings: Vec<AppSetting>,
 ) -> Result<(), String> {
     tx.execute(
-        "DELETE FROM app_settings WHERE key NOT LIKE 'migration_capture_%'",
+        "DELETE FROM app_settings
+         WHERE key NOT LIKE 'migration_capture_%'
+           AND key NOT LIKE 'm365_%'",
         [],
     )
     .map_err(|err| err.to_string())?;
@@ -1486,6 +1491,7 @@ fn reset_local_app_data(app: AppHandle) -> Result<(), String> {
     drop(conn);
 
     vault::clear_runtime(&app)?;
+    m365::clear_runtime(&app)?;
     {
         let state = app.state::<AppState>();
         let mut cache = state
@@ -3600,6 +3606,7 @@ pub fn run() {
             db_path: Mutex::new(PathBuf::new()),
             vault: Mutex::new(vault::VaultRuntime::default()),
             outlook_contact_cache: Mutex::new(None),
+            m365: m365::Microsoft365Runtime::default(),
         })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -3640,6 +3647,13 @@ pub fn run() {
             open_new_outlook_bulk_email,
             get_app_setting,
             set_app_setting,
+            m365::get_m365_connection_status,
+            m365::start_m365_connection,
+            m365::poll_m365_connection,
+            m365::cancel_m365_connection,
+            m365::open_m365_sign_in,
+            m365::test_m365_connection,
+            m365::disconnect_m365_account,
             import_outlook_store,
             preview_outlook_classic_contacts,
             import_selected_outlook_classic_contacts,
@@ -3801,7 +3815,9 @@ mod tests {
             );
             INSERT INTO app_settings VALUES
                 ('theme', 'old', 'before'),
-                ('migration_capture_v2_completed_at', 'keep-me', 'before');
+                ('migration_capture_v2_completed_at', 'keep-me', 'before'),
+                ('m365_token_bundle_v1', 'keep-token', 'before'),
+                ('m365_connection_profile_v1', 'keep-profile', 'before');
             ",
         )
         .expect("test settings");
@@ -3816,6 +3832,10 @@ mod tests {
                 },
                 AppSetting {
                     key: "migration_capture_v2_completed_at".to_string(),
+                    value: "must-not-be-restored".to_string(),
+                },
+                AppSetting {
+                    key: "m365_token_bundle_v1".to_string(),
                     value: "must-not-be-restored".to_string(),
                 },
             ],
@@ -3838,8 +3858,17 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("transfer state");
+        let m365_token: String = conn
+            .query_row(
+                "SELECT value FROM app_settings
+                 WHERE key = 'm365_token_bundle_v1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("Microsoft 365 token");
         assert_eq!(theme, "new");
         assert_eq!(transfer_state, "keep-me");
+        assert_eq!(m365_token, "keep-token");
     }
 
     #[test]

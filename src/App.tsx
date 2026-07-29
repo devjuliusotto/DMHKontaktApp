@@ -15,6 +15,7 @@ import { AppearancePage } from "./pages/AppearancePage";
 import { SimpleImportPage } from "./pages/SimpleImportPage";
 import { PasswordsPage } from "./pages/PasswordsPage";
 import { BackupPage } from "./pages/BackupPage";
+import { Microsoft365Page } from "./pages/Microsoft365Page";
 import { getVaultStatus } from "./services/db";
 import type { VaultStatus } from "./types/vault";
 
@@ -34,7 +35,7 @@ export default function App() {
   const [page, setPage] = useState<Page>("contacts");
   const [vaultStatus, setVaultStatus] = useState<VaultStatus | null>(null);
   const [startupError, setStartupError] = useState("");
-  const settingsAreaOpen = page === "settings" || page === "appearance" || page === "simple-import" || page === "import" || page === "export" || page === "trash" || page === "backup";
+  const settingsAreaOpen = page === "settings" || page === "appearance" || page === "simple-import" || page === "import" || page === "export" || page === "m365" || page === "trash" || page === "backup";
 
   const loadVaultStatus = () => {
     setStartupError("");
@@ -86,12 +87,13 @@ export default function App() {
         <Sidebar activePage={page} onNavigate={setPage} />
         <main className="content">
           {settingsAreaOpen && <SettingsSubtabs activePage={page} onNavigate={setPage} />}
-          {(page === "import" || page === "export") && <AdvancedSubtabs activePage={page} onNavigate={setPage} />}
+          {(page === "import" || page === "export" || page === "m365") && <AdvancedSubtabs activePage={page} onNavigate={setPage} />}
           {page === "contacts" && <ContactsPage />}
           {page === "calendar" && <CalendarPage />}
           {page === "passwords" && <PasswordsPage status={vaultStatus} onStatusChanged={setVaultStatus} />}
           {page === "import" && <ImportPage />}
           {page === "export" && <ExportPage />}
+          {page === "m365" && <Microsoft365Page />}
           {page === "trash" && <TrashPage />}
           {page === "settings" && <SettingsPage />}
           {page === "appearance" && <AppearancePage />}

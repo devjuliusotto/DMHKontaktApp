@@ -24,6 +24,11 @@ import type {
   VaultRecoveryDelivery,
   VaultStatus
 } from "../types/vault";
+import type {
+  Microsoft365ConnectionStatus,
+  Microsoft365DeviceCode,
+  Microsoft365PollResult
+} from "../types/m365";
 
 export function listContacts(search = "", groupId?: number): Promise<Contact[]> {
   return invoke("list_contacts", { search, groupId });
@@ -127,6 +132,34 @@ export function getAppSetting(key: string): Promise<string | null> {
 
 export function setAppSetting(key: string, value: string): Promise<void> {
   return invoke("set_app_setting", { key, value });
+}
+
+export function getMicrosoft365ConnectionStatus(): Promise<Microsoft365ConnectionStatus> {
+  return invoke("get_m365_connection_status");
+}
+
+export function startMicrosoft365Connection(): Promise<Microsoft365DeviceCode> {
+  return invoke("start_m365_connection");
+}
+
+export function pollMicrosoft365Connection(): Promise<Microsoft365PollResult> {
+  return invoke("poll_m365_connection");
+}
+
+export function cancelMicrosoft365Connection(): Promise<void> {
+  return invoke("cancel_m365_connection");
+}
+
+export function openMicrosoft365SignIn(): Promise<void> {
+  return invoke("open_m365_sign_in");
+}
+
+export function testMicrosoft365Connection(): Promise<Microsoft365ConnectionStatus> {
+  return invoke("test_m365_connection");
+}
+
+export function disconnectMicrosoft365Account(): Promise<void> {
+  return invoke("disconnect_m365_account");
 }
 
 export function importOutlookStore(path: string): Promise<{ contacts: ContactInput[]; events: CalendarEvent[] }> {
