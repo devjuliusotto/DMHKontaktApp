@@ -1,12 +1,31 @@
 :root {
-  color: #202124;
-  background: #f3f3f5;
   --primary: #aa074f;
   --primary-dark: #8a043f;
   --soft: #f4d6e0;
   --page: #f3f3f5;
+  --surface: #ffffff;
+  --surface-alt: #f7f7f8;
+  --text: #202124;
+  --muted: #5f6872;
   --accent: #3f6b6b;
   --border: #d8c1ca;
+  --info-surface: #e8f1fb;
+  --info-border: #8ebce7;
+  --info-text: #17324d;
+  --success-surface: #e7f5ed;
+  --success-border: #79b997;
+  --success-text: #176b45;
+  --warning-surface: #fff4d6;
+  --warning-border: #e1b64c;
+  --warning-text: #684700;
+  --danger-surface: #fde8e7;
+  --danger-border: #b3261e;
+  --danger-text: #8f1d18;
+  --selected-surface: #dcebfa;
+  --on-primary: #ffffff;
+  background: var(--page);
+  color: var(--text);
+  color-scheme: light;
   font-family: "Segoe UI", Arial, sans-serif;
   font-size: clamp(15px, calc(13px + 0.25vw), 17px);
 }
@@ -31,10 +50,10 @@ textarea {
 
 button {
   align-items: center;
-  background: #ffffff;
+  background: var(--surface);
   border: 2px solid var(--border);
   border-radius: 8px;
-  color: #202124;
+  color: var(--text);
   cursor: pointer;
   display: inline-flex;
   gap: 0.5rem;
@@ -79,8 +98,42 @@ button:disabled {
   min-height: 100vh;
 }
 
+.admin-test-banner {
+  align-items: center;
+  background: #8f1d18;
+  color: #ffffff;
+  display: flex;
+  font-size: 0.84rem;
+  font-weight: 900;
+  gap: 1rem;
+  justify-content: center;
+  letter-spacing: 0.04em;
+  min-height: 40px;
+  padding: 0.45rem 1rem;
+  position: sticky;
+  text-transform: uppercase;
+  top: 0;
+  z-index: 100;
+}
+
+.admin-test-banner span {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  font-family: Consolas, monospace;
+  font-size: 0.76rem;
+  padding: 0.18rem 0.5rem;
+}
+
+.admin-test-root .app-shell {
+  min-height: calc(100vh - 40px);
+}
+
+.admin-test-root .sidebar {
+  height: calc(100vh - 40px);
+}
+
 .sidebar {
-  background: #ffffff;
+  background: var(--surface);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -268,7 +321,7 @@ button:disabled {
 
 .search-field {
   align-items: center;
-  background: #ffffff;
+  background: var(--surface);
   border: 2px solid var(--border);
   border-radius: 8px;
   display: flex;
@@ -290,7 +343,7 @@ button:disabled {
 select,
 input,
 textarea {
-  background: #ffffff;
+  background: var(--surface);
   border: 2px solid var(--border);
   border-radius: 8px;
   min-height: 48px;
@@ -305,22 +358,25 @@ textarea {
 .status {
   border-radius: 8px;
   border: 2px solid var(--border);
-  background: #ffffff;
+  background: var(--surface);
+  color: var(--text);
   padding: 0.8rem 1rem;
 }
 
 .status.success {
-  background: #eef7f7;
-  border-color: var(--accent);
+  background: var(--success-surface);
+  border-color: var(--success-border);
+  color: var(--success-text);
 }
 
 .status.error {
-  background: #fff0f0;
-  border-color: #b3261e;
+  background: var(--danger-surface);
+  border-color: var(--danger-border);
+  color: var(--danger-text);
 }
 
 .update-notifier {
-  background: #ffffff;
+  background: var(--surface);
   border: 2px solid var(--primary);
   border-radius: 8px;
   bottom: 1.2rem;
@@ -371,7 +427,8 @@ textarea {
 
 .form-panel,
 .table-panel {
-  background: #ffffff;
+  background: var(--surface);
+  color: var(--text);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 1rem;
@@ -397,7 +454,7 @@ textarea {
 }
 
 .readme-page {
-  background: #ffffff;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
   line-height: 1.6;
@@ -448,11 +505,11 @@ textarea {
 }
 
 .invalid {
-  border-color: #b3261e;
+  border-color: var(--danger-border);
 }
 
 .field-error {
-  color: #9a1b15;
+  color: var(--danger-text);
   font-weight: 700;
 }
 
@@ -560,7 +617,7 @@ textarea {
 
 .import-confirm-panel {
   align-items: center;
-  background: #ffffff;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
   display: flex;
@@ -662,7 +719,7 @@ td input[type="checkbox"] {
 
 .contacts-tabs {
   align-items: center;
-  background: #ffffff;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
   display: inline-flex;
@@ -749,7 +806,7 @@ td input[type="checkbox"] {
 }
 
 .more-menu {
-  background: #ffffff;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 12px 28px rgba(138, 4, 63, 0.16);
@@ -814,7 +871,7 @@ td input[type="checkbox"] {
 
 .bulk-add-row {
   align-items: center;
-  background: #ffffff;
+  background: var(--surface);
   border: 0;
   border-bottom: 1px solid var(--border);
   border-radius: 0;
@@ -833,7 +890,7 @@ td input[type="checkbox"] {
 
 .bulk-add-row:hover,
 .bulk-add-row.selected {
-  background: #e8f1fb;
+  background: var(--selected-surface);
 }
 
 .bulk-add-row span:last-child {
@@ -911,7 +968,7 @@ td input[type="checkbox"] {
 
 .groups-panel,
 .trash-panel {
-  background: #ffffff;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 1rem;
@@ -1047,7 +1104,7 @@ td input[type="checkbox"] {
 }
 
 .trash-row.selected {
-  background: #dcebfa;
+  background: var(--selected-surface);
   margin-left: -0.5rem;
   margin-right: -0.5rem;
   padding-left: 0.5rem;
@@ -1199,7 +1256,7 @@ table {
 
 .calendar-toolbar {
   align-items: center;
-  background: #ffffff;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
   display: flex;
@@ -1280,14 +1337,14 @@ table {
 }
 
 .calendar-day {
-  background: #ffffff;
+  background: var(--surface);
   min-height: 112px;
   padding: 0.4rem;
 }
 
 .calendar-day.outside {
-  background: #f7f7f8;
-  color: #8a8a8a;
+  background: var(--surface-alt);
+  color: var(--muted);
 }
 
 .calendar-day.today,
@@ -1354,7 +1411,7 @@ table {
 }
 
 .calendar-week-column {
-  background: #ffffff;
+  background: var(--surface);
   min-width: 0;
 }
 
@@ -1444,10 +1501,10 @@ table {
 }
 
 .calendar-duplicate-safety {
-  background: #f0f7ff;
-  border: 1px solid #b8d8f5;
+  background: var(--info-surface);
+  border: 1px solid var(--info-border);
   border-radius: 8px;
-  color: #174c75;
+  color: var(--info-text);
   line-height: 1.55;
   padding: 0.85rem 1rem;
 }
@@ -1463,7 +1520,7 @@ table {
 }
 
 .calendar-duplicate-list li {
-  background: #fafbfc;
+  background: var(--surface-alt);
   border: 1px solid var(--border);
   border-radius: 7px;
   display: grid;
@@ -1483,8 +1540,8 @@ table {
 }
 
 .calendar-form-actions .danger-button {
-  border-color: #b3261e;
-  color: #9a1b15;
+  border-color: var(--danger-border);
+  color: var(--danger-text);
   margin-left: auto;
 }
 
@@ -1551,7 +1608,7 @@ table {
 
 .calendar-list-table tbody tr:hover td,
 .calendar-list-table tbody tr:focus td {
-  background: #e8f1fb;
+  background: var(--info-surface);
 }
 
 .calendar-list-table button {
@@ -1608,12 +1665,12 @@ table {
 }
 
 .contacts-table .contact-sort-button svg {
-  color: #7b8792;
+  color: var(--muted);
 }
 
 .contacts-table .contact-sort-button:hover,
 .contacts-table .contact-sort-button:focus-visible {
-  background: #edf3f8;
+  background: var(--info-surface);
   color: var(--primary-dark);
 }
 
@@ -1657,12 +1714,12 @@ table {
 
 .contact-drag-preview {
   align-items: center;
-  background: rgba(255, 255, 255, 0.96);
+  background: var(--surface);
   border: 1px solid #99c5ee;
   border-radius: 6px;
   box-shadow: 0 10px 24px rgba(14, 42, 71, 0.22);
   box-sizing: border-box;
-  color: #17324d;
+  color: var(--text);
   display: block;
   font-weight: 800;
   max-width: 260px;
@@ -1678,7 +1735,7 @@ table {
 }
 
 .contacts-table tbody tr:hover td {
-  background: #e8f1fb;
+  background: var(--info-surface);
 }
 
 .contacts-table tbody tr.selected td,
@@ -1689,16 +1746,16 @@ table {
 }
 
 .contacts-table tbody tr.multi-selected td {
-  background: #dcebfa;
+  background: var(--selected-surface);
   border-bottom-color: #b9d7f2;
-  color: #17324d;
+  color: var(--info-text);
 }
 
 .contacts-table tbody tr.multi-selected.selected td,
 .contacts-table tbody tr.multi-selected:focus td {
-  background: #cfe5f8;
+  background: var(--selected-surface);
   border-bottom-color: #99c5ee;
-  color: #17324d;
+  color: var(--info-text);
 }
 
 .contacts-table tbody tr.selected button,
@@ -1744,7 +1801,7 @@ table {
 .contacts-table .drag-handle {
   align-items: center;
   border-radius: 4px;
-  color: #5f6f7f;
+  color: var(--muted);
   cursor: grab;
   display: inline-flex;
   flex: 0 0 auto;
@@ -1770,7 +1827,7 @@ table {
 
 .contacts-table tbody tr.multi-selected .drag-handle,
 .contacts-table tbody tr.multi-selected:focus .drag-handle {
-  color: #5f6f7f;
+  color: var(--muted);
 }
 
 .contacts-table .contact-primary small {
@@ -1841,7 +1898,7 @@ table {
 
 .contacts-font-control {
   align-items: center;
-  background: rgba(255, 255, 255, 0.96);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 9px;
   bottom: 1rem;
@@ -2032,7 +2089,7 @@ td {
 
 th {
   background: var(--soft);
-  color: #1f2a37;
+  color: var(--text);
   position: relative;
   user-select: none;
 }
@@ -2077,7 +2134,7 @@ td small {
 
 .export-options {
   align-items: flex-start;
-  background: #ffffff;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
   justify-content: space-between;
@@ -2216,7 +2273,7 @@ td small {
 
 .export-confirm-panel {
   align-items: center;
-  background: #ffffff;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
   display: flex;
@@ -2229,7 +2286,7 @@ td small {
 .simple-card,
 .export-card {
   align-items: flex-start;
-  background: #ffffff;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
   display: flex;
@@ -2353,12 +2410,12 @@ td small {
 }
 
 .credential-available {
-  color: #176b45;
+  color: var(--success-text);
   font-weight: 800;
 }
 
 .credential-missing {
-  color: #b3261e;
+  color: var(--danger-text);
   font-weight: 800;
 }
 
@@ -2405,7 +2462,7 @@ td small {
 .settings-task-heading > svg,
 .settings-summary-icon {
   align-items: center;
-  background: #f7e7ee;
+  background: var(--soft);
   border-radius: 8px;
   color: var(--primary);
   display: inline-flex;
@@ -2444,8 +2501,8 @@ td small {
 
 .settings-action-button {
   align-items: center;
-  background: #ffffff;
-  border-color: #d7b5c4;
+  background: var(--surface);
+  border-color: var(--border);
   display: flex;
   gap: 0.7rem;
   justify-content: flex-start;
@@ -2551,8 +2608,8 @@ td small {
 
 .outlook-import-source-choice > button {
   align-items: center;
-  background: #fff;
-  border: 1px solid #d7b5c4;
+  background: var(--surface);
+  border: 1px solid var(--border);
   display: flex;
   gap: 0.85rem;
   justify-content: flex-start;
@@ -2562,7 +2619,7 @@ td small {
 }
 
 .outlook-import-source-choice > button:hover {
-  background: #fff8fb;
+  background: var(--soft);
   border-color: var(--primary);
 }
 
@@ -2608,15 +2665,15 @@ td small {
 }
 
 .outlook-import-progress {
-  background: linear-gradient(180deg, #fff 0%, #fff9fc 100%);
-  border: 1px solid #ead5df;
+  background: linear-gradient(180deg, var(--surface) 0%, var(--surface-alt) 100%);
+  border: 1px solid var(--border);
   border-radius: 12px;
   margin-top: 1rem;
 }
 
 .outlook-import-progress-icon {
   align-items: center;
-  background: #f8eaf1;
+  background: var(--soft);
   border-radius: 50%;
   display: flex;
   height: 72px;
@@ -2647,7 +2704,7 @@ td small {
 }
 
 .outlook-import-indeterminate {
-  background: #ead7e0;
+  background: var(--soft);
   border-radius: 999px;
   height: 7px;
   margin: 0.65rem 0 0.25rem;
@@ -2675,7 +2732,7 @@ td small {
 
 .outlook-import-elapsed {
   align-items: center;
-  color: var(--primary-dark) !important;
+  color: var(--primary);
   display: inline-flex;
   gap: 0.35rem;
 }
@@ -2699,10 +2756,10 @@ td small {
 
 .outlook-import-error {
   align-items: flex-start;
-  background: #fff1f0;
-  border: 1px solid #efb5b0;
+  background: var(--danger-surface);
+  border: 1px solid var(--danger-border);
   border-radius: 8px;
-  color: #8d211b;
+  color: var(--danger-text);
   display: flex;
   gap: 0.55rem;
   margin-top: 0.85rem;
@@ -2721,7 +2778,7 @@ td small {
 }
 
 .outlook-import-summary span {
-  background: #f6f8fa;
+  background: var(--surface-alt);
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--accent);
@@ -2772,7 +2829,7 @@ td small {
 
 .outlook-source-card {
   align-items: center;
-  background: #fff;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
   cursor: pointer;
@@ -2783,8 +2840,8 @@ td small {
 }
 
 .outlook-source-card.selected {
-  background: #fff8fb;
-  border-color: #ca7a9d;
+  background: var(--soft);
+  border-color: var(--primary);
 }
 
 .outlook-source-card > svg {
@@ -2857,7 +2914,7 @@ td small {
 
 .outlook-review-row {
   align-items: center;
-  background: #fff;
+  background: var(--surface);
   border-bottom: 1px solid var(--border);
   display: grid;
   gap: 0.6rem;
@@ -2871,23 +2928,23 @@ td small {
 }
 
 .outlook-review-row.status-different {
-  background: #fffaf1;
+  background: var(--warning-surface);
 }
 
 .outlook-review-row.status-duplicate_exact {
-  background: #f7f8f9;
+  background: var(--surface-alt);
 }
 
 .outlook-review-row.status-duplicate_exact .outlook-review-status {
-  background: #eceff2;
-  color: #5f6872;
+  background: var(--surface);
+  color: var(--muted);
 }
 
 .outlook-review-status {
   align-items: center;
-  background: #e7f5ed;
+  background: var(--success-surface);
   border-radius: 50%;
-  color: #176b45;
+  color: var(--success-text);
   display: inline-flex;
   height: 28px;
   justify-content: center;
@@ -2895,8 +2952,8 @@ td small {
 }
 
 .status-different .outlook-review-status {
-  background: #fff0cf;
-  color: #925d00;
+  background: var(--warning-surface);
+  color: var(--warning-text);
 }
 
 .outlook-review-person,
@@ -2915,7 +2972,7 @@ td small {
 }
 
 .outlook-review-person span {
-  color: #35495a;
+  color: var(--accent);
   font-size: 0.84rem;
 }
 
@@ -2935,14 +2992,14 @@ td small {
 
 .outlook-skip-label,
 .outlook-new-label {
-  color: #68737c;
+  color: var(--muted);
   font-size: 0.78rem;
   font-weight: 700;
   text-align: right;
 }
 
 .outlook-new-label {
-  color: #176b45;
+  color: var(--success-text);
 }
 
 .outlook-review-empty {
@@ -3054,11 +3111,11 @@ td small {
 }
 
 .settings-state.ready {
-  color: #176b45;
+  color: var(--success-text);
 }
 
 .settings-state.error {
-  color: #9a1b15;
+  color: var(--danger-text);
 }
 
 .settings-migration-button {
@@ -3066,9 +3123,9 @@ td small {
 }
 
 .settings-migration-button:disabled {
-  background: #e9dfe3;
-  border-color: #d9c9cf;
-  color: #76666c;
+  background: var(--surface-alt);
+  border-color: var(--border);
+  color: var(--muted);
 }
 
 .settings-mail-panel {
@@ -3168,8 +3225,8 @@ td small {
 }
 
 .settings-reset-panel .settings-task-heading > svg {
-  background: #fde8e7;
-  color: #9a1b15;
+  background: var(--danger-surface);
+  color: var(--danger-text);
 }
 
 .settings-reset-panel .danger-button {
@@ -3194,7 +3251,7 @@ td small {
 
 .settings-account-row {
   align-items: center;
-  background: #ffffff;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
   display: flex;
@@ -3242,10 +3299,10 @@ td small {
 }
 
 .password-reveal-warning {
-  background: #fff4d6;
-  border: 1px solid #e1b64c;
+  background: var(--warning-surface);
+  border: 1px solid var(--warning-border);
   border-radius: 8px;
-  color: #684700;
+  color: var(--warning-text);
   font-weight: 700;
   padding: 0.8rem;
 }
@@ -3257,7 +3314,7 @@ td small {
 }
 
 .password-reveal-field input {
-  background: #ffffff;
+  background: var(--surface);
   border: 2px solid var(--primary);
   font-family: Consolas, "Courier New", monospace;
   font-size: clamp(1.15rem, 3vw, 1.65rem);
@@ -3304,9 +3361,10 @@ td small {
 }
 
 .migration-capture-copy {
-  background: #f8f5f6;
+  background: var(--surface-alt);
   border: 1px solid var(--border);
   border-radius: 8px;
+  color: var(--text);
   display: grid;
   gap: 0.75rem;
   line-height: 1.55;
@@ -3314,10 +3372,10 @@ td small {
 }
 
 .migration-capture-question {
-  background: #e8f1fb;
-  border: 2px solid #8ebce7;
+  background: var(--info-surface);
+  border: 2px solid var(--info-border);
   border-radius: 8px;
-  color: #17324d;
+  color: var(--info-text);
   font-size: 1.12rem;
   font-weight: 800;
   line-height: 1.5;
@@ -3337,7 +3395,7 @@ td small {
 }
 
 .outlook-one-time-import-card {
-  background: #fffdfd;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
   display: grid;
@@ -3395,7 +3453,7 @@ td small {
 
 .migration-share-icon {
   align-items: center;
-  background: #e8f1fb;
+  background: var(--info-surface);
   border-radius: 999px;
   color: var(--primary);
   display: inline-flex;
@@ -3420,18 +3478,18 @@ td small {
 
 .migration-share-ready,
 .migration-share-completed {
-  color: #176b45;
+  color: var(--success-text);
 }
 
 .migration-share-unavailable {
-  color: #9a1b15;
+  color: var(--danger-text);
 }
 
 .migration-capture-error {
-  background: #fde8e7;
-  border: 1px solid #b3261e;
+  background: var(--danger-surface);
+  border: 1px solid var(--danger-border);
   border-radius: 8px;
-  color: #8f1d18;
+  color: var(--danger-text);
   font-weight: 700;
   padding: 0.8rem;
 }
@@ -3464,12 +3522,12 @@ td small {
 }
 
 .migration-capture-success svg {
-  color: #176b45;
+  color: var(--success-text);
 }
 
 .danger-button {
-  border-color: #b3261e;
-  color: #8f1d18;
+  border-color: var(--danger-border);
+  color: var(--danger-text);
 }
 
 .spin {
@@ -3601,8 +3659,8 @@ td small {
 
 .vault-protection-card {
   align-items: center;
-  background: #fff8f3;
-  border: 1px solid #d8b79d;
+  background: var(--warning-surface);
+  border: 1px solid var(--warning-border);
   border-radius: 10px;
   display: grid;
   gap: 0.8rem;
@@ -3611,8 +3669,8 @@ td small {
 }
 
 .vault-protection-card.enabled {
-  background: #eef7f3;
-  border-color: #9ccbb5;
+  background: var(--success-surface);
+  border-color: var(--success-border);
 }
 
 .vault-protection-card p,
@@ -3628,7 +3686,7 @@ td small {
 
 .vault-protection-icon {
   align-items: center;
-  background: #ffffff;
+  background: var(--surface);
   border-radius: 999px;
   color: var(--primary);
   display: inline-flex;
@@ -3638,7 +3696,7 @@ td small {
 }
 
 .vault-protection-card.enabled .vault-protection-icon {
-  color: #176b45;
+  color: var(--success-text);
 }
 
 .passwords-toolbar {
@@ -3685,7 +3743,7 @@ td small {
 
 .passwords-table tbody tr.password-row:hover td,
 .passwords-table tbody tr.password-row:focus td {
-  background: #fbf1f5;
+  background: var(--soft);
   outline: 0;
 }
 
@@ -3701,7 +3759,7 @@ td small {
 
 .password-table-value code,
 .vault-secret-line code {
-  background: #f5f0f2;
+  background: var(--surface-alt);
   border-radius: 6px;
   display: block;
   flex: 1 1 auto;
@@ -3719,7 +3777,7 @@ td small {
 }
 
 .muted-value {
-  color: #777;
+  color: var(--muted);
 }
 
 .passwords-empty {
@@ -3744,7 +3802,7 @@ td small {
 }
 
 .vault-drawer {
-  background: #ffffff;
+  background: var(--surface);
   border-left: 1px solid var(--border);
   bottom: 0;
   box-shadow: -16px 0 42px rgba(32, 33, 36, 0.2);
@@ -3813,7 +3871,7 @@ td small {
 }
 
 .vault-detail-field.description p {
-  background: #f7f4f5;
+  background: var(--surface-alt);
   border-radius: 8px;
   line-height: 1.5;
   min-height: 90px;
@@ -3880,9 +3938,9 @@ td small {
 
 .vault-security-note {
   align-items: center;
-  background: #eef7f3;
+  background: var(--success-surface);
   border-radius: 8px;
-  color: #176b45;
+  color: var(--success-text);
   display: flex;
   gap: 0.55rem;
   margin: 0;
@@ -3892,7 +3950,7 @@ td small {
 .app-lock-screen,
 .app-startup-screen {
   align-items: center;
-  background: radial-gradient(circle at top, #ffffff 0, #f3f3f5 60%);
+  background: radial-gradient(circle at top, var(--surface) 0, var(--page) 60%);
   display: flex;
   justify-content: center;
   min-height: 100vh;
@@ -3922,7 +3980,7 @@ td small {
 }
 
 .app-lock-card {
-  background: #ffffff;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 16px;
   box-shadow: 0 22px 60px rgba(62, 29, 43, 0.15);
@@ -3970,10 +4028,10 @@ td small {
 }
 
 .app-lock-card .app-lock-error {
-  background: #fff0f0;
-  border: 1px solid #b3261e;
+  background: var(--danger-surface);
+  border: 1px solid var(--danger-border);
   border-radius: 8px;
-  color: #8f1d18;
+  color: var(--danger-text);
   padding: 0.7rem;
   text-align: left;
 }
@@ -4045,14 +4103,6 @@ td small {
 }
 
 /* Erscheinungsbild: heller/dunkler Modus und Rosa/Grün */
-:root {
-  --surface: #ffffff;
-  --surface-alt: #f7f7f8;
-  --text: #202124;
-  --on-primary: #ffffff;
-  color-scheme: light;
-}
-
 :root[data-accent="green"] {
   --primary: #7fa552;
   --primary-dark: #5f7f3b;
@@ -4065,10 +4115,24 @@ td small {
   --page: #171a18;
   --surface: #222723;
   --surface-alt: #2b312c;
-  --text: #ffffff;
-  --accent: #ffffff;
+  --text: #f2f5f2;
+  --muted: #aeb8b0;
+  --accent: #c0c8c2;
   --border: #4b554d;
   --soft: #4a2636;
+  --info-surface: #203447;
+  --info-border: #6a9bc7;
+  --info-text: #d9ecff;
+  --success-surface: #203a2d;
+  --success-border: #62b98c;
+  --success-text: #d4f6e2;
+  --warning-surface: #44381f;
+  --warning-border: #d0a949;
+  --warning-text: #ffe4a3;
+  --danger-surface: #442422;
+  --danger-border: #e06b64;
+  --danger-text: #ffd7d4;
+  --selected-surface: #263e53;
   color: var(--text);
   color-scheme: dark;
 }
@@ -4089,60 +4153,12 @@ td small {
   color: var(--text);
 }
 
-/* No modo escuro, regras antigas de componentes não devem reduzir o contraste. */
-:root[data-color-mode="dark"] body *,
-:root[data-color-mode="dark"] body *::before,
-:root[data-color-mode="dark"] body *::after {
-  color: #ffffff !important;
-}
-
 :root[data-color-mode="dark"] input::placeholder,
 :root[data-color-mode="dark"] textarea::placeholder {
-  color: #ffffff !important;
+  color: var(--muted);
   opacity: 0.82;
 }
 
-:root[data-color-mode="dark"] button,
-:root[data-color-mode="dark"] input,
-:root[data-color-mode="dark"] select,
-:root[data-color-mode="dark"] textarea,
-:root[data-color-mode="dark"] .sidebar,
-:root[data-color-mode="dark"] .search-field,
-:root[data-color-mode="dark"] .status,
-:root[data-color-mode="dark"] .update-notifier,
-:root[data-color-mode="dark"] .form-panel,
-:root[data-color-mode="dark"] .table-panel,
-:root[data-color-mode="dark"] .readme-page,
-:root[data-color-mode="dark"] .import-confirm-panel,
-:root[data-color-mode="dark"] .contacts-tabs,
-:root[data-color-mode="dark"] .more-menu,
-:root[data-color-mode="dark"] .bulk-add-row,
-:root[data-color-mode="dark"] .groups-panel,
-:root[data-color-mode="dark"] .trash-panel,
-:root[data-color-mode="dark"] .calendar-toolbar,
-:root[data-color-mode="dark"] .calendar-day,
-:root[data-color-mode="dark"] .calendar-week-column,
-:root[data-color-mode="dark"] .export-options,
-:root[data-color-mode="dark"] .export-confirm-panel,
-:root[data-color-mode="dark"] .simple-card,
-:root[data-color-mode="dark"] .export-card,
-:root[data-color-mode="dark"] .settings-action-button,
-:root[data-color-mode="dark"] .outlook-import-source-choice > button,
-:root[data-color-mode="dark"] .outlook-source-card,
-:root[data-color-mode="dark"] .outlook-review-row,
-:root[data-color-mode="dark"] .settings-account-row,
-:root[data-color-mode="dark"] .password-reveal-field input,
-:root[data-color-mode="dark"] .vault-protection-icon,
-:root[data-color-mode="dark"] .vault-drawer,
-:root[data-color-mode="dark"] .app-lock-card {
-  background: var(--surface);
-}
-
-:root[data-color-mode="dark"] .calendar-day.outside,
-:root[data-color-mode="dark"] .vault-protection-card,
-:root[data-color-mode="dark"] .password-table-value code,
-:root[data-color-mode="dark"] .vault-secret-line code,
-:root[data-color-mode="dark"] .vault-detail-field.description p,
 :root[data-color-mode="dark"] .outlook-import-section,
 :root[data-color-mode="dark"] .outlook-import-review,
 :root[data-color-mode="dark"] .settings-found-accounts,

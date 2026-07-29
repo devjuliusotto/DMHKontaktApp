@@ -1,0 +1,9 @@
+Próximos passos:
+Commitar e enviar estas alterações ao GitHub.
+Criar o branch staging.
+Criar os GitHub Environments admin-test e production.
+Configurar você como aprovador obrigatório de production, se disponível no plano do repositório.
+Executar o workflow Admin Test com 0.1.0-beta.1.
+Instalar o Admin Test e importar uma Sicherung dos seus dados reais.
+Depois dos testes, executar a release oficial 0.1.0.
+Localmente, você já pode abrir a instalação isolada com:

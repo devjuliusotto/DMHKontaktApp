@@ -3,6 +3,17 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      try {
+        const colorMode = localStorage.getItem("agendakontakte.theme.colorMode");
+        const accent = localStorage.getItem("agendakontakte.theme.accent");
+        document.documentElement.dataset.colorMode = colorMode === "dark" ? "dark" : "light";
+        document.documentElement.dataset.accent = accent === "green" ? "green" : "pink";
+      } catch {
+        document.documentElement.dataset.colorMode = "light";
+        document.documentElement.dataset.accent = "pink";
+      }
+    </script>
     <title>DMH Kontakte und Kalender</title>
   </head>
   <body>

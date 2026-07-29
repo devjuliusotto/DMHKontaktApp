@@ -1,0 +1,55 @@
+name: Code prüfen
+
+on:
+  push:
+    branches:
+      - main
+      - staging
+  pull_request:
+    branches:
+      - main
+      - staging
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: i686-pc-windows-msvc
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Abhängigkeiten installieren
+        run: npm ci
+
+      - name: Versionsnummern prüfen
+        run: npm run version:check
+
+      - name: Farbschemas prüfen
+        run: npm run theme:check
+
+      - name: Frontend bauen
+        run: npm run build
+
+      - name: Rust formatieren prüfen
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+
+      - name: Rust-Tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib

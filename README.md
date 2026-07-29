@@ -43,6 +43,15 @@ rustup target add i686-pc-windows-msvc
 npm run tauri:dev
 ```
 
+Für eine vollständig getrennte lokale Admin-Test-Instanz:
+
+```powershell
+npm run tauri:dev:admin-test
+```
+
+Der vollständige Ablauf für Testkanal, Freigabe, Versionsnummern und GitHub Actions ist in
+[`docs/release-channels.md`](docs/release-channels.md) beschrieben.
+
 ## Windows-Installer erstellen
 
 ```powershell

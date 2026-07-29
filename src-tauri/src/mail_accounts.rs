@@ -36,6 +36,20 @@ const MIGRATION_DIAGNOSTIC_DIRECTORY: &str = "diagnostics";
 const MIGRATION_DIAGNOSTIC_FILE: &str = "edv-transfer.log";
 const MIGRATION_DIAGNOSTIC_PREVIOUS_FILE: &str = "edv-transfer.previous.log";
 const MIGRATION_DIAGNOSTIC_MAX_BYTES: u64 = 256 * 1024;
+const STABLE_CREDENTIAL_NAMESPACE: &str = "AgendaKontakte";
+const ADMIN_TEST_CREDENTIAL_NAMESPACE: &str = "AgendaKontakte-AdminTest";
+
+fn credential_namespace() -> &'static str {
+    if option_env!("DMH_RELEASE_CHANNEL") == Some("admin-test") {
+        ADMIN_TEST_CREDENTIAL_NAMESPACE
+    } else {
+        STABLE_CREDENTIAL_NAMESPACE
+    }
+}
+
+fn credential_reference_belongs_to_current_channel(reference: &str) -> bool {
+    reference.starts_with(&format!("{}/imap/", credential_namespace()))
+}
 
 fn migration_diagnostic_paths(app: &AppHandle) -> Result<(PathBuf, PathBuf), String> {
     let directory = app
@@ -662,8 +676,9 @@ pub fn import_outlook_account(
 
     let profile = current_outlook_profile_name()?;
     let normalized_id = source_account_id.to_ascii_uppercase();
-    let incoming_reference = format!("AgendaKontakte/imap/{normalized_id}/incoming");
-    let outgoing_reference = format!("AgendaKontakte/imap/{normalized_id}/outgoing");
+    let namespace = credential_namespace();
+    let incoming_reference = format!("{namespace}/imap/{normalized_id}/incoming");
+    let outgoing_reference = format!("{namespace}/imap/{normalized_id}/outgoing");
     let existed_before = open_db(&app)?
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM mail_accounts WHERE source_account_id = ?1)",
@@ -1208,11 +1223,15 @@ pub fn remove_mail_account(app: AppHandle, account_id: i64) -> Result<(), String
     let conn = open_db(&app)?;
     let account = get_mail_account(&conn, account_id)?
         .ok_or_else(|| "Gespeichertes E-Mail-Konto wurde nicht gefunden.".to_string())?;
-    let mut arguments = vec!["delete".to_string(), account.credential_reference];
-    if let Some(reference) = account.outgoing_credential_reference {
-        arguments.push(reference);
+    let references = std::iter::once(account.credential_reference)
+        .chain(account.outgoing_credential_reference)
+        .filter(|reference| credential_reference_belongs_to_current_channel(reference))
+        .collect::<Vec<_>>();
+    if !references.is_empty() {
+        let mut arguments = vec!["delete".to_string()];
+        arguments.extend(references);
+        let _: serde_json::Value = run_helper(&app, &arguments)?;
     }
-    let _: serde_json::Value = run_helper(&app, &arguments)?;
     conn.execute("DELETE FROM mail_accounts WHERE id = ?1", [account_id])
         .map_err(|error| error.to_string())?;
     Ok(())
@@ -1236,7 +1255,7 @@ pub(crate) fn remove_all_mail_credentials(app: &AppHandle) -> Result<usize, Stri
     let references = rows
         .into_iter()
         .flat_map(|(incoming, outgoing)| std::iter::once(incoming).chain(outgoing))
-        .filter(|reference| !reference.trim().is_empty())
+        .filter(|reference| credential_reference_belongs_to_current_channel(reference))
         .collect::<HashSet<_>>();
     if references.is_empty() {
         return Ok(0);
@@ -1258,6 +1277,21 @@ mod tests {
         assert!(!sanitized.contains('\r'));
         assert!(!sanitized.contains('\n'));
         assert_eq!(sanitized.chars().count(), 160);
+    }
+
+    #[test]
+    fn credential_references_are_scoped_to_the_active_release_channel() {
+        let expected = format!("{}/imap/ABC/incoming", credential_namespace());
+        let other = if credential_namespace() == STABLE_CREDENTIAL_NAMESPACE {
+            format!("{ADMIN_TEST_CREDENTIAL_NAMESPACE}/imap/ABC/incoming")
+        } else {
+            format!("{STABLE_CREDENTIAL_NAMESPACE}/imap/ABC/incoming")
+        };
+        assert!(credential_reference_belongs_to_current_channel(&expected));
+        assert!(!credential_reference_belongs_to_current_channel(&other));
+        assert!(!credential_reference_belongs_to_current_channel(
+            "unrelated/credential"
+        ));
     }
 
     #[test]

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "windows": [
+      {
+        "height": 780,
+        "minHeight": 600,
+        "minWidth": 760,
+        "title": "DMH Kontakte und Kalender [ADMIN TEST]",
+        "width": 1180
+      }
+    ]
+  },
+  "bundle": {
+    "longDescription": "Isolierter Testkanal für DMH Kontakte und Kalender.",
+    "shortDescription": "Admin-Testversion der lokalen Kontakt- und Kalenderverwaltung"
+  },
+  "identifier": "de.dmh.agendakontakte.admin-test",
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/devjuliusotto/DMHKontaktApp/releases/download/admin-test/latest.json"
+      ]
+    }
+  },
+  "productName": "DMH Kontakte und Kalender Admin Test"
+}

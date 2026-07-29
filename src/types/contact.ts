@@ -121,4 +121,5 @@ export interface BackupData {
   contacts: Contact[];
   groups: Group[];
   settings: Array<{ key: string; value: string }>;
+  browserStorage?: Record<string, string>;
 }

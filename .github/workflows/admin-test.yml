@@ -1,0 +1,122 @@
+name: Admin-Test-Version veröffentlichen
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Zu testender Branch oder Commit"
+        required: true
+        default: "staging"
+        type: string
+      version:
+        description: "Testversion, zum Beispiel 0.1.1-beta.1"
+        required: true
+        default: "0.1.1-beta.1"
+        type: string
+
+concurrency:
+  group: release-admin-test
+  cancel-in-progress: false
+
+jobs:
+  release-admin-test:
+    name: Rollenden Admin-Test aktualisieren
+    environment: admin-test
+    permissions:
+      contents: write
+    runs-on: windows-latest
+
+    steps:
+      - name: Testversion validieren
+        shell: pwsh
+        run: |
+          if ("${{ inputs.version }}" -notmatch '^\d+\.\d+\.\d+-(beta|rc)\.\d+$') {
+            throw "Admin-Test-Version muss zum Beispiel 0.1.1-beta.1 oder 0.1.1-rc.1 heißen."
+          }
+
+      - name: Gewählten Quellstand auschecken
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.source_ref }}
+
+      - name: Quellstand erfassen
+        id: source
+        shell: pwsh
+        run: |
+          "sha=$(git rev-parse HEAD)" >> $env:GITHUB_OUTPUT
+
+      - name: Node.js installieren
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Rust stable installieren
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: i686-pc-windows-msvc
+
+      - name: Rust-Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Abhängigkeiten installieren
+        run: npm ci
+
+      - name: Quellversionen prüfen
+        run: node scripts/check-version.mjs
+
+      - name: Farbschemas prüfen
+        run: npm run theme:check
+
+      - name: Testversion nur im Build setzen
+        run: node scripts/set-version.mjs "${{ inputs.version }}"
+
+      - name: Frontend bauen
+        env:
+          VITE_APP_CHANNEL: admin-test
+          VITE_SOURCE_COMMIT: ${{ steps.source.outputs.sha }}
+        run: npm run build
+
+      - name: Rust-Tests
+        env:
+          DMH_RELEASE_CHANNEL: admin-test
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+
+      - name: Bisherigen rollenden Admin-Test entfernen
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view admin-test *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release delete admin-test --yes --cleanup-tag
+            if ($LASTEXITCODE -ne 0) {
+              throw "Vorherige Admin-Test-Release konnte nicht ersetzt werden."
+            }
+          }
+          exit 0
+
+      - name: Isolierte Tauri-Testversion bauen und veröffentlichen
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VITE_APP_CHANNEL: admin-test
+          VITE_SOURCE_COMMIT: ${{ steps.source.outputs.sha }}
+          DMH_RELEASE_CHANNEL: admin-test
+        with:
+          args: --config src-tauri/tauri.admin-test.conf.json
+          tagName: admin-test
+          releaseName: DMH Admin Test ${{ inputs.version }}
+          releaseBody: |
+            Rollende, nicht öffentliche Testversion für die Administration.
+            Testversion: ${{ inputs.version }}
+            Quellstand: ${{ steps.source.outputs.sha }}
+            Der EDV-Produktionsendpunkt ist in diesem Build absichtlich deaktiviert.
+          releaseDraft: false
+          prerelease: true
+          updaterJsonPreferNsis: true

@@ -1,69 +1,151 @@
-name: Release Windows App
+name: Offizielle Windows-Version veröffentlichen
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version, for example 0.0.2"
+        description: "Offizielle SemVer-Version, zum Beispiel 0.1.0"
         required: true
-  push:
-    tags:
-      - "v*"
-      - "app-v*"
+        default: "0.1.0"
+        type: string
+
+concurrency:
+  group: release-stable
+  cancel-in-progress: false
 
 jobs:
-  release-windows:
-    permissions:
-      contents: write
-
+  verify:
+    name: Getesteten Stand verifizieren
     runs-on: windows-latest
+    permissions:
+      contents: read
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Nur main darf offiziell veröffentlichen
+        shell: pwsh
+        run: |
+          if ("${{ github.ref }}" -ne "refs/heads/main") {
+            throw "Offizielle Releases müssen über den Workflow auf dem Branch main gestartet werden."
+          }
+          if ("${{ inputs.version }}" -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Offizielle Version muss das Format 0.1.0 ohne beta/rc-Zusatz haben."
+          }
 
-      - name: Setup Node.js
+      - name: Quellcode auschecken
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Admin-Test-Stand vergleichen
+        shell: pwsh
+        run: |
+          git fetch origin refs/tags/admin-test:refs/tags/admin-test --force
+          if ($LASTEXITCODE -ne 0) {
+            throw "Es gibt noch keine veröffentlichte Admin-Test-Version."
+          }
+          $adminTree = git rev-parse "admin-test^{tree}"
+          $stableTree = git rev-parse "HEAD^{tree}"
+          if ($adminTree -ne $stableTree) {
+            throw "Der Inhalt auf main entspricht nicht exakt der zuletzt getesteten Admin-Test-Version."
+          }
+
+      - name: Node.js installieren
         uses: actions/setup-node@v4
         with:
           node-version: lts/*
           cache: npm
 
-      - name: Install Rust stable
+      - name: Rust stable installieren
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: i686-pc-windows-msvc
 
-      - name: Rust cache
+      - name: Rust-Cache
         uses: swatinem/rust-cache@v2
         with:
           workspaces: "./src-tauri -> target"
 
-      - name: Install frontend dependencies
+      - name: Abhängigkeiten installieren
         run: npm ci
 
-      - name: Validate encrypted migration endpoint
+      - name: Versionsnummern prüfen
+        run: node scripts/check-version.mjs "${{ inputs.version }}"
+
+      - name: Farbschemas prüfen
+        run: npm run theme:check
+
+      - name: Frontend bauen
+        run: npm run build
+
+      - name: Rust-Tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+
+  release-windows:
+    name: Produktion freigeben
+    needs: verify
+    environment: production
+    permissions:
+      contents: write
+    runs-on: windows-latest
+
+    steps:
+      - name: Verifizierten Quellcode auschecken
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Node.js installieren
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Rust stable installieren
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: i686-pc-windows-msvc
+
+      - name: Rust-Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Abhängigkeiten installieren
+        run: npm ci
+
+      - name: Versionsnummer erneut prüfen
+        run: node scripts/check-version.mjs "${{ inputs.version }}"
+
+      - name: EDV-Endpunkt validieren
         shell: pwsh
         env:
           MIGRATION_CAPTURE_URL: ${{ secrets.MIGRATION_CAPTURE_URL }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:MIGRATION_CAPTURE_URL)) {
-            throw "Repository secret MIGRATION_CAPTURE_URL is missing. Refusing to publish an app that hides/disables the EDV transfer."
+            throw "Repository secret MIGRATION_CAPTURE_URL fehlt."
           }
           if (-not $env:MIGRATION_CAPTURE_URL.StartsWith("https://", [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw "MIGRATION_CAPTURE_URL must be an HTTPS URL."
+            throw "MIGRATION_CAPTURE_URL muss eine HTTPS-URL sein."
           }
 
-      - name: Build and publish Tauri app
+      - name: Offizielle Tauri-Version bauen und veröffentlichen
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           MIGRATION_CAPTURE_URL: ${{ secrets.MIGRATION_CAPTURE_URL }}
+          VITE_APP_CHANNEL: stable
+          VITE_SOURCE_COMMIT: ${{ github.sha }}
+          DMH_RELEASE_CHANNEL: stable
         with:
-          tagName: ${{ github.event_name == 'workflow_dispatch' && format('app-v{0}', inputs.version) || github.ref_name }}
-          releaseName: ${{ github.event_name == 'workflow_dispatch' && format('DMH Kontakte und Kalender v{0}', inputs.version) || format('DMH Kontakte und Kalender {0}', github.ref_name) }}
-          releaseBody: "Windows-Installer für DMH Kontakte und Kalender."
+          tagName: v${{ inputs.version }}
+          releaseName: DMH Kontakte und Kalender v${{ inputs.version }}
+          releaseBody: |
+            Offizielle stabile Windows-Version für die Anwenderinnen.
+            Quellstand: ${{ github.sha }}
           releaseDraft: false
           prerelease: false
           updaterJsonPreferNsis: true

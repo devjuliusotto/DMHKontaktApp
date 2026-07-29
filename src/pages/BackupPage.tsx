@@ -5,6 +5,7 @@ import { useState } from "react";
 import { StatusMessage } from "../components/StatusMessage";
 import { t } from "../i18n";
 import { getBackupData, restoreBackup } from "../services/db";
+import { addBrowserDataToBackup, restoreBrowserDataFromBackup } from "../utils/backup";
 import { exportBackupJson } from "../utils/exporters";
 
 export function BackupPage() {
@@ -16,7 +17,7 @@ export function BackupPage() {
       filters: [{ name: "JSON", extensions: ["json"] }]
     });
     if (!path) return;
-    await writeTextFile(path, exportBackupJson(await getBackupData()));
+    await writeTextFile(path, exportBackupJson(addBrowserDataToBackup(await getBackupData())));
     setMessage("Sicherung wurde erstellt.");
   };
 
@@ -26,7 +27,9 @@ export function BackupPage() {
     if (!window.confirm("Die aktuellen Daten werden durch die Sicherung ersetzt. Fortfahren?")) return;
     const backup = JSON.parse(await readTextFile(path));
     await restoreBackup(backup);
-    setMessage("Sicherung wurde wiederhergestellt.");
+    restoreBrowserDataFromBackup(backup);
+    setMessage("Sicherung wurde wiederhergestellt. Die App wird neu geladen.");
+    window.setTimeout(() => window.location.reload(), 500);
   };
 
   return (
@@ -34,7 +37,10 @@ export function BackupPage() {
       <header className="page-header">
         <div>
           <h2>{t.backup}</h2>
-          <p>Erstellen oder laden Sie eine vollständige lokale Sicherung.</p>
+          <p>
+            Kontakte, Gruppen, Kalender und Darstellung sichern oder wiederherstellen.
+            Kennwörter und EDV-Übertragungsstatus werden nicht exportiert.
+          </p>
         </div>
       </header>
       <StatusMessage message={message} />

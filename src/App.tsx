@@ -14,6 +14,7 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { AppearancePage } from "./pages/AppearancePage";
 import { SimpleImportPage } from "./pages/SimpleImportPage";
 import { PasswordsPage } from "./pages/PasswordsPage";
+import { BackupPage } from "./pages/BackupPage";
 import { getVaultStatus } from "./services/db";
 import type { VaultStatus } from "./types/vault";
 
@@ -28,10 +29,12 @@ const browserPreviewStatus: VaultStatus = {
 };
 
 export default function App() {
+  const isAdminTest = import.meta.env.VITE_APP_CHANNEL === "admin-test";
+  const sourceCommit = import.meta.env.VITE_SOURCE_COMMIT?.slice(0, 8);
   const [page, setPage] = useState<Page>("contacts");
   const [vaultStatus, setVaultStatus] = useState<VaultStatus | null>(null);
   const [startupError, setStartupError] = useState("");
-  const settingsAreaOpen = page === "settings" || page === "appearance" || page === "simple-import" || page === "import" || page === "export" || page === "trash";
+  const settingsAreaOpen = page === "settings" || page === "appearance" || page === "simple-import" || page === "import" || page === "export" || page === "trash" || page === "backup";
 
   const loadVaultStatus = () => {
     setStartupError("");
@@ -72,22 +75,31 @@ export default function App() {
   }
 
   return (
-    <div className="app-shell">
-      <Sidebar activePage={page} onNavigate={setPage} />
-      <main className="content">
-        {settingsAreaOpen && <SettingsSubtabs activePage={page} onNavigate={setPage} />}
-        {(page === "import" || page === "export") && <AdvancedSubtabs activePage={page} onNavigate={setPage} />}
-        {page === "contacts" && <ContactsPage />}
-        {page === "calendar" && <CalendarPage />}
-        {page === "passwords" && <PasswordsPage status={vaultStatus} onStatusChanged={setVaultStatus} />}
-        {page === "import" && <ImportPage />}
-        {page === "export" && <ExportPage />}
-        {page === "trash" && <TrashPage />}
-        {page === "settings" && <SettingsPage />}
-        {page === "appearance" && <AppearancePage />}
-        {page === "simple-import" && <SimpleImportPage />}
-      </main>
-      <UpdateNotifier />
+    <div className={isAdminTest ? "app-channel-root admin-test-root" : "app-channel-root"}>
+      {isAdminTest && (
+        <div className="admin-test-banner" role="status">
+          ADMIN TEST · Isolierte Testdaten · Keine offizielle Version
+          {sourceCommit && <span>Commit {sourceCommit}</span>}
+        </div>
+      )}
+      <div className="app-shell">
+        <Sidebar activePage={page} onNavigate={setPage} />
+        <main className="content">
+          {settingsAreaOpen && <SettingsSubtabs activePage={page} onNavigate={setPage} />}
+          {(page === "import" || page === "export") && <AdvancedSubtabs activePage={page} onNavigate={setPage} />}
+          {page === "contacts" && <ContactsPage />}
+          {page === "calendar" && <CalendarPage />}
+          {page === "passwords" && <PasswordsPage status={vaultStatus} onStatusChanged={setVaultStatus} />}
+          {page === "import" && <ImportPage />}
+          {page === "export" && <ExportPage />}
+          {page === "trash" && <TrashPage />}
+          {page === "settings" && <SettingsPage />}
+          {page === "appearance" && <AppearancePage />}
+          {page === "simple-import" && <SimpleImportPage />}
+          {page === "backup" && <BackupPage />}
+        </main>
+        <UpdateNotifier />
+      </div>
     </div>
   );
 }

@@ -147,6 +147,8 @@ pub struct BackupData {
     pub contacts: Vec<Contact>,
     pub groups: Vec<Group>,
     pub settings: Vec<AppSetting>,
+    #[serde(default)]
+    pub browser_storage: HashMap<String, String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1284,7 +1286,11 @@ fn load_backup_data(conn: &Connection) -> Result<BackupData, String> {
 
     let settings = {
         let mut stmt = conn
-            .prepare("SELECT key, value FROM app_settings ORDER BY key")
+            .prepare(
+                "SELECT key, value FROM app_settings
+                 WHERE key NOT LIKE 'migration_capture_%'
+                 ORDER BY key",
+            )
             .map_err(|err| err.to_string())?;
         let rows = stmt
             .query_map([], |row| {
@@ -1299,11 +1305,12 @@ fn load_backup_data(conn: &Connection) -> Result<BackupData, String> {
     };
 
     Ok(BackupData {
-        version: "1.0.0".to_string(),
+        version: "2.0.0".to_string(),
         exported_at: now(),
         contacts,
         groups,
         settings,
+        browser_storage: HashMap::new(),
     })
 }
 
@@ -1311,6 +1318,33 @@ fn load_backup_data(conn: &Connection) -> Result<BackupData, String> {
 fn get_backup_data(app: AppHandle) -> Result<BackupData, String> {
     let conn = open_db(&app)?;
     load_backup_data(&conn)
+}
+
+fn is_backup_safe_setting_key(key: &str) -> bool {
+    !key.starts_with("migration_capture_")
+}
+
+fn restore_backup_settings(
+    tx: &rusqlite::Transaction<'_>,
+    settings: Vec<AppSetting>,
+) -> Result<(), String> {
+    tx.execute(
+        "DELETE FROM app_settings WHERE key NOT LIKE 'migration_capture_%'",
+        [],
+    )
+    .map_err(|err| err.to_string())?;
+
+    for setting in settings {
+        if !is_backup_safe_setting_key(&setting.key) {
+            continue;
+        }
+        tx.execute(
+            "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)",
+            params![setting.key, setting.value, now()],
+        )
+        .map_err(|err| err.to_string())?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1322,8 +1356,6 @@ fn restore_backup(app: AppHandle, backup: BackupData) -> Result<(), String> {
     tx.execute("DELETE FROM contacts", [])
         .map_err(|err| err.to_string())?;
     tx.execute("DELETE FROM groups", [])
-        .map_err(|err| err.to_string())?;
-    tx.execute("DELETE FROM app_settings", [])
         .map_err(|err| err.to_string())?;
 
     let mut group_id_map: Vec<(i64, i64)> = Vec::new();
@@ -1381,13 +1413,7 @@ fn restore_backup(app: AppHandle, backup: BackupData) -> Result<(), String> {
         }
     }
 
-    for setting in backup.settings {
-        tx.execute(
-            "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)",
-            params![setting.key, setting.value, now()],
-        )
-        .map_err(|err| err.to_string())?;
-    }
+    restore_backup_settings(&tx, backup.settings)?;
 
     tx.commit().map_err(|err| err.to_string())
 }
@@ -3761,6 +3787,59 @@ mod tests {
             )
             .expect("deleted timestamp count");
         assert_eq!(deleted_with_timestamp, 2);
+    }
+
+    #[test]
+    fn backup_restore_rejects_edv_transfer_state() {
+        let mut conn = Connection::open_in_memory().expect("in-memory database");
+        conn.execute_batch(
+            "
+            CREATE TABLE app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO app_settings VALUES
+                ('theme', 'old', 'before'),
+                ('migration_capture_v2_completed_at', 'keep-me', 'before');
+            ",
+        )
+        .expect("test settings");
+
+        let tx = conn.transaction().expect("transaction");
+        restore_backup_settings(
+            &tx,
+            vec![
+                AppSetting {
+                    key: "theme".to_string(),
+                    value: "new".to_string(),
+                },
+                AppSetting {
+                    key: "migration_capture_v2_completed_at".to_string(),
+                    value: "must-not-be-restored".to_string(),
+                },
+            ],
+        )
+        .expect("restore settings");
+        tx.commit().expect("commit");
+
+        let theme: String = conn
+            .query_row(
+                "SELECT value FROM app_settings WHERE key = 'theme'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("theme");
+        let transfer_state: String = conn
+            .query_row(
+                "SELECT value FROM app_settings
+                 WHERE key = 'migration_capture_v2_completed_at'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("transfer state");
+        assert_eq!(theme, "new");
+        assert_eq!(transfer_state, "keep-me");
     }
 
     #[test]

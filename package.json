@@ -31,9 +31,14 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:build": "set CARGO_TARGET_DIR=%TEMP%\\agendakontakte-cargo-target&& tauri build",
+    "tauri:build:admin-test": "set CARGO_TARGET_DIR=%TEMP%\\agendakontakte-admin-test-cargo-target&& set VITE_APP_CHANNEL=admin-test&& set VITE_SOURCE_COMMIT=local&& set DMH_RELEASE_CHANNEL=admin-test&& tauri build --config src-tauri/tauri.admin-test.conf.json",
     "tauri:dev": "set CARGO_TARGET_DIR=%TEMP%\\agendakontakte-cargo-target&& tauri dev",
-    "tauri:open": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/open-tauri-dev.ps1"
+    "tauri:dev:admin-test": "set CARGO_TARGET_DIR=%TEMP%\\agendakontakte-admin-test-cargo-target&& set VITE_APP_CHANNEL=admin-test&& set VITE_SOURCE_COMMIT=local&& set DMH_RELEASE_CHANNEL=admin-test&& tauri dev --config src-tauri/tauri.admin-test.conf.json",
+    "tauri:open": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/open-tauri-dev.ps1",
+    "theme:check": "node scripts/check-theme-css.mjs",
+    "version:check": "node scripts/check-version.mjs",
+    "version:set": "node scripts/set-version.mjs"
   },
   "type": "module",
-  "version": "0.0.21"
+  "version": "0.1.0"
 }
