@@ -24,9 +24,11 @@ Os dois canais usam pastas de dados, banco SQLite, WebView e namespace de creden
    - `admin-test`, sem aprovação obrigatória;
    - `production`, com o administrador como *required reviewer* e sem autoaprovação, se o plano do repositório disponibilizar essa proteção.
 4. Confirmar em **Settings > Secrets and variables > Actions**:
-   - `TAURI_SIGNING_PRIVATE_KEY`;
-   - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`;
-   - `MIGRATION_CAPTURE_URL`.
+   - em **Variables**: `M365_CLIENT_ID` e `M365_TENANT_ID`;
+   - em **Secrets**: `TAURI_SIGNING_PRIVATE_KEY`;
+   - em **Secrets**, somente se a chave foi criada com senha:
+     `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, contendo exatamente a senha original;
+   - em **Secrets**: `MIGRATION_CAPTURE_URL`.
 5. Verificar se **Actions > General > Workflow permissions** permite escrita do `GITHUB_TOKEN`, necessária para publicar releases.
 
 O ambiente `production` funciona como o último portão humano. Se a conta/plano não disponibilizar revisores obrigatórios para este repositório, o workflow continua sendo manual e ainda valida que o conteúdo publicado foi exatamente o conteúdo da última versão Admin Test.

@@ -94,9 +94,11 @@ jobs:
             throw "Repository secret TAURI_SIGNING_PRIVATE_KEY fehlt."
           }
           if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD)) {
-            throw "Repository secret TAURI_SIGNING_PRIVATE_KEY_PASSWORD fehlt."
+            "Kein Signaturpasswort konfiguriert; der Build verwendet einen unverschlüsselten Tauri-Schlüssel."
+          } else {
+            "Signaturpasswort ist konfiguriert."
           }
-          "Erforderliche Build-Variablen und Secrets sind vorhanden."
+          "Erforderliche Build-Variablen und der Signaturschlüssel sind vorhanden."
 
       - name: Gewählten Quellstand auschecken
         id: checkout_source
