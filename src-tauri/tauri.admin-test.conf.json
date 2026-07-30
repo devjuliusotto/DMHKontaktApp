@@ -13,7 +13,10 @@
   },
   "bundle": {
     "longDescription": "Isolierter Testkanal für DMH Kontakte und Kalender.",
-    "shortDescription": "Admin-Testversion der lokalen Kontakt- und Kalenderverwaltung"
+    "shortDescription": "Admin-Testversion der lokalen Kontakt- und Kalenderverwaltung",
+    "targets": [
+      "nsis"
+    ]
   },
   "identifier": "de.dmh.agendakontakte.admin-test",
   "plugins": {

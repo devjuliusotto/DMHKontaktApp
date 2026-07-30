@@ -9,6 +9,10 @@ Este projeto possui dois aplicativos Windows instaláveis lado a lado:
 
 Os dois canais usam pastas de dados, banco SQLite, WebView e namespace de credenciais diferentes. A versão Admin Test também exibe uma faixa vermelha permanente. Assim, ela pode ser instalada no mesmo computador sem modificar a instalação oficial.
 
+O Admin Test gera somente o instalador NSIS (`setup.exe`), pois ele aceita versões
+pré-release como `0.1.1-beta.1` e é compatível com o updater. A release oficial
+continua gerando MSI e NSIS.
+
 ## Configuração inicial no GitHub
 
 1. Mesclar estas alterações em `main`.
