@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       source_ref:
-        description: "Zu testender Branch oder Commit"
+        description: "Zu testender Branch, Tag oder Commit (staging nach der Ersteinrichtung)"
         required: true
-        default: "staging"
+        default: "main"
         type: string
       version:
         description: "Testversion, zum Beispiel 0.1.1-beta.1"
@@ -28,17 +28,82 @@ jobs:
 
     steps:
       - name: Testversion validieren
+        id: validate_version
         shell: pwsh
         run: |
           if ("${{ inputs.version }}" -notmatch '^\d+\.\d+\.\d+-(beta|rc)\.\d+$') {
             throw "Admin-Test-Version muss zum Beispiel 0.1.1-beta.1 oder 0.1.1-rc.1 heißen."
           }
 
+      - name: Quellstand auf GitHub prüfen
+        id: resolve_source
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $sourceRef = $env:SOURCE_REF.Trim()
+          if ([string]::IsNullOrWhiteSpace($sourceRef)) {
+            throw "source_ref darf nicht leer sein."
+          }
+
+          $headers = @{
+            Accept = "application/vnd.github+json"
+            Authorization = "Bearer $env:GH_TOKEN"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+          $encodedRef = [Uri]::EscapeDataString($sourceRef)
+
+          try {
+            $commit = Invoke-RestMethod `
+              -Uri "https://api.github.com/repos/${{ github.repository }}/commits/$encodedRef" `
+              -Headers $headers
+          } catch {
+            $availableBranches = "nicht ermittelbar"
+            try {
+              $branches = Invoke-RestMethod `
+                -Uri "https://api.github.com/repos/${{ github.repository }}/branches?per_page=100" `
+                -Headers $headers
+              $availableBranches = ($branches.name | Sort-Object) -join ", "
+            } catch {
+              # Der ursprüngliche, konkrete Fehler bleibt maßgeblich.
+            }
+            throw "Quellstand '$sourceRef' wurde nicht gefunden. Vorhandene Branches: $availableBranches. Für den ersten Admin Test 'main' verwenden oder den Branch zuerst pushen."
+          }
+
+          "sha=$($commit.sha)" >> $env:GITHUB_OUTPUT
+          "Quellstand aufgelöst: $sourceRef -> $($commit.sha)"
+
+      - name: Build-Konfiguration validieren
+        id: check_configuration
+        shell: pwsh
+        env:
+          M365_CLIENT_ID: ${{ vars.M365_CLIENT_ID }}
+          M365_TENANT_ID: ${{ vars.M365_TENANT_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:M365_CLIENT_ID)) {
+            throw "Repository variable M365_CLIENT_ID fehlt."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:M365_TENANT_ID)) {
+            throw "Repository variable M365_TENANT_ID fehlt."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            throw "Repository secret TAURI_SIGNING_PRIVATE_KEY fehlt."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD)) {
+            throw "Repository secret TAURI_SIGNING_PRIVATE_KEY_PASSWORD fehlt."
+          }
+          "Erforderliche Build-Variablen und Secrets sind vorhanden."
+
       - name: Gewählten Quellstand auschecken
-        uses: actions/checkout@v4
+        id: checkout_source
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ steps.resolve_source.outputs.sha }}
 
       - name: Quellstand erfassen
         id: source
@@ -47,7 +112,7 @@ jobs:
           "sha=$(git rev-parse HEAD)" >> $env:GITHUB_OUTPUT
 
       - name: Node.js installieren
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: lts/*
           cache: npm
@@ -63,44 +128,51 @@ jobs:
           workspaces: "./src-tauri -> target"
 
       - name: Abhängigkeiten installieren
+        id: install_dependencies
         run: npm ci
 
       - name: Quellversionen prüfen
+        id: check_versions
         run: node scripts/check-version.mjs
 
       - name: Farbschemas prüfen
+        id: check_theme
         run: npm run theme:check
 
-      - name: Microsoft-365-Konfiguration validieren
-        shell: pwsh
-        env:
-          M365_CLIENT_ID: ${{ vars.M365_CLIENT_ID }}
-          M365_TENANT_ID: ${{ vars.M365_TENANT_ID }}
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:M365_CLIENT_ID)) {
-            throw "Repository variable M365_CLIENT_ID fehlt."
-          }
-          if ([string]::IsNullOrWhiteSpace($env:M365_TENANT_ID)) {
-            throw "Repository variable M365_TENANT_ID fehlt."
-          }
-
       - name: Testversion nur im Build setzen
+        id: set_build_version
         run: node scripts/set-version.mjs "${{ inputs.version }}"
 
       - name: Frontend bauen
+        id: build_frontend
         env:
           VITE_APP_CHANNEL: admin-test
           VITE_SOURCE_COMMIT: ${{ steps.source.outputs.sha }}
         run: npm run build
 
       - name: Rust-Tests
+        id: rust_tests
         env:
           DMH_RELEASE_CHANNEL: admin-test
           M365_CLIENT_ID: ${{ vars.M365_CLIENT_ID }}
           M365_TENANT_ID: ${{ vars.M365_TENANT_ID }}
+          RUST_BACKTRACE: "1"
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib
 
+      - name: Admin-Test-Installer vorab vollständig bauen
+        id: prebuild_admin_installer
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VITE_APP_CHANNEL: admin-test
+          VITE_SOURCE_COMMIT: ${{ steps.source.outputs.sha }}
+          DMH_RELEASE_CHANNEL: admin-test
+          M365_CLIENT_ID: ${{ vars.M365_CLIENT_ID }}
+          M365_TENANT_ID: ${{ vars.M365_TENANT_ID }}
+        run: npm run tauri:build:admin-test
+
       - name: Bisherigen rollenden Admin-Test entfernen
+        id: remove_previous_release
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -115,6 +187,7 @@ jobs:
           exit 0
 
       - name: Isolierte Tauri-Testversion bauen und veröffentlichen
+        id: publish_admin_test
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -137,3 +210,64 @@ jobs:
           releaseDraft: false
           prerelease: true
           updaterJsonPreferNsis: true
+
+      - name: Admin-Test-Diagnosebericht erstellen
+        if: always()
+        id: diagnostics
+        shell: pwsh
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+          RESOLVED_SHA: ${{ steps.resolve_source.outputs.sha }}
+          VALIDATE_OUTCOME: ${{ steps.validate_version.outcome }}
+          RESOLVE_OUTCOME: ${{ steps.resolve_source.outcome }}
+          CHECKOUT_OUTCOME: ${{ steps.checkout_source.outcome }}
+          INSTALL_OUTCOME: ${{ steps.install_dependencies.outcome }}
+          VERSION_OUTCOME: ${{ steps.check_versions.outcome }}
+          THEME_OUTCOME: ${{ steps.check_theme.outcome }}
+          CONFIG_OUTCOME: ${{ steps.check_configuration.outcome }}
+          FRONTEND_OUTCOME: ${{ steps.build_frontend.outcome }}
+          RUST_OUTCOME: ${{ steps.rust_tests.outcome }}
+          PREBUILD_OUTCOME: ${{ steps.prebuild_admin_installer.outcome }}
+          CLEANUP_OUTCOME: ${{ steps.remove_previous_release.outcome }}
+          PUBLISH_OUTCOME: ${{ steps.publish_admin_test.outcome }}
+        run: |
+          $reportPath = Join-Path $env:RUNNER_TEMP "admin-test-diagnostics.txt"
+          $report = @(
+            "workflow=admin-test"
+            "repository=${{ github.repository }}"
+            "run_url=https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            "run_attempt=${{ github.run_attempt }}"
+            "source_ref=$env:SOURCE_REF"
+            "resolved_sha=$env:RESOLVED_SHA"
+            "requested_version=$env:REQUESTED_VERSION"
+            "validate_version=$env:VALIDATE_OUTCOME"
+            "resolve_source=$env:RESOLVE_OUTCOME"
+            "checkout=$env:CHECKOUT_OUTCOME"
+            "install_dependencies=$env:INSTALL_OUTCOME"
+            "check_versions=$env:VERSION_OUTCOME"
+            "check_theme=$env:THEME_OUTCOME"
+            "check_configuration=$env:CONFIG_OUTCOME"
+            "build_frontend=$env:FRONTEND_OUTCOME"
+            "rust_tests=$env:RUST_OUTCOME"
+            "prebuild_admin_installer=$env:PREBUILD_OUTCOME"
+            "remove_previous_release=$env:CLEANUP_OUTCOME"
+            "publish=$env:PUBLISH_OUTCOME"
+            "created_utc=$([DateTime]::UtcNow.ToString('o'))"
+          )
+          $report | Set-Content -LiteralPath $reportPath -Encoding utf8
+          "report_path=$reportPath" >> $env:GITHUB_OUTPUT
+
+          "### Admin-Test-Diagnose" >> $env:GITHUB_STEP_SUMMARY
+          '```text' >> $env:GITHUB_STEP_SUMMARY
+          $report >> $env:GITHUB_STEP_SUMMARY
+          '```' >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Diagnosebericht hochladen
+        if: always() && steps.diagnostics.outcome == 'success'
+        uses: actions/upload-artifact@v6
+        with:
+          name: admin-test-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.diagnostics.outputs.report_path }}
+          retention-days: 30
+          if-no-files-found: error

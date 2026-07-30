@@ -21,9 +21,9 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: lts/*
           cache: npm
@@ -52,4 +52,6 @@ jobs:
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 
       - name: Rust-Tests
+        env:
+          RUST_BACKTRACE: "1"
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib

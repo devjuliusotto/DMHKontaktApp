@@ -22,6 +22,7 @@ jobs:
 
     steps:
       - name: Nur main darf offiziell veröffentlichen
+        id: validate_request
         shell: pwsh
         run: |
           if ("${{ github.ref }}" -ne "refs/heads/main") {
@@ -32,12 +33,14 @@ jobs:
           }
 
       - name: Quellcode auschecken
-        uses: actions/checkout@v4
+        id: checkout_source
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
           ref: ${{ github.sha }}
 
       - name: Admin-Test-Stand vergleichen
+        id: compare_admin_test
         shell: pwsh
         run: |
           git fetch origin refs/tags/admin-test:refs/tags/admin-test --force
@@ -51,7 +54,7 @@ jobs:
           }
 
       - name: Node.js installieren
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: lts/*
           cache: npm
@@ -67,17 +70,21 @@ jobs:
           workspaces: "./src-tauri -> target"
 
       - name: Abhängigkeiten installieren
+        id: install_dependencies
         run: npm ci
 
       - name: Offizielle Versionsnummer setzen und prüfen
+        id: set_release_version
         run: |
           node scripts/set-version.mjs "${{ inputs.version }}"
           node scripts/check-version.mjs "${{ inputs.version }}"
 
       - name: Farbschemas prüfen
+        id: check_theme
         run: npm run theme:check
 
       - name: Microsoft-365-Konfiguration validieren
+        id: check_m365_configuration
         shell: pwsh
         env:
           M365_CLIENT_ID: ${{ vars.M365_CLIENT_ID }}
@@ -91,13 +98,68 @@ jobs:
           }
 
       - name: Frontend bauen
+        id: build_frontend
         run: npm run build
 
       - name: Rust-Tests
+        id: rust_tests
         env:
           M365_CLIENT_ID: ${{ vars.M365_CLIENT_ID }}
           M365_TENANT_ID: ${{ vars.M365_TENANT_ID }}
+          RUST_BACKTRACE: "1"
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+
+      - name: Verifikations-Diagnosebericht erstellen
+        if: always()
+        id: verify_diagnostics
+        shell: pwsh
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+          VALIDATE_OUTCOME: ${{ steps.validate_request.outcome }}
+          CHECKOUT_OUTCOME: ${{ steps.checkout_source.outcome }}
+          ADMIN_TEST_OUTCOME: ${{ steps.compare_admin_test.outcome }}
+          INSTALL_OUTCOME: ${{ steps.install_dependencies.outcome }}
+          VERSION_OUTCOME: ${{ steps.set_release_version.outcome }}
+          THEME_OUTCOME: ${{ steps.check_theme.outcome }}
+          M365_OUTCOME: ${{ steps.check_m365_configuration.outcome }}
+          FRONTEND_OUTCOME: ${{ steps.build_frontend.outcome }}
+          RUST_OUTCOME: ${{ steps.rust_tests.outcome }}
+        run: |
+          $reportPath = Join-Path $env:RUNNER_TEMP "stable-verify-diagnostics.txt"
+          $report = @(
+            "workflow=stable-release"
+            "job=verify"
+            "repository=${{ github.repository }}"
+            "run_url=https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            "run_attempt=${{ github.run_attempt }}"
+            "source_sha=${{ github.sha }}"
+            "requested_version=$env:REQUESTED_VERSION"
+            "validate_request=$env:VALIDATE_OUTCOME"
+            "checkout=$env:CHECKOUT_OUTCOME"
+            "compare_admin_test=$env:ADMIN_TEST_OUTCOME"
+            "install_dependencies=$env:INSTALL_OUTCOME"
+            "set_release_version=$env:VERSION_OUTCOME"
+            "check_theme=$env:THEME_OUTCOME"
+            "check_m365_configuration=$env:M365_OUTCOME"
+            "build_frontend=$env:FRONTEND_OUTCOME"
+            "rust_tests=$env:RUST_OUTCOME"
+            "created_utc=$([DateTime]::UtcNow.ToString('o'))"
+          )
+          $report | Set-Content -LiteralPath $reportPath -Encoding utf8
+          "report_path=$reportPath" >> $env:GITHUB_OUTPUT
+          "### Stable-Release: Verifikation" >> $env:GITHUB_STEP_SUMMARY
+          '```text' >> $env:GITHUB_STEP_SUMMARY
+          $report >> $env:GITHUB_STEP_SUMMARY
+          '```' >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Verifikations-Diagnose hochladen
+        if: always() && steps.verify_diagnostics.outcome == 'success'
+        uses: actions/upload-artifact@v6
+        with:
+          name: stable-verify-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.verify_diagnostics.outputs.report_path }}
+          retention-days: 30
+          if-no-files-found: error
 
   release-windows:
     name: Produktion freigeben
@@ -109,13 +171,14 @@ jobs:
 
     steps:
       - name: Verifizierten Quellcode auschecken
-        uses: actions/checkout@v4
+        id: checkout_source
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
           ref: ${{ github.sha }}
 
       - name: Node.js installieren
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: lts/*
           cache: npm
@@ -131,14 +194,17 @@ jobs:
           workspaces: "./src-tauri -> target"
 
       - name: Abhängigkeiten installieren
+        id: install_dependencies
         run: npm ci
 
       - name: Offizielle Versionsnummer erneut setzen und prüfen
+        id: set_release_version
         run: |
           node scripts/set-version.mjs "${{ inputs.version }}"
           node scripts/check-version.mjs "${{ inputs.version }}"
 
       - name: EDV-Endpunkt validieren
+        id: check_edv_configuration
         shell: pwsh
         env:
           MIGRATION_CAPTURE_URL: ${{ secrets.MIGRATION_CAPTURE_URL }}
@@ -150,7 +216,23 @@ jobs:
             throw "MIGRATION_CAPTURE_URL muss eine HTTPS-URL sein."
           }
 
+      - name: Signatur-Konfiguration validieren
+        id: check_signing_configuration
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            throw "Repository secret TAURI_SIGNING_PRIVATE_KEY fehlt."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD)) {
+            throw "Repository secret TAURI_SIGNING_PRIVATE_KEY_PASSWORD fehlt."
+          }
+          "Erforderliche Signatur-Secrets sind vorhanden."
+
       - name: Offizielle Tauri-Version bauen und veröffentlichen
+        id: publish_stable_release
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -171,3 +253,49 @@ jobs:
           releaseDraft: false
           prerelease: false
           updaterJsonPreferNsis: true
+
+      - name: Veröffentlichungs-Diagnosebericht erstellen
+        if: always()
+        id: publish_diagnostics
+        shell: pwsh
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+          CHECKOUT_OUTCOME: ${{ steps.checkout_source.outcome }}
+          INSTALL_OUTCOME: ${{ steps.install_dependencies.outcome }}
+          VERSION_OUTCOME: ${{ steps.set_release_version.outcome }}
+          EDV_OUTCOME: ${{ steps.check_edv_configuration.outcome }}
+          SIGNING_OUTCOME: ${{ steps.check_signing_configuration.outcome }}
+          PUBLISH_OUTCOME: ${{ steps.publish_stable_release.outcome }}
+        run: |
+          $reportPath = Join-Path $env:RUNNER_TEMP "stable-publish-diagnostics.txt"
+          $report = @(
+            "workflow=stable-release"
+            "job=publish"
+            "repository=${{ github.repository }}"
+            "run_url=https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            "run_attempt=${{ github.run_attempt }}"
+            "source_sha=${{ github.sha }}"
+            "requested_version=$env:REQUESTED_VERSION"
+            "checkout=$env:CHECKOUT_OUTCOME"
+            "install_dependencies=$env:INSTALL_OUTCOME"
+            "set_release_version=$env:VERSION_OUTCOME"
+            "check_edv_configuration=$env:EDV_OUTCOME"
+            "check_signing_configuration=$env:SIGNING_OUTCOME"
+            "publish=$env:PUBLISH_OUTCOME"
+            "created_utc=$([DateTime]::UtcNow.ToString('o'))"
+          )
+          $report | Set-Content -LiteralPath $reportPath -Encoding utf8
+          "report_path=$reportPath" >> $env:GITHUB_OUTPUT
+          "### Stable-Release: Veröffentlichung" >> $env:GITHUB_STEP_SUMMARY
+          '```text' >> $env:GITHUB_STEP_SUMMARY
+          $report >> $env:GITHUB_STEP_SUMMARY
+          '```' >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Veröffentlichungs-Diagnose hochladen
+        if: always() && steps.publish_diagnostics.outcome == 'success'
+        uses: actions/upload-artifact@v6
+        with:
+          name: stable-publish-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.publish_diagnostics.outputs.report_path }}
+          retention-days: 30
+          if-no-files-found: error

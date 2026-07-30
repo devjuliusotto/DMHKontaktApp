@@ -44,7 +44,7 @@ O ambiente `production` funciona como o último portão humano. Se a conta/plano
 
 5. Em **Actions > Admin-Test-Version veröffentlichen > Run workflow**:
    - branch do workflow: `main`;
-   - `source_ref`: `staging`;
+   - `source_ref`: `staging` no fluxo normal, ou `main` na primeira execução enquanto o branch `staging` ainda não tiver sido criado;
    - `version`: por exemplo `0.1.1-beta.1`.
 6. Instalar a versão Admin Test na primeira vez. Nas próximas execuções do workflow, ela recebe apenas atualizações Admin Test.
 7. Testar com uma cópia dos dados reais, registrar problemas e repetir com `beta.2`, `beta.3` etc.
@@ -59,6 +59,10 @@ O ambiente `production` funciona como o último portão humano. Se a conta/plano
 Uma correção feita depois do teste exige uma nova Admin Test antes da release oficial. Isso é intencional.
 
 Não crie manualmente commits ou tags do tipo `Release vX.Y.Z`. O workflow oficial cria a tag e a release. A versão final é aplicada apenas no ambiente temporário de build, depois da comparação com o Admin Test; por isso o conteúdo testado continua sendo exatamente o conteúdo publicado.
+
+Se um deploy falhar, abra o resumo da execução em **Actions**. Os workflows de Admin Test e release oficial escrevem uma tabela de resultados no *Step summary* e disponibilizam um artefato `*-diagnostics-...` por 30 dias. O relatório contém somente referências, versões e resultados dos passos; valores de secrets e tokens nunca são incluídos.
+
+Antes de substituir o Admin Test anterior, o workflow constrói e assina integralmente o novo instalador. Assim, uma falha de código, configuração ou empacotamento não remove a última versão de teste funcional.
 
 ## Teste local isolado
 
