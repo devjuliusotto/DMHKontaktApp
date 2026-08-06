@@ -25,6 +25,7 @@ import {
 } from "../services/db";
 import type { Contact, ContactInput, Group } from "../types/contact";
 import { displayName, emptyContact, toContactInput } from "../utils/contact";
+import { exchangeSyncCompletedEvent } from "../utils/exchangeSync";
 
 type ContactsTab = "all" | "groups";
 type GroupSelection = "ungrouped" | number;
@@ -153,6 +154,17 @@ export function ContactsPage() {
   }, [tab, allSearch, groupSearch, groupSelection]);
 
   useEffect(() => {
+    const reloadAfterExchangeSync = () => {
+      refresh().catch((error) => {
+        setMessage(`Exchange-Daten konnten nicht neu geladen werden: ${error}`);
+        setMessageType("error");
+      });
+    };
+    window.addEventListener(exchangeSyncCompletedEvent, reloadAfterExchangeSync);
+    return () => window.removeEventListener(exchangeSyncCompletedEvent, reloadAfterExchangeSync);
+  }, [tab, allSearch, groupSearch, groupSelection]);
+
+  useEffect(() => {
     getAppSetting(emailAppSettingKey)
       .then((value) => {
         if (value === "outlook-classic" || value === "outlook-new") {
@@ -195,7 +207,7 @@ export function ContactsPage() {
     try {
       await saveContact(editing);
       setEditing(null);
-      setMessage("Kontakt wurde lokal gespeichert.");
+      setMessage("Kontakt wurde gespeichert und für Exchange vorgemerkt.");
       setMessageType("success");
       await refresh();
     } catch (error) {
@@ -209,7 +221,7 @@ export function ContactsPage() {
     if (!window.confirm(`Kontakt "${displayName(contact)}" wirklich löschen?`)) return;
     try {
       await deleteContact(contact.id);
-      setMessage("Kontakt wurde lokal in den Papierkorb verschoben.");
+      setMessage("Kontakt wurde in den Papierkorb verschoben und wird mit Exchange abgeglichen.");
       setMessageType("success");
       await refresh();
     } catch (error) {
@@ -238,7 +250,7 @@ export function ContactsPage() {
 
     const count = await deleteAllContacts();
     setTestMenuOpen(false);
-    setMessage(`${count} Kontakte wurden lokal in den Papierkorb verschoben.`);
+    setMessage(`${count} Kontakte wurden in den Papierkorb verschoben und werden mit Exchange abgeglichen.`);
     setMessageType("success");
     await refresh();
   };

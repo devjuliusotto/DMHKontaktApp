@@ -14,6 +14,7 @@ import type { Contact, Group } from "../types/contact";
 import type { VaultEntry } from "../types/vault";
 import { calendarStorageKey, calendarTrashStorageKey, formatCalendarDate } from "../utils/calendar";
 import { displayName } from "../utils/contact";
+import { exchangeSyncCompletedEvent, requestExchangeSync } from "../utils/exchangeSync";
 
 function readCalendarEvents(key: string): CalendarEvent[] {
   try {
@@ -63,11 +64,19 @@ export function TrashPage() {
 
   useEffect(() => {
     refresh().catch((error) => setMessage(`Papierkorb konnte nicht geladen werden: ${error}`));
+    const reloadAfterExchangeSync = () => void refresh();
+    window.addEventListener(exchangeSyncCompletedEvent, reloadAfterExchangeSync);
+    return () => window.removeEventListener(exchangeSyncCompletedEvent, reloadAfterExchangeSync);
   }, []);
 
   const restoreDeletedEvent = (event: CalendarEvent) => {
     const activeEvents = readCalendarEvents(calendarStorageKey).filter((entry) => entry.id !== event.id);
-    const restored = { ...event, deletedAt: null };
+    const restored = {
+      ...event,
+      deletedAt: null,
+      updatedAt: new Date().toISOString(),
+      exchangeLastSyncedHash: null
+    };
     writeCalendarEvents(
       calendarStorageKey,
       [...activeEvents, restored].sort((left, right) => left.startsAt.localeCompare(right.startsAt))
@@ -75,6 +84,7 @@ export function TrashPage() {
     const remaining = deletedEvents.filter((entry) => entry.id !== event.id);
     writeCalendarEvents(calendarTrashStorageKey, remaining);
     setDeletedEvents(remaining);
+    requestExchangeSync();
     setMessage("Termin wurde wiederhergestellt.");
   };
 

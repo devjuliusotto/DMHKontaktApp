@@ -10,6 +10,7 @@ import type { CalendarEvent } from "../types/calendar";
 import type { Group } from "../types/contact";
 import { calendarColorFromCategory, calendarColorOptions, calendarColorValue, calendarStorageKey, defaultCalendarColor, parseCalendarFile } from "../utils/calendar";
 import { mergeCalendarEventsExactly } from "../utils/calendarDuplicates";
+import { requestExchangeSync } from "../utils/exchangeSync";
 import { parseCsvBytes, parseXlsx, type ImportPreview } from "../utils/importers";
 
 type ImportMode = "contacts" | "calendar";
@@ -153,6 +154,7 @@ export function ImportPage() {
     const incoming = pendingEvents.map((event) => applyCalendarImportCategory(event, calendarCategory, calendarColor));
     const merged = mergeCalendarEventsExactly(existing, incoming);
     localStorage.setItem(calendarStorageKey, JSON.stringify(merged.events));
+    requestExchangeSync();
     return {
       imported: merged.imported,
       skipped: merged.skippedSameId + merged.skippedExactDuplicates

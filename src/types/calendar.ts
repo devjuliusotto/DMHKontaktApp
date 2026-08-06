@@ -26,6 +26,12 @@ export interface CalendarEvent {
   excludedDates?: string[];
   recurrenceMasterId?: string;
   recurrenceId?: string;
+  updatedAt?: string;
+  exchangeId?: string | null;
+  exchangeChangeKey?: string | null;
+  exchangeLastSyncedHash?: string | null;
+  exchangeIsOnlineMeeting?: boolean;
+  exchangeIsAllDay?: boolean;
 }
 
 export interface OutlookOneTimeCalendarImportResult {

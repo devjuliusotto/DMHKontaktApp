@@ -12,6 +12,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
+mod edv;
+mod exchange_sync;
 mod m365;
 mod mail_accounts;
 mod thunderbird;
@@ -70,6 +72,7 @@ struct AppState {
     vault: Mutex<vault::VaultRuntime>,
     outlook_contact_cache: Mutex<Option<CachedOutlookContacts>>,
     m365: m365::Microsoft365Runtime,
+    exchange_sync_in_progress: Mutex<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -628,6 +631,32 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
         );
         CREATE INDEX IF NOT EXISTS idx_vault_entries_updated_at
             ON vault_entries(updated_at DESC);
+        CREATE TABLE IF NOT EXISTS edv_systems (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            category TEXT NOT NULL DEFAULT '',
+            owner TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'active',
+            provider TEXT NOT NULL DEFAULT '',
+            url TEXT NOT NULL DEFAULT '',
+            notes TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS edv_audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            occurred_at TEXT NOT NULL,
+            actor_name TEXT NOT NULL DEFAULT '',
+            actor_upn TEXT NOT NULL DEFAULT '',
+            action TEXT NOT NULL,
+            target_type TEXT NOT NULL,
+            target_id TEXT NOT NULL DEFAULT '',
+            target_name TEXT NOT NULL DEFAULT '',
+            details TEXT NOT NULL DEFAULT '',
+            result TEXT NOT NULL DEFAULT 'success'
+        );
+        CREATE INDEX IF NOT EXISTS idx_edv_audit_occurred_at
+            ON edv_audit_log(occurred_at DESC);
         ",
     )
     .map_err(|err| err.to_string())?;
@@ -636,6 +665,10 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
     ensure_column(&conn, "contacts", "short_info", "TEXT NOT NULL DEFAULT ''")?;
     ensure_column(&conn, "contacts", "outlook_entry_id", "TEXT")?;
     ensure_column(&conn, "contacts", "outlook_store_id", "TEXT")?;
+    ensure_column(&conn, "contacts", "exchange_id", "TEXT")?;
+    ensure_column(&conn, "contacts", "exchange_change_key", "TEXT")?;
+    ensure_column(&conn, "contacts", "exchange_last_synced_hash", "TEXT")?;
+    ensure_column(&conn, "contacts", "exchange_last_synced_at", "TEXT")?;
     ensure_column(&conn, "groups", "deleted_at", "TEXT")?;
     ensure_column(&conn, "vault_entries", "deleted_at", "TEXT")?;
     conn.execute_batch(
@@ -648,6 +681,8 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_contacts_phone_search ON contacts(phone);
         CREATE INDEX IF NOT EXISTS idx_contacts_mobile_phone_search ON contacts(mobile_phone);
         CREATE INDEX IF NOT EXISTS idx_contacts_import_batch ON contacts(import_batch_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_contacts_exchange_id
+            ON contacts(exchange_id) WHERE exchange_id IS NOT NULL;
         CREATE INDEX IF NOT EXISTS idx_contact_groups_group_contact
             ON contact_groups(group_id, contact_id);
         ",
@@ -926,7 +961,7 @@ fn delete_contacts(app: AppHandle, ids: Vec<i64>) -> Result<usize, String> {
 fn restore_contact(app: AppHandle, id: i64) -> Result<(), String> {
     let conn = open_db(&app)?;
     conn.execute(
-        "UPDATE contacts SET deleted_at = NULL, updated_at = ? WHERE id = ?",
+        "UPDATE contacts SET deleted_at = NULL, updated_at = ?, exchange_last_synced_hash = NULL WHERE id = ?",
         params![now(), id],
     )
     .map_err(|err| err.to_string())?;
@@ -3607,6 +3642,7 @@ pub fn run() {
             vault: Mutex::new(vault::VaultRuntime::default()),
             outlook_contact_cache: Mutex::new(None),
             m365: m365::Microsoft365Runtime::default(),
+            exchange_sync_in_progress: Mutex::new(false),
         })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -3648,12 +3684,44 @@ pub fn run() {
             get_app_setting,
             set_app_setting,
             m365::get_m365_connection_status,
+            m365::get_portal_session,
+            m365::restore_portal_session,
             m365::start_m365_connection,
             m365::poll_m365_connection,
             m365::cancel_m365_connection,
             m365::open_m365_sign_in,
+            m365::open_m365_password_reset,
+            m365::open_m365_password_change,
+            m365::open_m365_security_info,
             m365::test_m365_connection,
             m365::disconnect_m365_account,
+            m365::get_edv_admin_session_status,
+            m365::start_edv_admin_connection,
+            m365::poll_edv_admin_connection,
+            m365::disconnect_edv_admin_session,
+            edv::get_edv_access_profile,
+            edv::get_edv_planner_plan_id,
+            edv::set_edv_planner_plan_id,
+            edv::load_planner_board,
+            edv::create_planner_task,
+            edv::update_planner_task,
+            edv::delete_planner_task,
+            edv::list_directory_users,
+            edv::list_directory_groups,
+            edv::list_group_members,
+            edv::add_group_member,
+            edv::remove_group_member,
+            edv::create_directory_user,
+            edv::update_directory_user,
+            edv::reset_directory_user_password,
+            edv::create_directory_group,
+            edv::update_directory_group,
+            edv::delete_directory_group,
+            edv::list_edv_systems,
+            edv::save_edv_system,
+            edv::delete_edv_system,
+            edv::list_edv_audit_log,
+            exchange_sync::sync_exchange_data,
             import_outlook_store,
             preview_outlook_classic_contacts,
             import_selected_outlook_classic_contacts,

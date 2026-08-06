@@ -1,6 +1,6 @@
-# DMH Kontakte und Kalender
+# DMH Portal
 
-DMH Kontakte und Kalender ist eine lokale Windows-Desktop-App zur einfachen Verwaltung von Kontakten und Terminen. Die Daten bleiben auf dem PC und werden lokal gespeichert. Es ist kein Microsoft-Login und keine Microsoft-Graph-Integration erforderlich.
+DMH Portal ist eine modulare Windows-Desktop-App. Das bisherige Kontakte-, Kalender- und Passwortprogramm bildet das Modul **Privatschwestern**. Der Zugang erfolgt über das dienstliche Microsoft-365-Konto und Entra-Sicherheitsgruppen. Kontakte und Kalender werden mit dem persönlichen Exchange-Postfach synchronisiert; lokale Kopien sorgen für schnelle Bedienung und Offline-Arbeit.
 
 ## Funktionen
 
@@ -21,6 +21,12 @@ DMH Kontakte und Kalender ist eine lokale Windows-Desktop-App zur einfachen Verw
 - E-Mail und Telefonnummer kopieren
 - Kontaktliste drucken
 - Automatische lokale Sicherung beim Start
+- Microsoft-365-Anmeldung mit optional dauerhaft geschützter Sitzung
+- Modulfreigabe über Entra-Sicherheitsgruppen
+- Portalübersicht mit ausschließlich den für das Konto freigegebenen Modulen
+- Eigenständiger EDV-Bereich als Grundlage der zentralen Portalverwaltung
+- Automatische bidirektionale Exchange-Synchronisierung für Kontakte und Kalender
+- Lokale Offline-Änderungen mit späterer Übertragung
 
 ## Voraussetzungen für Entwickler
 
@@ -62,7 +68,7 @@ Die Installer-Dateien werden unter `src-tauri\target\release\bundle\` erstellt. 
 
 ## Datenspeicherung
 
-Die SQLite-Datenbank liegt im lokalen App-Datenverzeichnis von Windows. Die Anwendung legt die Datenbank und das Schema beim ersten Start automatisch an.
+Die SQLite-Datenbank liegt im lokalen App-Datenverzeichnis von Windows. Die Anwendung legt die Datenbank und das Schema beim ersten Start automatisch an. Kontakte werden dort zwischengespeichert; der Kalender verwendet weiterhin den lokalen WebView-Speicher. Beide Datenbereiche werden nach erfolgreicher Anmeldung mit Exchange synchronisiert.
 
 ## Importhinweise
 
@@ -101,7 +107,7 @@ Nach dem Export zeigt die App den Hinweis:
 
 ## Outlook-Daten einmalig übernehmen
 
-Unter `Einstellungen` stehen außerdem zwei getrennte Einmalimporte für Outlook Classic bereit. `Alle Kontakte einmalig importieren` liest sämtliche erreichbaren Kontaktordner aller Stores des aktuellen Profils und legt neue lokale Kontakte an; bereits vorhandene Personen werden ausgelassen. `Alle Termine einmalig importieren` liest sämtliche erreichbaren Kalenderordner unabhängig von Konto, Ordner und Kategorie und übernimmt noch nicht vorhandene Termine in den lokalen Kalender. Beide Aktionen werden ausschließlich über den jeweiligen Button gestartet, verändern Outlook nicht und richten keine Synchronisierung oder Hintergrundaufgabe ein.
+Unter `Einstellungen` stehen außerdem zwei getrennte Einmalimporte für Outlook Classic bereit. `Alle Kontakte einmalig importieren` liest sämtliche erreichbaren Kontaktordner aller Stores des aktuellen Profils und legt neue lokale Kontakte an; bereits vorhandene Personen werden ausgelassen. `Alle Termine einmalig importieren` liest sämtliche erreichbaren Kalenderordner unabhängig von Konto, Ordner und Kategorie und übernimmt noch nicht vorhandene Termine in den lokalen Kalender. Die Importaktionen verändern Outlook Classic nicht. Die übernommenen Daten werden anschließend von der normalen Exchange-Synchronisierung verarbeitet.
 
 ## Outlook-IMAP-Konto übernehmen
 
@@ -115,6 +121,6 @@ Für die zeitlich begrenzte Exchange-Migration kann ein Release-Build zusätzlic
 
 ## Sicherheit
 
-Alle Daten bleiben lokal auf dem PC. Sicherungen sollten regelmäßig auf einem sicheren lokalen Laufwerk oder einem geschützten Netzlaufwerk abgelegt werden.
+Kontakte und Kalender werden zusätzlich im persönlichen Exchange-Postfach des angemeldeten Benutzers gespeichert. Lokale Sicherungen sollten dennoch regelmäßig auf einem geschützten Laufwerk abgelegt werden. Der Passwort-Tresor bleibt bis zur Etappe 3 ausschließlich lokal und verschlüsselt.
 
 Außerhalb der ausdrücklich aktivierten Exchange-Migration bleiben Outlook-Kennwörter an den angemeldeten Windows-Benutzer und diesen Computer gebunden. Der IMAP-Verbindungstest läuft ausschließlich über SSL/TLS, liest das Kennwort innerhalb des nativen Hilfsprogramms, löscht temporäre Kennwortpuffer anschließend und gibt nur Erfolg oder eine bereinigte Fehlermeldung zurück. Bei der bewussten Kennwortanzeige und der bestätigten Migrationsübertragung werden native Kennwortpuffer nach ihrer Verwendung überschrieben. Während der lokalen Verschlüsselung liegt das Kennwort technisch bedingt kurzzeitig im Arbeitsspeicher; im Migrationspfad wird es jedoch niemals im Klartext an Power Automate, SharePoint oder die React-Oberfläche übertragen.
