@@ -245,11 +245,14 @@ export default function App() {
 
   if (!portalSession) {
     return (
-      <main className="app-startup-screen">
-        <img src="/dmh-kontakte-kalender.png" alt="DMH Portal" />
-        <LoaderCircle className="spin" size={30} />
-        <p>DMH Portal wird vorbereitet …</p>
-      </main>
+      <div className={isAdminTest ? "app-channel-root admin-test-root" : "app-channel-root"}>
+        {isAdminTest && <AdminTestBanner sourceCommit={sourceCommit} />}
+        <main className="app-startup-screen">
+          <img src="/dmh-kontakte-kalender.png" alt="DMH Portal" />
+          <LoaderCircle className="spin" size={30} />
+          <p>DMH Portal wird vorbereitet …</p>
+        </main>
+      </div>
     );
   }
 
@@ -258,14 +261,17 @@ export default function App() {
       ? { ...portalSession, state: "access_denied" as const }
       : portalSession;
     return (
-      <PortalLoginScreen
-        session={loginSession}
-        startupError={portalError}
-        onSessionChanged={(session) => {
-          setPortalError("");
-          setPortalSession(session);
-        }}
-      />
+      <div className={isAdminTest ? "app-channel-root admin-test-root" : "app-channel-root"}>
+        {isAdminTest && <AdminTestBanner sourceCommit={sourceCommit} />}
+        <PortalLoginScreen
+          session={loginSession}
+          startupError={portalError}
+          onSessionChanged={(session) => {
+            setPortalError("");
+            setPortalSession(session);
+          }}
+        />
+      </div>
     );
   }
 

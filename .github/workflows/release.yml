@@ -99,12 +99,17 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:M365_TENANT_ID)) {
             throw "Repository variable M365_TENANT_ID fehlt."
           }
-          if ([string]::IsNullOrWhiteSpace($env:DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS)) {
-            throw "Repository variable DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS fehlt."
+          if (
+            [string]::IsNullOrWhiteSpace($env:DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS) -and
+            [string]::IsNullOrWhiteSpace($env:DMH_PORTAL_EDV_GROUP_IDS)
+          ) {
+            throw "Mindestens eine Portalgruppe muss über DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS oder DMH_PORTAL_EDV_GROUP_IDS konfiguriert sein."
           }
-          foreach ($groupId in ($env:DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS -split ',')) {
-            try { [void][guid]::Parse($groupId.Trim()) } catch {
-              throw "DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS enthält keine gültige Gruppen-Objekt-ID: $groupId"
+          if (-not [string]::IsNullOrWhiteSpace($env:DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS)) {
+            foreach ($groupId in ($env:DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS -split ',')) {
+              try { [void][guid]::Parse($groupId.Trim()) } catch {
+                throw "DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS enthält keine gültige Gruppen-Objekt-ID: $groupId"
+              }
             }
           }
           if (-not [string]::IsNullOrWhiteSpace($env:DMH_PORTAL_EDV_GROUP_IDS)) {
@@ -122,6 +127,7 @@ jobs:
       - name: Rust-Tests
         id: rust_tests
         env:
+          DMH_RELEASE_CHANNEL: stable
           M365_CLIENT_ID: ${{ vars.M365_CLIENT_ID }}
           M365_EDV_CLIENT_ID: ${{ vars.M365_EDV_CLIENT_ID }}
           M365_TENANT_ID: ${{ vars.M365_TENANT_ID }}

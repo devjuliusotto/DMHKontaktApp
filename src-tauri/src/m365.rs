@@ -1489,4 +1489,28 @@ mod tests {
             vec!["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".to_string()]
         );
     }
+
+    #[test]
+    fn edv_only_configuration_opens_the_edv_module() {
+        let edv_group = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb".to_string();
+
+        assert_eq!(
+            modules_for_groups(
+                std::slice::from_ref(&edv_group),
+                &[],
+                std::slice::from_ref(&edv_group),
+            ),
+            vec![EDV_MODULE.to_string()]
+        );
+    }
+
+    #[test]
+    fn release_builds_require_an_embedded_portal_group() {
+        if option_env!("DMH_RELEASE_CHANNEL").is_some() {
+            assert!(
+                authorization_configured(),
+                "Release-Build enthält keine konfigurierte Portal-Sicherheitsgruppe."
+            );
+        }
+    }
 }

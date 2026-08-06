@@ -33,7 +33,7 @@ werden.
 ## 2. Sicherheitsgruppen anlegen
 
 Mindestens eine statische Sicherheitsgruppe im Microsoft Entra Admin Center
-anlegen, zum Beispiel:
+anlegen. Es ist zulässig, zunächst ausschließlich die EDV-Gruppe zu verwenden:
 
 - `DMH-Portal-Privatschwestern`
 - optional `DMH-Portal-EDV`
@@ -53,13 +53,14 @@ Unter `Repository → Settings → Secrets and variables → Actions → Variabl
 |---|---|
 | `M365_CLIENT_ID` | Anwendungs-ID der Entra-App |
 | `M365_TENANT_ID` | Mandanten-ID des DMH-Tenants |
-| `DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS` | Objekt-ID der Gruppe für das vorhandene Kontakte-/Kalender-Modul |
+| `DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS` | Optional: Objekt-ID der Gruppe für das Kontakte-/Kalender-Modul |
 | `DMH_PORTAL_EDV_GROUP_IDS` | Optional: Objekt-ID der EDV-Gruppe |
 | `M365_EDV_CLIENT_ID` | Optional: separate Entra-App für die administrative EDV-Sitzung |
 
-Mehrere Gruppen-IDs für dasselbe Modul werden durch Kommas getrennt. Die
-Privatschwestern-Gruppe ist für Release-Builds verpflichtend. Ohne konfigurierte
-Modulgruppe bleibt das Portal sicher geschlossen und zeigt einen EDV-Hinweis.
+Mehrere Gruppen-IDs für dasselbe Modul werden durch Kommas getrennt. Mindestens
+eine der beiden Modulgruppen ist für Release-Builds verpflichtend. Ohne
+konfigurierte Modulgruppe bleibt das Portal sicher geschlossen und zeigt einen
+EDV-Hinweis.
 
 Die Mitglieder von `DMH_PORTAL_EDV_GROUP_IDS` erhalten innerhalb des EDV-Moduls
 den vollständigen Funktionsumfang. Microsoft-Entra-Rollen bleiben eine unabhängige

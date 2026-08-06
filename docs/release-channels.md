@@ -49,9 +49,13 @@ O ambiente `production` funciona como o último portão humano. Se a conta/plano
    ```
 
 5. Em **Actions > Admin-Test-Version veröffentlichen > Run workflow**:
-   - branch do workflow: `main`;
+   - branch do workflow: a branch que contém a versão atual do próprio workflow;
+     normalmente `main`, mas durante alterações no workflow use a mesma branch
+     de funcionalidade que será testada;
    - `source_ref`: `staging` no fluxo normal, ou `main` na primeira execução enquanto o branch `staging` ainda não tiver sido criado;
    - `version`: por exemplo `0.1.1-beta.1`.
+   O campo `source_ref` altera o código baixado depois que a execução começou,
+   mas não substitui a definição do workflow escolhida no primeiro campo.
 6. Instalar a versão Admin Test na primeira vez. Nas próximas execuções do workflow, ela recebe apenas atualizações Admin Test.
 7. Testar com uma cópia dos dados reais, registrar problemas e repetir com `beta.2`, `beta.3` etc.
 8. Quando aprovada, mesclar `staging` em `main` sem fazer novas alterações de conteúdo.
