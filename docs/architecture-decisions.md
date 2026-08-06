@@ -30,6 +30,10 @@ Status: etapas 1 e 2 implementadas; etapa 3 pendente.
 2. Sincronização bidirecional de contatos e calendário com Exchange. **Implementado.**
 3. Cofre criptografado itinerante, com desbloqueio inicial por senha mestra ou código de recuperação em cada computador novo.
 
-### Observação para a arquitetura do DMH Portal
+### Arquitetura do DMH Portal
 
-A ordem acima será revisada antes da implementação caso o aplicativo seja transformado em um portal modular. Nesse caso, a fundação do portal, o isolamento de módulos e o modelo de autorização deverão ser definidos primeiro, para que identidade e sincronização não precisem ser reconstruídas posteriormente.
+- A fundação modular, a página inicial do Portal e o isolamento de navegação entre módulos estão implementados.
+- O aplicativo original forma o módulo `privatschwestern`.
+- O módulo `edv` possui um painel administrativo próprio e pode ser aberto independentemente do módulo `privatschwestern`.
+- O Portal mostra somente módulos concedidos pelos grupos de segurança do Entra.
+- A atribuição grupo → módulo ainda é incorporada ao instalador. A próxima camada administrativa deverá armazenar essa configuração centralmente na Microsoft para permitir alterações pelo EDV sem novo build.

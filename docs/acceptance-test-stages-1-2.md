@@ -12,6 +12,8 @@ werden, nicht mit produktiven Daten einer Schwester.
 - Administratoreinwilligung für den DMH-Mandanten erteilen.
 - Ein lizenziertes Testkonto in die Gruppe `DMH-Portal-Privatschwestern`
   aufnehmen.
+- Ein EDV-Testkonto in die Gruppe `DMH-Portal-EDV` aufnehmen; für den
+  Kombinationstest zusätzlich der Privatschwestern-Gruppe zuordnen.
 - Ein zweites Testkonto bewusst außerhalb dieser Gruppe lassen.
 - Die GitHub-Variablen aus `docs/microsoft-365-connection.md` setzen und einen
   Admin-Test-Installer erzeugen.
@@ -23,12 +25,14 @@ werden, nicht mit produktiven Daten einer Schwester.
 
 | Nr. | Test | Erwartetes Ergebnis |
 |---|---|---|
-| 1.1 | Mit dem autorisierten Testkonto anmelden | Das Portal öffnet das Modul Privatschwestern und zeigt Name sowie E-Mail in der Seitenleiste. |
+| 1.1 | Mit dem autorisierten Testkonto anmelden | Die Portalübersicht zeigt Name, UPN und ausschließlich die freigegebenen Module. Das Modul Privatschwestern lässt sich öffnen. |
 | 1.2 | **Angemeldet bleiben** aktivieren, App schließen und neu öffnen | Das Portal erneuert die Sitzung ohne erneute Kennworteingabe, sofern MFA/Conditional Access keine Interaktion verlangt. |
 | 1.3 | Abmelden, ohne **Angemeldet bleiben** anmelden, App vollständig schließen und neu öffnen | Die flüchtige Sitzung ist beendet und die Microsoft-Anmeldung wird erneut angeboten. |
 | 1.4 | Mit dem Konto außerhalb der Sicherheitsgruppe anmelden | Das Konto wird erkannt, das Modul bleibt aber mit **Noch kein Modul freigegeben** geschlossen. |
 | 1.5 | Das zweite Konto in die Gruppe aufnehmen und **Gruppen erneut prüfen** wählen | Nach Übernahme der Entra-Mitgliedschaft wird das Modul freigegeben. |
 | 1.6 | Bei zuvor bestätigter Sitzung die Netzwerkverbindung trennen und die App öffnen | Der gekennzeichnete Offline-Zugriff funktioniert höchstens 24 Stunden; es findet keine Cloud-Übertragung statt. |
+| 1.7 | Mit einem Konto anmelden, das ausschließlich der EDV-Gruppe angehört | Die Portalübersicht zeigt nur **EDV**. Der EDV-Bereich lässt sich ohne Privatschwestern-Freigabe öffnen. |
+| 1.8 | Mit einem Konto in beiden Gruppen anmelden und zwischen den Modulen wechseln | Beide Karten sind sichtbar. **Portalübersicht** führt aus Privatschwestern zurück; lokale Daten und Sitzung bleiben erhalten. |
 
 ## Etappe 2 — Kontakte
 

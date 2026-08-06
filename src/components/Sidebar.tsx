@@ -1,4 +1,4 @@
-import { CalendarDays, Check, CloudOff, KeyRound, LoaderCircle, LogOut, RefreshCw, Settings, UserRound } from "lucide-react";
+import { CalendarDays, Check, CloudOff, KeyRound, LayoutGrid, LoaderCircle, LogOut, RefreshCw, Settings, UserRound } from "lucide-react";
 import { t } from "../i18n";
 import type { Microsoft365Account } from "../types/m365";
 import type { ExchangeSyncStatus } from "../types/m365";
@@ -19,11 +19,12 @@ interface SidebarProps {
   offline: boolean;
   exchangeSyncStatus: ExchangeSyncStatus;
   onNavigate: (page: Page) => void;
+  onOpenPortal: () => void;
   onSignOut: () => Promise<void>;
   onSyncExchange: () => Promise<void>;
 }
 
-export function Sidebar({ activePage, account, offline, exchangeSyncStatus, onNavigate, onSignOut, onSyncExchange }: SidebarProps) {
+export function Sidebar({ activePage, account, offline, exchangeSyncStatus, onNavigate, onOpenPortal, onSignOut, onSyncExchange }: SidebarProps) {
   const syncTitle = exchangeSyncStatus.state === "syncing"
     ? "Exchange wird synchronisiert"
     : exchangeSyncStatus.state === "error"
@@ -42,6 +43,10 @@ export function Sidebar({ activePage, account, offline, exchangeSyncStatus, onNa
           <p>Privatschwestern</p>
         </div>
       </div>
+      <button className="portal-overview-button" type="button" onClick={onOpenPortal}>
+        <LayoutGrid size={20} />
+        <span>Portalübersicht</span>
+      </button>
       <nav className="nav-list" aria-label="Hauptmenü">
         {items.map((item) => {
           const Icon = item.icon;
@@ -74,7 +79,7 @@ export function Sidebar({ activePage, account, offline, exchangeSyncStatus, onNa
             </span>
             <span className="portal-sidebar-identity">
               <strong>{account.displayName}</strong>
-              <small>{offline && <CloudOff size={14} />} {offline ? "Offline" : account.email || account.userPrincipalName}</small>
+              <small>{offline && <CloudOff size={14} />} {offline ? "Offline" : account.userPrincipalName || account.email}</small>
             </span>
             <button
               className={`icon-only compact exchange-sync-button ${exchangeSyncStatus.state}`}

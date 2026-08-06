@@ -213,7 +213,7 @@ export function PortalLoginScreen({ session, startupError = "", onSessionChanged
             <div className="portal-login-icon warning"><ShieldCheck size={31} /></div>
             <h2>Noch kein Modul freigegeben</h2>
             <p>
-              Das Konto <strong>{session.account?.email || session.account?.userPrincipalName}</strong> ist angemeldet,
+              Das Konto <strong>{session.account?.userPrincipalName || session.account?.email}</strong> ist angemeldet,
               gehört aber noch keiner für das DMH Portal freigegebenen Sicherheitsgruppe an.
             </p>
             {message && <p className="portal-login-message">{message}</p>}

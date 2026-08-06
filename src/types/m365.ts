@@ -23,13 +23,15 @@ export type PortalSessionState =
   | "access_denied"
   | "configuration_required";
 
+export type PortalModuleId = "privatschwestern" | "edv";
+
 export interface PortalSession {
   configured: boolean;
   state: PortalSessionState;
   account: Microsoft365Account | null;
   rememberSignIn: boolean;
   authorizationConfigured: boolean;
-  modules: string[];
+  modules: PortalModuleId[];
   message: string;
 }
 

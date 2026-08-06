@@ -280,7 +280,7 @@ export function Microsoft365Page({ syncStatus, onSync }: Microsoft365PageProps) 
               <div>
                 <span className="m365-connected-label"><CheckCircle2 size={17} /> Verbunden</span>
                 <h3>{status.account.displayName}</h3>
-                <p>{status.account.email || status.account.userPrincipalName}</p>
+                <p>{status.account.userPrincipalName || status.account.email}</p>
               </div>
             </div>
             <div className="inline-actions">

@@ -23,6 +23,8 @@ DMH Portal ist eine modulare Windows-Desktop-App. Das bisherige Kontakte-, Kalen
 - Automatische lokale Sicherung beim Start
 - Microsoft-365-Anmeldung mit optional dauerhaft geschützter Sitzung
 - Modulfreigabe über Entra-Sicherheitsgruppen
+- Portalübersicht mit ausschließlich den für das Konto freigegebenen Modulen
+- Eigenständiger EDV-Bereich als Grundlage der zentralen Portalverwaltung
 - Automatische bidirektionale Exchange-Synchronisierung für Kontakte und Kalender
 - Lokale Offline-Änderungen mit späterer Übertragung
 

@@ -2,6 +2,7 @@ import { LoaderCircle, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppLockScreen } from "./components/AppLockScreen";
 import { PortalLoginScreen } from "./components/PortalLoginScreen";
+import { PortalHomeScreen } from "./components/PortalHomeScreen";
 import { Sidebar, type Page } from "./components/Sidebar";
 import { SettingsSubtabs } from "./components/SettingsSubtabs";
 import { AdvancedSubtabs } from "./components/AdvancedSubtabs";
@@ -17,8 +18,9 @@ import { SimpleImportPage } from "./pages/SimpleImportPage";
 import { PasswordsPage } from "./pages/PasswordsPage";
 import { BackupPage } from "./pages/BackupPage";
 import { Microsoft365Page } from "./pages/Microsoft365Page";
+import { EdvPortalPage } from "./pages/EdvPortalPage";
 import { disconnectMicrosoft365Account, getPortalSession, getVaultStatus, restorePortalSession, syncExchangeData } from "./services/db";
-import type { ExchangeSyncStatus, PortalSession } from "./types/m365";
+import type { ExchangeSyncStatus, PortalModuleId, PortalSession } from "./types/m365";
 import type { VaultStatus } from "./types/vault";
 import {
   applyExchangeSyncResult,
@@ -66,14 +68,25 @@ const browserLoginPreviewSession: PortalSession = {
   message: ""
 };
 
+function AdminTestBanner({ sourceCommit }: { sourceCommit?: string }) {
+  return (
+    <div className="admin-test-banner" role="status">
+      ADMIN TEST · Isolierte Testdaten · Keine offizielle Version
+      {sourceCommit && <span>Commit {sourceCommit}</span>}
+    </div>
+  );
+}
+
 export default function App() {
   const isAdminTest = import.meta.env.VITE_APP_CHANNEL === "admin-test";
   const sourceCommit = import.meta.env.VITE_SOURCE_COMMIT?.slice(0, 8);
   const [page, setPage] = useState<Page>("contacts");
+  const [activeModule, setActiveModule] = useState<PortalModuleId | null>(null);
   const [portalSession, setPortalSession] = useState<PortalSession | null>(null);
   const [portalError, setPortalError] = useState("");
   const [vaultStatus, setVaultStatus] = useState<VaultStatus | null>(null);
   const [startupError, setStartupError] = useState("");
+  const [refreshingAuthorization, setRefreshingAuthorization] = useState(false);
   const [exchangeSyncStatus, setExchangeSyncStatus] = useState<ExchangeSyncStatus>(() => ({
     state: "idle",
     lastSyncedAt: localStorage.getItem("agendakontakte.exchangeLastSync") ?? undefined
@@ -125,7 +138,7 @@ export default function App() {
       });
   }, []);
 
-  const currentModuleAllowed = portalSession?.modules.includes("privatschwestern") ?? false;
+  const privatschwesternAllowed = portalSession?.modules.includes("privatschwestern") ?? false;
 
   const synchronizeExchange = useCallback(async () => {
     if (isBrowserPreview() || exchangeSyncRunning.current || portalSession?.state !== "authenticated") return;
@@ -163,9 +176,15 @@ export default function App() {
   }, [portalSession?.state]);
 
   useEffect(() => {
-    if (portalSession && currentModuleAllowed) loadVaultStatus();
+    if (portalSession && privatschwesternAllowed) loadVaultStatus();
     else setVaultStatus(null);
-  }, [portalSession, currentModuleAllowed]);
+  }, [portalSession, privatschwesternAllowed]);
+
+  useEffect(() => {
+    if (activeModule && portalSession && !portalSession.modules.includes(activeModule)) {
+      setActiveModule(null);
+    }
+  }, [activeModule, portalSession]);
 
   useEffect(() => {
     if (portalSession?.state === "offline") {
@@ -178,7 +197,7 @@ export default function App() {
       publishExchangeSyncStatus(offlineStatus);
       return;
     }
-    if (portalSession?.state !== "authenticated" || !currentModuleAllowed || isBrowserPreview()) return;
+    if (portalSession?.state !== "authenticated" || !privatschwesternAllowed || isBrowserPreview()) return;
     let debounceTimer: number | undefined;
     const initialTimer = window.setTimeout(() => void synchronizeExchange(), 1_200);
     const interval = window.setInterval(() => void synchronizeExchange(), 5 * 60 * 1000);
@@ -195,11 +214,30 @@ export default function App() {
       window.removeEventListener(exchangeSyncRequestedEvent, requestSync);
       window.removeEventListener("online", requestSync);
     };
-  }, [currentModuleAllowed, portalSession?.state, synchronizeExchange]);
+  }, [privatschwesternAllowed, portalSession?.state, synchronizeExchange]);
+
+  const openModule = (module: PortalModuleId) => {
+    if (!portalSession?.modules.includes(module)) return;
+    if (module === "privatschwestern") setPage("contacts");
+    setActiveModule(module);
+  };
+
+  const refreshAuthorization = async () => {
+    setRefreshingAuthorization(true);
+    setPortalError("");
+    try {
+      setPortalSession(await restorePortalSession());
+    } catch (error) {
+      setPortalError(String(error));
+    } finally {
+      setRefreshingAuthorization(false);
+    }
+  };
 
   const signOut = async () => {
     await disconnectMicrosoft365Account();
     setPage("contacts");
+    setActiveModule(null);
     setVaultStatus(null);
     setExchangeSyncStatus({ state: "idle" });
     setPortalSession(await getPortalSession());
@@ -215,7 +253,7 @@ export default function App() {
     );
   }
 
-  if (!currentModuleAllowed || !["authenticated", "offline"].includes(portalSession.state)) {
+  if (!portalSession.account || portalSession.modules.length === 0 || !["authenticated", "offline"].includes(portalSession.state)) {
     const loginSession = portalSession.state === "authenticated" || portalSession.state === "offline"
       ? { ...portalSession, state: "access_denied" as const }
       : portalSession;
@@ -228,6 +266,33 @@ export default function App() {
           setPortalSession(session);
         }}
       />
+    );
+  }
+
+  if (!activeModule) {
+    return (
+      <div className={isAdminTest ? "app-channel-root admin-test-root" : "app-channel-root"}>
+        {isAdminTest && <AdminTestBanner sourceCommit={sourceCommit} />}
+        <PortalHomeScreen session={portalSession} onOpenModule={openModule} onSignOut={signOut} />
+      </div>
+    );
+  }
+
+  if (activeModule === "edv") {
+    return (
+      <div className={isAdminTest ? "app-channel-root admin-test-root" : "app-channel-root"}>
+        {isAdminTest && <AdminTestBanner sourceCommit={sourceCommit} />}
+        <EdvPortalPage
+          account={portalSession.account}
+          modules={portalSession.modules}
+          offline={portalSession.state === "offline"}
+          refreshing={refreshingAuthorization}
+          message={portalError}
+          onBack={() => setActiveModule(null)}
+          onRefreshAuthorization={refreshAuthorization}
+          onSignOut={signOut}
+        />
+      </div>
     );
   }
 
@@ -254,12 +319,7 @@ export default function App() {
 
   return (
     <div className={isAdminTest ? "app-channel-root admin-test-root" : "app-channel-root"}>
-      {isAdminTest && (
-        <div className="admin-test-banner" role="status">
-          ADMIN TEST · Isolierte Testdaten · Keine offizielle Version
-          {sourceCommit && <span>Commit {sourceCommit}</span>}
-        </div>
-      )}
+      {isAdminTest && <AdminTestBanner sourceCommit={sourceCommit} />}
       <div className="app-shell">
         <Sidebar
           activePage={page}
@@ -267,6 +327,7 @@ export default function App() {
           offline={portalSession.state === "offline"}
           exchangeSyncStatus={exchangeSyncStatus}
           onNavigate={setPage}
+          onOpenPortal={() => setActiveModule(null)}
           onSignOut={signOut}
           onSyncExchange={synchronizeExchange}
         />
