@@ -126,7 +126,7 @@ export function EdvPortalPage(props: EdvPortalPageProps) {
       <header className="edv-topbar">
         <button className="edv-back" type="button" onClick={props.onBack}><ArrowLeft size={20} /> Portalübersicht</button>
         <div className="edv-topbar-title"><span><Settings size={24} /></span><div><small>DMH PORTAL</small><strong>EDV-Verwaltung</strong></div></div>
-        <div className="edv-topbar-account"><span><strong>{props.account.displayName}</strong><small>{roleName(access?.level)}</small></span><button type="button" onClick={() => void props.onSignOut()}><LogOut size={19} /> Abmelden</button></div>
+        <div className="edv-topbar-account"><span><strong>{props.account.displayName}</strong><small>{roleName(access?.level)}</small></span><button type="button" onClick={() => void props.onSignOut()}><LogOut size={19} /> Konto wechseln</button></div>
       </header>
 
       <div className="edv-layout">

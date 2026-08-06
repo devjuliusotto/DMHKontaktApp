@@ -1,4 +1,5 @@
 import { ArrowRight, CalendarDays, CloudOff, KeyRound, LogOut, Settings, ShieldCheck, UsersRound } from "lucide-react";
+import { openMicrosoft365PasswordChange } from "../services/db";
 import type { PortalModuleId, PortalSession } from "../types/m365";
 
 interface PortalHomeScreenProps {
@@ -59,9 +60,10 @@ export function PortalHomeScreen({ session, onOpenModule, onSignOut }: PortalHom
             <strong>{account?.displayName}</strong>
             <small>{session.state === "offline" && <CloudOff size={14} />} {account?.userPrincipalName || account?.email}</small>
           </span>
-          <button className="icon-only compact" type="button" title="Abmelden" onClick={() => void onSignOut()}>
-            <LogOut size={19} />
-          </button>
+          <div className="portal-home-account-actions">
+            <button type="button" onClick={() => void openMicrosoft365PasswordChange()}><KeyRound size={18} /> Kennwort ändern</button>
+            <button type="button" onClick={() => void onSignOut()}><LogOut size={18} /> Konto wechseln</button>
+          </div>
         </div>
       </header>
 

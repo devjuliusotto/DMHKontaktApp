@@ -93,7 +93,7 @@ export function Sidebar({ activePage, account, offline, exchangeSyncStatus, onNa
                 : exchangeSyncStatus.state === "synced" ? <Check size={18} />
                   : offline ? <CloudOff size={18} /> : <RefreshCw size={18} />}
             </button>
-            <button className="icon-only compact" type="button" title="Abmelden" onClick={() => void onSignOut()}>
+            <button className="icon-only compact" type="button" title="Konto wechseln" aria-label="Microsoft-Konto wechseln" onClick={() => void onSignOut()}>
               <LogOut size={18} />
             </button>
           </div>

@@ -187,6 +187,18 @@ export function openMicrosoft365SignIn(): Promise<void> {
   return invoke("open_m365_sign_in");
 }
 
+export function openMicrosoft365PasswordReset(): Promise<void> {
+  return invoke("open_m365_password_reset");
+}
+
+export function openMicrosoft365PasswordChange(): Promise<void> {
+  return invoke("open_m365_password_change");
+}
+
+export function openMicrosoft365SecurityInfo(): Promise<void> {
+  return invoke("open_m365_security_info");
+}
+
 export function testMicrosoft365Connection(): Promise<Microsoft365ConnectionStatus> {
   return invoke("test_m365_connection");
 }

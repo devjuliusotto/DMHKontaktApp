@@ -4,11 +4,14 @@ import {
   Check,
   Copy,
   ExternalLink,
+  HelpCircle,
   KeyRound,
   LoaderCircle,
   LogOut,
   RefreshCw,
   ShieldCheck,
+  Smartphone,
+  UserRoundCheck,
   X
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -16,6 +19,9 @@ import {
   cancelMicrosoft365Connection,
   disconnectMicrosoft365Account,
   openMicrosoft365SignIn,
+  openMicrosoft365PasswordChange,
+  openMicrosoft365PasswordReset,
+  openMicrosoft365SecurityInfo,
   pollMicrosoft365Connection,
   restorePortalSession,
   startMicrosoft365Connection
@@ -33,6 +39,7 @@ export function PortalLoginScreen({ session, startupError = "", onSessionChanged
   const [deviceCode, setDeviceCode] = useState<Microsoft365DeviceCode | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(startupError || session.message);
+  const [showAccessHelp, setShowAccessHelp] = useState(false);
   const pollingRef = useRef(false);
 
   useEffect(() => {
@@ -132,6 +139,23 @@ export function PortalLoginScreen({ session, startupError = "", onSessionChanged
     }
   };
 
+  const openHelpPage = async (action: "reset" | "change" | "prepare") => {
+    setMessage("");
+    try {
+      if (action === "reset") await openMicrosoft365PasswordReset();
+      else if (action === "change") await openMicrosoft365PasswordChange();
+      else await openMicrosoft365SecurityInfo();
+      setMessage("Die sichere Microsoft-Seite wurde im Browser geöffnet.");
+    } catch (error) {
+      setMessage(String(error));
+    }
+  };
+
+  const openHelpFromDeviceFlow = async () => {
+    await cancelSignIn();
+    setShowAccessHelp(true);
+  };
+
   const configurationMissing = session.state === "configuration_required";
   const accessDenied = session.state === "access_denied";
 
@@ -146,12 +170,12 @@ export function PortalLoginScreen({ session, startupError = "", onSessionChanged
           </div>
         </div>
 
-        {!deviceCode && !configurationMissing && !accessDenied && (
+        {!deviceCode && !configurationMissing && !accessDenied && !showAccessHelp && (
           <>
             <div className="portal-login-intro">
               <div className="portal-login-icon"><Building2 size={32} /></div>
-              <h2>Mit dem Dienstkonto anmelden</h2>
-              <p>Ihre Microsoft-365-Anmeldung öffnet automatisch die für Sie freigegebenen Module.</p>
+              <h2>Bei Microsoft anmelden</h2>
+              <p>Klicken Sie auf den großen Knopf. Microsoft führt Sie anschließend Schritt für Schritt weiter.</p>
             </div>
             <div className="portal-login-trust">
               <ShieldCheck size={21} />
@@ -171,7 +195,45 @@ export function PortalLoginScreen({ session, startupError = "", onSessionChanged
               {busy ? <LoaderCircle className="spin" size={22} /> : <Building2 size={22} />}
               Mit Microsoft 365 anmelden
             </button>
+            <button className="portal-login-help-button large" type="button" onClick={() => setShowAccessHelp(true)}>
+              <HelpCircle size={22} /> Hilfe mit Anmeldung oder Kennwort
+            </button>
           </>
+        )}
+
+        {!deviceCode && showAccessHelp && (
+          <div className="portal-access-help">
+            <div className="portal-login-icon"><HelpCircle size={32} /></div>
+            <h2>Wobei brauchen Sie Hilfe?</h2>
+            <p>Wählen Sie einfach den Satz aus, der zu Ihrer Situation passt.</p>
+
+            <button className="portal-help-choice primary-choice" type="button" onClick={() => void openHelpPage("reset")}>
+              <KeyRound size={27} />
+              <span><strong>Ich habe mein Kennwort vergessen</strong><small>Microsoft prüft Ihre Identität und lässt Sie ein neues Kennwort wählen.</small></span>
+              <ExternalLink size={19} />
+            </button>
+            <button className="portal-help-choice" type="button" onClick={() => void openHelpPage("change")}>
+              <ShieldCheck size={27} />
+              <span><strong>Ich kenne mein Kennwort und möchte es ändern</strong><small>Öffnet direkt die sichere Microsoft-Seite zur Kennwortänderung.</small></span>
+              <ExternalLink size={19} />
+            </button>
+            <button className="portal-help-choice" type="button" onClick={() => void openHelpPage("prepare")}>
+              <Smartphone size={27} />
+              <span><strong>Telefon oder E-Mail für die Wiederherstellung einrichten</strong><small>Damit Sie Ihr Kennwort später ohne Hilfe der EDV zurücksetzen können.</small></span>
+              <ExternalLink size={19} />
+            </button>
+
+            <div className="portal-help-steps">
+              <strong>Nach einer Kennwortänderung</strong>
+              <span><b>1</b> Kehren Sie zu diesem Fenster zurück.</span>
+              <span><b>2</b> Klicken Sie unten auf „Zur Anmeldung“.</span>
+              <span><b>3</b> Melden Sie sich mit dem neuen Kennwort an.</span>
+            </div>
+            {message && <p className="portal-login-message" role="status">{message}</p>}
+            <button className="large portal-help-back" type="button" onClick={() => { setShowAccessHelp(false); setMessage(""); }}>
+              <UserRoundCheck size={21} /> Zur Anmeldung
+            </button>
+          </div>
         )}
 
         {deviceCode && (
@@ -187,12 +249,15 @@ export function PortalLoginScreen({ session, startupError = "", onSessionChanged
               <ExternalLink size={20} /> Microsoft-Anmeldung öffnen
             </button>
             <button type="button" onClick={cancelSignIn}><X size={20} /> Abbrechen</button>
+            <button className="portal-device-help" type="button" onClick={() => void openHelpFromDeviceFlow()}>
+              <HelpCircle size={19} /> Anmeldung klappt nicht
+            </button>
             <p className="portal-waiting"><LoaderCircle className="spin" size={19} /> Das Portal wartet auf Ihre Bestätigung.</p>
             {message && <p className="portal-login-message" role="status">{message}</p>}
           </div>
         )}
 
-        {!deviceCode && configurationMissing && (
+        {!deviceCode && configurationMissing && !showAccessHelp && (
           <div className="portal-access-state">
             <div className="portal-login-icon warning"><ShieldCheck size={31} /></div>
             <h2>Einrichtung durch die EDV erforderlich</h2>
@@ -208,7 +273,7 @@ export function PortalLoginScreen({ session, startupError = "", onSessionChanged
           </div>
         )}
 
-        {!deviceCode && accessDenied && (
+        {!deviceCode && accessDenied && !showAccessHelp && (
           <div className="portal-access-state">
             <div className="portal-login-icon warning"><ShieldCheck size={31} /></div>
             <h2>Noch kein Modul freigegeben</h2>
@@ -223,6 +288,9 @@ export function PortalLoginScreen({ session, startupError = "", onSessionChanged
               </button>
               <button type="button" onClick={signOut} disabled={busy}><LogOut size={20} /> Anderes Konto</button>
             </div>
+            <button className="portal-login-help-button" type="button" onClick={() => setShowAccessHelp(true)}>
+              <HelpCircle size={20} /> Hilfe mit dem Kennwort
+            </button>
           </div>
         )}
       </section>

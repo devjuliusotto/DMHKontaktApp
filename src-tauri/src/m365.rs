@@ -927,6 +927,35 @@ pub fn open_m365_sign_in() -> Result<(), String> {
     Ok(())
 }
 
+fn open_microsoft_account_page(url: &str, label: &str) -> Result<(), String> {
+    hidden_command("explorer.exe")
+        .arg(url)
+        .spawn()
+        .map_err(|error| format!("{label} konnte nicht geöffnet werden: {error}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn open_m365_password_reset() -> Result<(), String> {
+    open_microsoft_account_page("https://aka.ms/sspr", "Microsoft-Kennwortwiederherstellung")
+}
+
+#[tauri::command]
+pub fn open_m365_password_change() -> Result<(), String> {
+    open_microsoft_account_page(
+        "https://mysignins.microsoft.com/security-info/password/change",
+        "Microsoft-Kennwortänderung",
+    )
+}
+
+#[tauri::command]
+pub fn open_m365_security_info() -> Result<(), String> {
+    open_microsoft_account_page(
+        "https://aka.ms/ssprsetup",
+        "Microsoft-Sicherheitsinformationen",
+    )
+}
+
 #[tauri::command]
 pub async fn restore_portal_session(
     app: AppHandle,
