@@ -11,6 +11,7 @@ use zeroize::Zeroize;
 
 const TOKEN_SETTING_KEY: &str = "m365_token_bundle_v1";
 const PROFILE_SETTING_KEY: &str = "m365_connection_profile_v1";
+const EDV_TOKEN_SETTING_KEY: &str = "m365_edv_token_bundle_v1";
 const DPAPI_ENTROPY: &[u8] = b"de.dmh.agendakontakte.m365.v1";
 const GRAPH_PROFILE_URL: &str =
     "https://graph.microsoft.com/v1.0/me?$select=id,displayName,mail,userPrincipalName";
@@ -18,14 +19,17 @@ const GRAPH_GROUPS_URL: &str =
     "https://graph.microsoft.com/v1.0/me/transitiveMemberOf/microsoft.graph.group?$select=id";
 const LOGIN_SCOPES: &str =
     "openid profile offline_access User.Read Contacts.ReadWrite Calendars.ReadWrite";
+const EDV_SCOPES: &str = "openid profile offline_access User.Read User.Read.All User.ReadWrite.All User.EnableDisableAccount.All User-PasswordProfile.ReadWrite.All Group.Read.All Group.ReadWrite.All GroupMember.ReadWrite.All Tasks.ReadWrite";
 const PRIVATSCHWESTERN_MODULE: &str = "privatschwestern";
 const EDV_MODULE: &str = "edv";
 
 #[derive(Default)]
 pub struct Microsoft365Runtime {
     pending_device_flow: Mutex<Option<PendingDeviceFlow>>,
+    pending_edv_device_flow: Mutex<Option<PendingDeviceFlow>>,
     session_token: Mutex<Option<StoredTokenBundle>>,
     session_account: Mutex<Option<Microsoft365Account>>,
+    edv_session: Mutex<Option<StoredEdvTokenBundle>>,
 }
 
 #[derive(Debug, Clone)]
@@ -146,6 +150,22 @@ struct StoredTokenBundle {
     scope: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct StoredEdvTokenBundle {
+    refresh_token: String,
+    scope: String,
+    account_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EdvAdminSessionStatus {
+    configured: bool,
+    connected: bool,
+    account_matches: bool,
+    scopes: Vec<String>,
+}
+
 fn default_poll_interval() -> u64 {
     5
 }
@@ -154,6 +174,13 @@ fn client_id() -> Option<&'static str> {
     option_env!("M365_CLIENT_ID")
         .map(str::trim)
         .filter(|value| is_identifier(value))
+}
+
+fn edv_client_id() -> Option<&'static str> {
+    option_env!("M365_EDV_CLIENT_ID")
+        .map(str::trim)
+        .filter(|value| is_identifier(value))
+        .or_else(client_id)
 }
 
 fn tenant_id() -> &'static str {
@@ -316,8 +343,12 @@ fn delete_connection_settings(app: &AppHandle) -> Result<(), String> {
     conn.execute_batch("PRAGMA secure_delete = ON;")
         .map_err(|error| error.to_string())?;
     conn.execute(
-        "DELETE FROM app_settings WHERE key IN (?1, ?2)",
-        params![TOKEN_SETTING_KEY, PROFILE_SETTING_KEY],
+        "DELETE FROM app_settings WHERE key IN (?1, ?2, ?3)",
+        params![
+            TOKEN_SETTING_KEY,
+            PROFILE_SETTING_KEY,
+            EDV_TOKEN_SETTING_KEY
+        ],
     )
     .map_err(|error| error.to_string())?;
     Ok(())
@@ -384,6 +415,72 @@ fn read_persisted_token(app: &AppHandle) -> Result<Option<StoredTokenBundle>, St
     })?;
     token_json.zeroize();
     Ok(Some(token))
+}
+
+fn read_persisted_edv_token(app: &AppHandle) -> Result<Option<StoredEdvTokenBundle>, String> {
+    let Some(encoded) = get_setting(app, EDV_TOKEN_SETTING_KEY)? else {
+        return Ok(None);
+    };
+    let protected = BASE64_STANDARD
+        .decode(encoded)
+        .map_err(|_| "Die gespeicherte EDV-Anmeldung ist ungültig.".to_string())?;
+    let mut token_json = unprotect_secret(&protected)?;
+    let token = serde_json::from_slice(&token_json)
+        .map_err(|_| "Die gespeicherte EDV-Anmeldung konnte nicht gelesen werden.".to_string())?;
+    token_json.zeroize();
+    Ok(Some(token))
+}
+
+fn read_edv_token(app: &AppHandle, state: &AppState) -> Result<StoredEdvTokenBundle, String> {
+    if let Some(token) = state
+        .m365
+        .edv_session
+        .lock()
+        .map_err(|_| "EDV-Sitzung konnte intern nicht gelesen werden.".to_string())?
+        .clone()
+    {
+        return Ok(token);
+    }
+    read_persisted_edv_token(app)?
+        .ok_or_else(|| "Die administrative EDV-Sitzung ist nicht verbunden.".to_string())
+}
+
+fn save_edv_token(
+    app: &AppHandle,
+    state: &AppState,
+    token: &StoredEdvTokenBundle,
+) -> Result<(), String> {
+    let mut token_json = serde_json::to_vec(token)
+        .map_err(|_| "EDV-Anmeldung konnte nicht sicher gespeichert werden.".to_string())?;
+    let protected = protect_secret(&token_json)?;
+    token_json.zeroize();
+    set_setting(
+        app,
+        EDV_TOKEN_SETTING_KEY,
+        &BASE64_STANDARD.encode(protected),
+    )?;
+    *state
+        .m365
+        .edv_session
+        .lock()
+        .map_err(|_| "EDV-Sitzung konnte intern nicht gespeichert werden.".to_string())? =
+        Some(token.clone());
+    Ok(())
+}
+
+fn clear_edv_session(app: &AppHandle, state: &AppState) -> Result<(), String> {
+    *state
+        .m365
+        .edv_session
+        .lock()
+        .map_err(|_| "EDV-Sitzung konnte intern nicht beendet werden.".to_string())? = None;
+    let conn = open_db(app)?;
+    conn.execute(
+        "DELETE FROM app_settings WHERE key = ?1",
+        [EDV_TOKEN_SETTING_KEY],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 fn read_account(app: &AppHandle, state: &AppState) -> Result<Option<Microsoft365Account>, String> {
@@ -930,7 +1027,243 @@ pub async fn test_m365_connection(
 #[tauri::command]
 pub fn disconnect_m365_account(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     clear_pending_flow(&state)?;
+    if let Ok(mut pending) = state.m365.pending_edv_device_flow.lock() {
+        *pending = None;
+    }
+    if let Ok(mut token) = state.m365.edv_session.lock() {
+        *token = None;
+    }
     clear_session(&app, &state)
+}
+
+#[tauri::command]
+pub fn get_edv_admin_session_status(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<EdvAdminSessionStatus, String> {
+    let primary = read_account(&app, &state)?;
+    let token = read_edv_token(&app, &state).ok();
+    let account_matches = token
+        .as_ref()
+        .zip(primary.as_ref())
+        .is_some_and(|(token, account)| token.account_id == account.id);
+    Ok(EdvAdminSessionStatus {
+        configured: edv_client_id().is_some(),
+        connected: token.is_some() && account_matches,
+        account_matches,
+        scopes: token
+            .map(|value| value.scope.split_whitespace().map(str::to_string).collect())
+            .unwrap_or_default(),
+    })
+}
+
+#[tauri::command]
+pub async fn start_edv_admin_connection(
+    state: State<'_, AppState>,
+) -> Result<Microsoft365DeviceCode, String> {
+    let client_id = edv_client_id()
+        .ok_or_else(|| "Die Microsoft-Anwendungs-ID für die EDV-Verwaltung fehlt.".to_string())?;
+    let response = reqwest::Client::new()
+        .post(oauth_url("devicecode"))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(form_body(&[
+            ("client_id", client_id),
+            ("scope", EDV_SCOPES),
+        ]))
+        .send()
+        .await
+        .map_err(|_| "Microsoft-Anmeldedienst ist nicht erreichbar.".to_string())?;
+    if !response.status().is_success() {
+        let error = response
+            .json::<OAuthErrorResponse>()
+            .await
+            .unwrap_or(OAuthErrorResponse {
+                error: "unknown_error".to_string(),
+                error_description: String::new(),
+            });
+        return Err(oauth_error_message(&error));
+    }
+    let device = response
+        .json::<DeviceCodeResponse>()
+        .await
+        .map_err(|_| "Microsoft hat eine ungültige EDV-Anmeldeantwort geliefert.".to_string())?;
+    let expires_at = (Utc::now() + ChronoDuration::seconds(device.expires_in)).to_rfc3339();
+    *state
+        .m365
+        .pending_edv_device_flow
+        .lock()
+        .map_err(|_| "EDV-Anmeldung konnte intern nicht vorbereitet werden.".to_string())? =
+        Some(PendingDeviceFlow {
+            device_code: device.device_code,
+            expires_at: expires_at.clone(),
+            interval_seconds: device.interval.max(3),
+            remember_sign_in: true,
+        });
+    Ok(Microsoft365DeviceCode {
+        user_code: device.user_code,
+        verification_uri: device.verification_uri,
+        expires_at,
+        interval_seconds: device.interval.max(3),
+    })
+}
+
+#[tauri::command]
+pub async fn poll_edv_admin_connection(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Microsoft365PollResult, String> {
+    let client_id = edv_client_id()
+        .ok_or_else(|| "Die Microsoft-Anwendungs-ID für die EDV-Verwaltung fehlt.".to_string())?;
+    let flow = state
+        .m365
+        .pending_edv_device_flow
+        .lock()
+        .map_err(|_| "EDV-Anmeldung konnte intern nicht gelesen werden.".to_string())?
+        .clone()
+        .ok_or_else(|| "Es läuft keine administrative EDV-Anmeldung.".to_string())?;
+    let token = match request_token(&[
+        ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+        ("client_id", client_id),
+        ("device_code", &flow.device_code),
+    ])
+    .await
+    {
+        Ok(token) => token,
+        Err(error) if error.error == "authorization_pending" => {
+            return Ok(Microsoft365PollResult {
+                state: "pending".to_string(),
+                account: None,
+                interval_seconds: flow.interval_seconds,
+            })
+        }
+        Err(error) if error.error == "slow_down" => {
+            return Ok(Microsoft365PollResult {
+                state: "pending".to_string(),
+                account: None,
+                interval_seconds: flow.interval_seconds + 5,
+            })
+        }
+        Err(error) => return Err(oauth_error_message(&error)),
+    };
+    let profile = graph_profile(&token.access_token).await?;
+    let primary = read_account(&app, &state)?
+        .ok_or_else(|| "Das normale Microsoft-Konto ist nicht mehr verbunden.".to_string())?;
+    if profile.id != primary.id {
+        return Err(
+            "Für die EDV-Verwaltung muss dasselbe Microsoft-Konto verwendet werden.".to_string(),
+        );
+    }
+    if !modules_for_groups(
+        &primary.group_ids,
+        &privatschwestern_group_ids(),
+        &edv_group_ids(),
+    )
+    .iter()
+    .any(|module| module == EDV_MODULE)
+    {
+        return Err("Dieses Konto ist nicht für das EDV-Modul freigegeben.".to_string());
+    }
+    save_edv_token(
+        &app,
+        &state,
+        &StoredEdvTokenBundle {
+            refresh_token: token.refresh_token.ok_or_else(|| {
+                "Microsoft hat keine erneuerbare EDV-Anmeldung geliefert.".to_string()
+            })?,
+            scope: token.scope,
+            account_id: profile.id,
+        },
+    )?;
+    *state
+        .m365
+        .pending_edv_device_flow
+        .lock()
+        .map_err(|_| "EDV-Anmeldung konnte intern nicht beendet werden.".to_string())? = None;
+    Ok(Microsoft365PollResult {
+        state: "connected".to_string(),
+        account: Some(primary),
+        interval_seconds: flow.interval_seconds,
+    })
+}
+
+#[tauri::command]
+pub fn disconnect_edv_admin_session(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    clear_edv_session(&app, &state)
+}
+
+pub(crate) async fn acquire_edv_graph_access_token(
+    app: &AppHandle,
+    state: &AppState,
+) -> Result<String, String> {
+    let client_id = edv_client_id()
+        .ok_or_else(|| "Die Microsoft-Anwendungs-ID für die EDV-Verwaltung fehlt.".to_string())?;
+    let primary = read_account(app, state)?
+        .ok_or_else(|| "Microsoft-365-Konto ist nicht verbunden.".to_string())?;
+    if !modules_for_groups(
+        &primary.group_ids,
+        &privatschwestern_group_ids(),
+        &edv_group_ids(),
+    )
+    .iter()
+    .any(|module| module == EDV_MODULE)
+    {
+        return Err("Dieses Konto ist nicht für das EDV-Modul freigegeben.".to_string());
+    }
+    let stored = read_edv_token(app, state)?;
+    if stored.account_id != primary.id {
+        return Err("Die EDV-Sitzung gehört zu einem anderen Microsoft-Konto.".to_string());
+    }
+    let token = request_token(&[
+        ("grant_type", "refresh_token"),
+        ("client_id", client_id),
+        ("refresh_token", &stored.refresh_token),
+        ("scope", EDV_SCOPES),
+    ])
+    .await
+    .map_err(|error| oauth_error_message(&error))?;
+    save_edv_token(
+        app,
+        state,
+        &StoredEdvTokenBundle {
+            refresh_token: token.refresh_token.unwrap_or(stored.refresh_token),
+            scope: token.scope,
+            account_id: stored.account_id,
+        },
+    )?;
+    Ok(token.access_token)
+}
+
+pub(crate) fn edv_actor(
+    app: &AppHandle,
+    state: &AppState,
+) -> Result<(String, String, String), String> {
+    let account = read_account(app, state)?
+        .ok_or_else(|| "Microsoft-365-Konto ist nicht verbunden.".to_string())?;
+    Ok((
+        account.id,
+        account.display_name,
+        account.user_principal_name,
+    ))
+}
+
+pub(crate) fn edv_access_level(app: &AppHandle, state: &AppState) -> Result<&'static str, String> {
+    let account = read_account(app, state)?
+        .ok_or_else(|| "Microsoft-365-Konto ist nicht verbunden.".to_string())?;
+    let memberships = account
+        .group_ids
+        .iter()
+        .map(|value| value.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    if edv_group_ids()
+        .iter()
+        .any(|group| memberships.contains(&group.to_ascii_lowercase()))
+    {
+        return Ok("identity_admin");
+    }
+    Err("Dieses Konto ist nicht für das EDV-Modul freigegeben.".to_string())
 }
 
 pub(crate) fn clear_runtime(app: &AppHandle) -> Result<(), String> {
@@ -950,6 +1283,16 @@ pub(crate) fn clear_runtime(app: &AppHandle) -> Result<(), String> {
         .lock()
         .map_err(|_| "Microsoft-Konto konnte intern nicht zurückgesetzt werden.".to_string())? =
         None;
+    *state
+        .m365
+        .pending_edv_device_flow
+        .lock()
+        .map_err(|_| "EDV-Anmeldung konnte intern nicht zurückgesetzt werden.".to_string())? = None;
+    *state
+        .m365
+        .edv_session
+        .lock()
+        .map_err(|_| "EDV-Sitzung konnte intern nicht zurückgesetzt werden.".to_string())? = None;
     Ok(())
 }
 

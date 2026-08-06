@@ -55,10 +55,15 @@ Unter `Repository → Settings → Secrets and variables → Actions → Variabl
 | `M365_TENANT_ID` | Mandanten-ID des DMH-Tenants |
 | `DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS` | Objekt-ID der Gruppe für das vorhandene Kontakte-/Kalender-Modul |
 | `DMH_PORTAL_EDV_GROUP_IDS` | Optional: Objekt-ID der EDV-Gruppe |
+| `M365_EDV_CLIENT_ID` | Optional: separate Entra-App für die administrative EDV-Sitzung |
 
 Mehrere Gruppen-IDs für dasselbe Modul werden durch Kommas getrennt. Die
 Privatschwestern-Gruppe ist für Release-Builds verpflichtend. Ohne konfigurierte
 Modulgruppe bleibt das Portal sicher geschlossen und zeigt einen EDV-Hinweis.
+
+Die Mitglieder von `DMH_PORTAL_EDV_GROUP_IDS` erhalten innerhalb des EDV-Moduls
+den vollständigen Funktionsumfang. Microsoft-Entra-Rollen bleiben eine unabhängige
+zweite Sicherheitsprüfung für Änderungen an Benutzern, Kennwörtern und Gruppen.
 
 Beide Werte sind Identifikatoren, keine Kennwörter. Die Release-Workflows geben
 sie beim Kompilieren an den Rust-Build weiter.
@@ -139,3 +144,37 @@ beenden und neu bauen.
   `Contacts.ReadWrite` und `Calendars.ReadWrite` sowie die
   Administratoreinwilligung kontrollieren. Danach einmal ab- und wieder
   anmelden, damit der Token die neuen Rechte erhält.
+
+## EDV-Verwaltung und Planner
+
+Das EDV-Modul verwendet absichtlich eine zweite Microsoft-Anmeldung. Dadurch
+erhält die normale Portal-Sitzung keine Verzeichnis- oder Planner-Schreibrechte.
+Für die sauberste Trennung wird eine zweite öffentliche Entra-App registriert
+und deren Anwendungs-ID als `M365_EDV_CLIENT_ID` hinterlegt. Ohne diese Variable
+wird vorübergehend die bestehende App-Registrierung verwendet.
+
+Für die EDV-App müssen **Allow public client flows** und folgende delegierte
+Microsoft-Graph-Berechtigungen aktiviert und per Admin Consent bestätigt werden:
+
+- `User.Read`, `User.Read.All`, `User.ReadWrite.All`
+- `User.EnableDisableAccount.All`
+- `User-PasswordProfile.ReadWrite.All`
+- `Group.Read.All`, `Group.ReadWrite.All`, `GroupMember.ReadWrite.All`
+- `Tasks.ReadWrite`
+- `offline_access`, `openid`, `profile`
+
+Zusätzlich benötigt der angemeldete Mensch eine passende Entra-Rolle. Für
+Gruppenänderungen ist **Groups Administrator**, für Benutzeränderungen **User
+Administrator** vorgesehen. Die Portalgruppe allein verleiht keine
+Microsoft-Administratorrechte.
+
+Für Tickets wird ein **Basisplan** in Microsoft Planner angelegt. Die Plan-ID
+steht in der Planner-Webadresse und wird einmalig im EDV-Modul unter **Tickets**
+eingetragen. Buckets erscheinen als Spalten, Aufgaben als Karten. Planner selbst
+wird den Anwendern nicht angezeigt.
+
+Das Systeminventar und das zusätzliche Portal-Änderungsprotokoll sind in dieser
+Ausbaustufe gerätebezogen in SQLite gespeichert. Entra- und Planner-Änderungen
+bleiben zusätzlich in Microsoft 365 nachvollziehbar. Für ein gemeinsames
+Inventar auf mehreren PCs ist als nächster Schritt eine SharePoint-Liste mit
+`Sites.Selected` vorgesehen.

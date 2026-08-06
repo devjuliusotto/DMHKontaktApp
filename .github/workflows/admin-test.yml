@@ -80,6 +80,7 @@ jobs:
         shell: pwsh
         env:
           M365_CLIENT_ID: ${{ vars.M365_CLIENT_ID }}
+          M365_EDV_CLIENT_ID: ${{ vars.M365_EDV_CLIENT_ID }}
           M365_TENANT_ID: ${{ vars.M365_TENANT_ID }}
           DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS: ${{ vars.DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS }}
           DMH_PORTAL_EDV_GROUP_IDS: ${{ vars.DMH_PORTAL_EDV_GROUP_IDS }}
@@ -174,6 +175,7 @@ jobs:
         env:
           DMH_RELEASE_CHANNEL: admin-test
           M365_CLIENT_ID: ${{ vars.M365_CLIENT_ID }}
+          M365_EDV_CLIENT_ID: ${{ vars.M365_EDV_CLIENT_ID }}
           M365_TENANT_ID: ${{ vars.M365_TENANT_ID }}
           DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS: ${{ vars.DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS }}
           DMH_PORTAL_EDV_GROUP_IDS: ${{ vars.DMH_PORTAL_EDV_GROUP_IDS }}
@@ -189,6 +191,7 @@ jobs:
           VITE_SOURCE_COMMIT: ${{ steps.source.outputs.sha }}
           DMH_RELEASE_CHANNEL: admin-test
           M365_CLIENT_ID: ${{ vars.M365_CLIENT_ID }}
+          M365_EDV_CLIENT_ID: ${{ vars.M365_EDV_CLIENT_ID }}
           M365_TENANT_ID: ${{ vars.M365_TENANT_ID }}
           DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS: ${{ vars.DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS }}
           DMH_PORTAL_EDV_GROUP_IDS: ${{ vars.DMH_PORTAL_EDV_GROUP_IDS }}
@@ -220,6 +223,7 @@ jobs:
           VITE_SOURCE_COMMIT: ${{ steps.source.outputs.sha }}
           DMH_RELEASE_CHANNEL: admin-test
           M365_CLIENT_ID: ${{ vars.M365_CLIENT_ID }}
+          M365_EDV_CLIENT_ID: ${{ vars.M365_EDV_CLIENT_ID }}
           M365_TENANT_ID: ${{ vars.M365_TENANT_ID }}
           DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS: ${{ vars.DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS }}
           DMH_PORTAL_EDV_GROUP_IDS: ${{ vars.DMH_PORTAL_EDV_GROUP_IDS }}

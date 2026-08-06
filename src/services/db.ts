@@ -29,7 +29,15 @@ import type {
   Microsoft365DeviceCode,
   Microsoft365PollResult,
   PortalSession,
-  ExchangeSyncResult
+  ExchangeSyncResult,
+  EdvAccessProfile,
+  EdvAdminSessionStatus,
+  EdvDirectoryUser,
+  EdvDirectoryGroup,
+  PlannerBoard,
+  PlannerTask,
+  EdvSystemRecord,
+  EdvAuditEntry
 } from "../types/m365";
 import { requestExchangeSync } from "../utils/exchangeSync";
 
@@ -185,6 +193,120 @@ export function testMicrosoft365Connection(): Promise<Microsoft365ConnectionStat
 
 export function disconnectMicrosoft365Account(): Promise<void> {
   return invoke("disconnect_m365_account");
+}
+
+export function getEdvAdminSessionStatus(): Promise<EdvAdminSessionStatus> {
+  return invoke("get_edv_admin_session_status");
+}
+
+export function startEdvAdminConnection(): Promise<Microsoft365DeviceCode> {
+  return invoke("start_edv_admin_connection");
+}
+
+export function pollEdvAdminConnection(): Promise<Microsoft365PollResult> {
+  return invoke("poll_edv_admin_connection");
+}
+
+export function disconnectEdvAdminSession(): Promise<void> {
+  return invoke("disconnect_edv_admin_session");
+}
+
+export function getEdvAccessProfile(): Promise<EdvAccessProfile> {
+  return invoke("get_edv_access_profile");
+}
+
+export function getEdvPlannerPlanId(): Promise<string> {
+  return invoke("get_edv_planner_plan_id");
+}
+
+export function setEdvPlannerPlanId(planId: string): Promise<void> {
+  return invoke("set_edv_planner_plan_id", { planId });
+}
+
+export function loadPlannerBoard(planId: string): Promise<PlannerBoard> {
+  return invoke("load_planner_board", { planId });
+}
+
+export function createPlannerTask(planId: string, input: {
+  title: string; bucketId: string; assigneeIds: string[]; dueDateTime: string | null; priority: number;
+}): Promise<PlannerTask> {
+  return invoke("create_planner_task", { planId, input });
+}
+
+export function updatePlannerTask(input: {
+  id: string; etag: string; title: string; bucketId: string; dueDateTime: string | null; priority: number; percentComplete: number;
+}): Promise<void> {
+  return invoke("update_planner_task", { input });
+}
+
+export function deletePlannerTask(id: string, etag: string, title: string): Promise<void> {
+  return invoke("delete_planner_task", { id, etag, title });
+}
+
+export function listDirectoryUsers(): Promise<EdvDirectoryUser[]> {
+  return invoke("list_directory_users");
+}
+
+export function listDirectoryGroups(): Promise<EdvDirectoryGroup[]> {
+  return invoke("list_directory_groups");
+}
+
+export function listDirectoryGroupMembers(groupId: string): Promise<EdvDirectoryUser[]> {
+  return invoke("list_group_members", { groupId });
+}
+
+export function addDirectoryGroupMember(groupId: string, userId: string, userName: string): Promise<void> {
+  return invoke("add_group_member", { groupId, userId, userName });
+}
+
+export function removeDirectoryGroupMember(groupId: string, userId: string, userName: string): Promise<void> {
+  return invoke("remove_group_member", { groupId, userId, userName });
+}
+
+export function createDirectoryUser(input: {
+  displayName: string; userPrincipalName: string; initialPassword: string; jobTitle: string; department: string;
+}): Promise<EdvDirectoryUser> {
+  return invoke("create_directory_user", { input });
+}
+
+export function updateDirectoryUser(input: {
+  id: string; displayName: string; accountEnabled: boolean; jobTitle: string; department: string; mobilePhone: string;
+}): Promise<void> {
+  return invoke("update_directory_user", { input });
+}
+
+export function resetDirectoryUserPassword(userId: string, userName: string, temporaryPassword: string): Promise<void> {
+  return invoke("reset_directory_user_password", { userId, userName, temporaryPassword });
+}
+
+export function createDirectoryGroup(input: { displayName: string; description: string }): Promise<EdvDirectoryGroup> {
+  return invoke("create_directory_group", { input });
+}
+
+export function updateDirectoryGroup(input: { id: string; displayName: string; description: string }): Promise<void> {
+  return invoke("update_directory_group", { input });
+}
+
+export function deleteDirectoryGroup(groupId: string, groupName: string): Promise<void> {
+  return invoke("delete_directory_group", { groupId, groupName });
+}
+
+export function listEdvSystems(): Promise<EdvSystemRecord[]> {
+  return invoke("list_edv_systems");
+}
+
+export function saveEdvSystem(input: {
+  id?: string; name: string; category: string; owner: string; status: string; provider: string; url: string; notes: string;
+}): Promise<EdvSystemRecord> {
+  return invoke("save_edv_system", { input });
+}
+
+export function deleteEdvSystem(id: string, name: string): Promise<void> {
+  return invoke("delete_edv_system", { id, name });
+}
+
+export function listEdvAuditLog(): Promise<EdvAuditEntry[]> {
+  return invoke("list_edv_audit_log");
 }
 
 export function importOutlookStore(path: string): Promise<{ contacts: ContactInput[]; events: CalendarEvent[] }> {
