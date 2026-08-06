@@ -1,30 +1,51 @@
-# Microsoft-365-Verbindung einrichten
+# Microsoft-365-Anmeldung für das DMH Portal einrichten
 
-Die App verbindet ein dienstliches Microsoft-365-Konto unter:
+Das DMH Portal verwendet das dienstliche Microsoft-365-Konto als primäre
+Anmeldung. Nach der Anmeldung werden die Entra-Sicherheitsgruppen des Benutzers
+geprüft und nur die freigegebenen Module geöffnet.
 
-`Einstellungen → Advanced → Microsoft 365`
-
-Diese erste Integrationsstufe liest ausschließlich das Profil des angemeldeten
-Benutzers. Kontakte, Kalender, Teams und der lokale Passwort-Tresor werden noch
-nicht synchronisiert oder verändert.
+Neben Profil und Gruppenmitgliedschaften synchronisiert das Modul
+Privatschwestern die persönlichen Exchange-Kontakte und den primären Kalender
+des angemeldeten Benutzers. Der Passwort-Tresor bleibt in dieser Etappe lokal.
 
 ## 1. Anwendung in Microsoft Entra ID registrieren
 
 1. Microsoft Entra Admin Center öffnen.
-2. Eine neue App-Registrierung für `DMH Kontakte und Kalender` anlegen.
+2. Eine neue App-Registrierung für `DMH Portal` anlegen oder die vorhandene
+   Registrierung von `DMH Kontakte und Kalender` weiterverwenden.
 3. Als Kontotyp ausschließlich Konten dieses Organisationsverzeichnisses wählen
    (Single Tenant).
 4. Unter **Authentifizierung → Erweiterte Einstellungen** die Option
    **Öffentliche Clientflows zulassen** aktivieren.
-5. Unter **API-Berechtigungen** nur die delegierte Microsoft-Graph-Berechtigung
-   `User.Read` hinzufügen.
-6. Mandanten-ID und Anwendungs-ID notieren.
+5. Unter **API-Berechtigungen** folgende delegierte Microsoft-Graph-
+   Berechtigungen hinzufügen:
+   - `User.Read`
+   - `Contacts.ReadWrite`
+   - `Calendars.ReadWrite`
+6. **Administratoreinwilligung für den DMH-Mandanten erteilen** wählen und den
+   Status aller drei Berechtigungen kontrollieren.
+7. Mandanten-ID und Anwendungs-ID notieren.
 
 Für den Device-Code-Flow ist kein Client-Secret und keine Redirect-URI
 erforderlich. Ein Client-Secret darf niemals in den Desktop-Build aufgenommen
 werden.
 
-## 2. GitHub-Variablen hinterlegen
+## 2. Sicherheitsgruppen anlegen
+
+Mindestens eine statische Sicherheitsgruppe im Microsoft Entra Admin Center
+anlegen, zum Beispiel:
+
+- `DMH-Portal-Privatschwestern`
+- optional `DMH-Portal-EDV`
+
+Die Benutzer den passenden Gruppen zuordnen und unter **Gruppen → Übersicht**
+jeweils die **Objekt-ID** kopieren. Verwendet werden ausschließlich Objekt-IDs;
+eine spätere Umbenennung der Gruppe ändert dadurch keine Berechtigung.
+
+Verschachtelte Mitgliedschaften werden ebenfalls berücksichtigt. Normale
+Exchange-Verteilerlisten sollen nicht als Sicherheitsgrenze verwendet werden.
+
+## 3. GitHub-Variablen hinterlegen
 
 Unter `Repository → Settings → Secrets and variables → Actions → Variables`:
 
@@ -32,17 +53,25 @@ Unter `Repository → Settings → Secrets and variables → Actions → Variabl
 |---|---|
 | `M365_CLIENT_ID` | Anwendungs-ID der Entra-App |
 | `M365_TENANT_ID` | Mandanten-ID des DMH-Tenants |
+| `DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS` | Objekt-ID der Gruppe für das vorhandene Kontakte-/Kalender-Modul |
+| `DMH_PORTAL_EDV_GROUP_IDS` | Optional: Objekt-ID der EDV-Gruppe |
+
+Mehrere Gruppen-IDs für dasselbe Modul werden durch Kommas getrennt. Die
+Privatschwestern-Gruppe ist für Release-Builds verpflichtend. Ohne konfigurierte
+Modulgruppe bleibt das Portal sicher geschlossen und zeigt einen EDV-Hinweis.
 
 Beide Werte sind Identifikatoren, keine Kennwörter. Die Release-Workflows geben
 sie beim Kompilieren an den Rust-Build weiter.
 
-## 3. Lokal testen
+## 4. Lokal testen
 
 Die Variablen müssen gesetzt sein, bevor Rust kompiliert wird:
 
 ```powershell
 $env:M365_CLIENT_ID = "<Anwendungs-ID>"
 $env:M365_TENANT_ID = "<Mandanten-ID>"
+$env:DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS = "<Objekt-ID der Sicherheitsgruppe>"
+$env:DMH_PORTAL_EDV_GROUP_IDS = "<optionale Objekt-ID der EDV-Gruppe>"
 npm run tauri:dev:admin-test
 ```
 
@@ -52,21 +81,61 @@ beenden und neu bauen.
 ## Sicherheit und Datenspeicherung
 
 - Die App sieht oder speichert das Microsoft-Kennwort nicht.
-- Angefordert werden zunächst nur `openid`, `profile`, `offline_access` und
-  `User.Read`.
-- Der erneuerbare Token wird mit Windows DPAPI an den aktuellen
-  Windows-Benutzer und Computer gebunden gespeichert.
+- Angefordert werden `openid`, `profile`, `offline_access`, `User.Read`,
+  `Contacts.ReadWrite` und `Calendars.ReadWrite` als delegierte Rechte. Die App
+  arbeitet damit ausschließlich im Kontext des angemeldeten Benutzers.
+- Mit **Angemeldet bleiben** wird der erneuerbare Token mit Windows DPAPI an den
+  aktuellen Windows-Benutzer und Computer gebunden gespeichert.
+- Ohne **Angemeldet bleiben** verbleibt die Sitzung nur im Arbeitsspeicher und
+  endet vollständig mit dem Prozess.
+- Beim Start wird die Sitzung online erneuert. Ist Microsoft 365 vorübergehend
+  nicht erreichbar, darf eine zuvor bestätigte Sitzung mit den zuletzt
+  bestätigten Modulrechten höchstens 24 Stunden offline weiterarbeiten.
 - `Konto trennen` löscht den geschützten Token und das lokale Kontoprofil.
-- Kontakte und Kalender erhalten später eigene, ausdrücklich freizugebende
-  Berechtigungs- und Migrationsschritte.
+- Lokale Änderungen bleiben bei fehlender Verbindung erhalten und werden beim
+  nächsten erfolgreichen Lauf übertragen.
+- Teams-Besprechungsinformationen und Teilnehmer werden bei einer Bearbeitung
+  im Portal nicht überschrieben. Das Löschen eines vom Benutzer organisierten
+  Besprechungstermins kann – wie in Outlook – eine Absage auslösen.
+
+## Verhalten der Synchronisierung
+
+- Die erste Synchronisierung startet kurz nach der Anmeldung.
+- Weitere Läufe starten ungefähr alle fünf Minuten und 1,5 Sekunden nach
+  lokalen Änderungen. Viele schnelle Änderungen werden dabei gebündelt.
+- Über das Wolken-/Synchronisierungssymbol in der Seitenleiste oder unter
+  **Einstellungen → Erweitert → Microsoft 365** kann jederzeit manuell
+  synchronisiert werden.
+- Kontakte bleiben im lokalen SQLite-Cache. Kalenderdaten bleiben im lokalen,
+  durch die App gesicherten Browser-Speicher und werden weiterhin in die
+  vorhandenen App-Sicherungen aufgenommen.
+- Graph-Abfragen laufen asynchron und seitenweise. Die Oberfläche bleibt auch
+  während größerer Übertragungen bedienbar.
+- Neue lokale Datensätze werden in Exchange angelegt; neue Exchange-Datensätze
+  werden lokal übernommen. Löschungen werden in beide Richtungen übertragen.
+- Bei gleichzeitiger Änderung derselben verknüpften Version gewinnt die zuletzt
+  geänderte Version. Der Lauf weist solche Konflikte in seiner Zusammenfassung
+  aus.
+- Lokale Kontaktgruppen werden als Exchange-Kategorien übertragen. Das Feld
+  **Kurzinfo** wird mit dem Exchange-Feld **Firma** synchronisiert.
+- Synchronisiert werden der Standard-Kontaktordner und der primäre persönliche
+  Kalender des Benutzers. Standardserien werden unterstützt; Teams-Termine
+  bleiben als Termine im Kalender sichtbar.
 
 ## Fehlersuche
 
 - **Einrichtung durch die EDV erforderlich:** `M365_CLIENT_ID` war beim Build
-  nicht gesetzt oder ungültig.
+  nicht gesetzt oder es wurde keine Portal-Sicherheitsgruppe konfiguriert.
+- **Noch kein Modul freigegeben:** Das Konto ist gültig, gehört aber keiner der
+  im Build hinterlegten Gruppen an. Gruppenmitgliedschaft prüfen und in der App
+  **Gruppen erneut prüfen** wählen.
 - **Microsoft-Anwendung ist nicht korrekt eingerichtet:** App-Registrierung,
   Mandant und öffentliche Clientflows prüfen.
 - **Kein erneuerbarer Token:** `offline_access` oder öffentliche Clientflows
   wurden vom Tenant blockiert.
 - **Anmeldung abgelaufen:** Konto in der App trennen und erneut verbinden;
   zusätzlich Entra-Anmeldeprotokolle und Conditional-Access-Regeln prüfen.
+- **HTTP 403 bei der Synchronisierung:** Die delegierten Rechte
+  `Contacts.ReadWrite` und `Calendars.ReadWrite` sowie die
+  Administratoreinwilligung kontrollieren. Danach einmal ab- und wieder
+  anmelden, damit der Token die neuen Rechte erhält.

@@ -7,6 +7,7 @@ import type { CalendarEvent } from "../types/calendar";
 import type { OutlookContactImportResult } from "../types/contact";
 import { calendarColorFromCategory, calendarStorageKey } from "../utils/calendar";
 import { mergeCalendarEventsExactly } from "../utils/calendarDuplicates";
+import { requestExchangeSync } from "../utils/exchangeSync";
 
 function storedCalendarEvents(): CalendarEvent[] {
   const raw = localStorage.getItem(calendarStorageKey);
@@ -26,7 +27,7 @@ export function SimpleImportPage() {
     setMessageType("success");
     setMessage(
       `${result.imported} Kontakte aus ${source === "classic" ? "Outlook Classic" : "dem neuen Outlook"} wurden einmalig übernommen. `
-      + `${result.skippedExactDuplicates} in allen Feldern exakt gleiche Kontakte wurden ausgelassen. Kontakte mit mindestens einer Abweichung wurden erhalten. Es besteht keine Synchronisierung.`
+      + `${result.skippedExactDuplicates} in allen Feldern exakt gleiche Kontakte wurden ausgelassen. Kontakte mit mindestens einer Abweichung wurden erhalten und anschließend mit Exchange synchronisiert.`
     );
   };
 
@@ -54,7 +55,7 @@ export function SimpleImportPage() {
 
   const importAppointmentsOnce = async () => {
     const confirmed = window.confirm(
-      "Alle Termine aus allen erreichbaren Kalenderordnern des aktuellen Outlook-Classic-Profils einmalig in DMH Kontakte und Kalender kopieren?\n\nOutlook wird nicht verändert und es wird keine automatische Synchronisierung eingerichtet. Bereits importierte Termine werden ausgelassen."
+      "Alle Termine aus allen erreichbaren Kalenderordnern des aktuellen Outlook-Classic-Profils einmalig in das DMH Portal kopieren?\n\nOutlook Classic wird nicht verändert. Die übernommenen Termine werden anschließend mit Exchange synchronisiert. Bereits importierte Termine werden ausgelassen."
     );
     if (!confirmed) return;
 
@@ -70,6 +71,7 @@ export function SimpleImportPage() {
       }));
       const merged = mergeCalendarEventsExactly(existing, normalizedIncoming);
       localStorage.setItem(calendarStorageKey, JSON.stringify(merged.events));
+      requestExchangeSync();
       const duplicates = merged.skippedSameId + merged.skippedExactDuplicates;
       setMessageType("success");
       setMessage(
@@ -137,6 +139,7 @@ export function SimpleImportPage() {
         });
       }
       localStorage.setItem(calendarStorageKey, JSON.stringify(Array.from(eventsById.values())));
+      requestExchangeSync();
       setMessageType(result.found > 0 ? "success" : "info");
       setMessage(
         result.found === 0

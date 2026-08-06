@@ -1,5 +1,7 @@
-import { CalendarDays, KeyRound, Settings, UserRound } from "lucide-react";
+import { CalendarDays, Check, CloudOff, KeyRound, LoaderCircle, LogOut, RefreshCw, Settings, UserRound } from "lucide-react";
 import { t } from "../i18n";
+import type { Microsoft365Account } from "../types/m365";
+import type { ExchangeSyncStatus } from "../types/m365";
 
 export type Page = "contacts" | "calendar" | "passwords" | "import" | "export" | "m365" | "trash" | "settings" | "appearance" | "simple-import" | "backup";
 
@@ -13,17 +15,31 @@ const settingsPages = new Set<Page>(["settings", "appearance", "simple-import", 
 
 interface SidebarProps {
   activePage: Page;
+  account: Microsoft365Account | null;
+  offline: boolean;
+  exchangeSyncStatus: ExchangeSyncStatus;
   onNavigate: (page: Page) => void;
+  onSignOut: () => Promise<void>;
+  onSyncExchange: () => Promise<void>;
 }
 
-export function Sidebar({ activePage, onNavigate }: SidebarProps) {
+export function Sidebar({ activePage, account, offline, exchangeSyncStatus, onNavigate, onSignOut, onSyncExchange }: SidebarProps) {
+  const syncTitle = exchangeSyncStatus.state === "syncing"
+    ? "Exchange wird synchronisiert"
+    : exchangeSyncStatus.state === "error"
+      ? `Synchronisierungsfehler: ${exchangeSyncStatus.message ?? "Unbekannter Fehler"}`
+      : exchangeSyncStatus.state === "offline"
+        ? "Offline – Änderungen werden später synchronisiert"
+        : exchangeSyncStatus.lastSyncedAt
+          ? `Zuletzt synchronisiert: ${new Intl.DateTimeFormat("de-DE", { dateStyle: "short", timeStyle: "short" }).format(new Date(exchangeSyncStatus.lastSyncedAt))}`
+          : "Jetzt mit Exchange synchronisieren";
   return (
     <aside className="sidebar">
       <div className="brand">
         <img className="brand-logo" src="/dmh-kontakte-kalender.png" alt="Logo von DMH Kontakte und Kalender" />
         <div>
-          <h1>{t.appName}</h1>
-          <p>Kontakte und Termine lokal</p>
+          <h1>DMH Portal</h1>
+          <p>Privatschwestern</p>
         </div>
       </div>
       <nav className="nav-list" aria-label="Hauptmenü">
@@ -51,6 +67,32 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
           <Settings size={24} />
           <span>{t.settings}</span>
         </button>
+        {account && (
+          <div className="portal-sidebar-account">
+            <span className="portal-sidebar-avatar" aria-hidden="true">
+              {account.displayName.trim().slice(0, 1).toUpperCase() || "D"}
+            </span>
+            <span className="portal-sidebar-identity">
+              <strong>{account.displayName}</strong>
+              <small>{offline && <CloudOff size={14} />} {offline ? "Offline" : account.email || account.userPrincipalName}</small>
+            </span>
+            <button
+              className={`icon-only compact exchange-sync-button ${exchangeSyncStatus.state}`}
+              type="button"
+              title={syncTitle}
+              aria-label={syncTitle}
+              disabled={offline || exchangeSyncStatus.state === "syncing"}
+              onClick={() => void onSyncExchange()}
+            >
+              {exchangeSyncStatus.state === "syncing" ? <LoaderCircle className="spin" size={18} />
+                : exchangeSyncStatus.state === "synced" ? <Check size={18} />
+                  : offline ? <CloudOff size={18} /> : <RefreshCw size={18} />}
+            </button>
+            <button className="icon-only compact" type="button" title="Abmelden" onClick={() => void onSignOut()}>
+              <LogOut size={18} />
+            </button>
+          </div>
+        )}
       </div>
     </aside>
   );

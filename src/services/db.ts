@@ -27,8 +27,18 @@ import type {
 import type {
   Microsoft365ConnectionStatus,
   Microsoft365DeviceCode,
-  Microsoft365PollResult
+  Microsoft365PollResult,
+  PortalSession,
+  ExchangeSyncResult
 } from "../types/m365";
+import { requestExchangeSync } from "../utils/exchangeSync";
+
+function requestSyncAfter<T>(promise: Promise<T>): Promise<T> {
+  return promise.then((result) => {
+    requestExchangeSync();
+    return result;
+  });
+}
 
 export function listContacts(search = "", groupId?: number): Promise<Contact[]> {
   return invoke("list_contacts", { search, groupId });
@@ -39,19 +49,19 @@ export function listDeletedContacts(): Promise<Contact[]> {
 }
 
 export function saveContact(contact: ContactInput): Promise<number> {
-  return invoke("save_contact", { contact });
+  return requestSyncAfter(invoke("save_contact", { contact }));
 }
 
 export function deleteContact(id: number): Promise<void> {
-  return invoke("delete_contact", { id });
+  return requestSyncAfter(invoke("delete_contact", { id }));
 }
 
 export function deleteContacts(ids: number[]): Promise<number> {
-  return invoke("delete_contacts", { ids });
+  return requestSyncAfter(invoke("delete_contacts", { ids }));
 }
 
 export function restoreContact(id: number): Promise<void> {
-  return invoke("restore_contact", { id });
+  return requestSyncAfter(invoke("restore_contact", { id }));
 }
 
 export function listGroups(): Promise<Group[]> {
@@ -63,23 +73,23 @@ export function listDeletedGroups(): Promise<Group[]> {
 }
 
 export function saveGroup(group: Group): Promise<number> {
-  return invoke("save_group", { group });
+  return requestSyncAfter(invoke("save_group", { group }));
 }
 
 export function deleteGroup(id: number): Promise<void> {
-  return invoke("delete_group", { id });
+  return requestSyncAfter(invoke("delete_group", { id }));
 }
 
 export function restoreGroup(id: number): Promise<void> {
-  return invoke("restore_group", { id });
+  return requestSyncAfter(invoke("restore_group", { id }));
 }
 
 export function importContacts(sourceFile: string, contacts: ContactInput[]): Promise<ImportResult> {
-  return invoke("import_contacts", { payload: { sourceFile, contacts } });
+  return requestSyncAfter(invoke("import_contacts", { payload: { sourceFile, contacts } }));
 }
 
 export function undoLastImport(): Promise<number> {
-  return invoke("undo_last_import");
+  return requestSyncAfter(invoke("undo_last_import"));
 }
 
 export function getBackupData(): Promise<BackupData> {
@@ -95,19 +105,26 @@ export function writeExportFile(path: string, content: string): Promise<void> {
 }
 
 export function deleteAllContacts(): Promise<number> {
-  return invoke("delete_all_contacts");
+  return requestSyncAfter(invoke("delete_all_contacts"));
 }
 
 export function addContactToGroup(contactId: number, groupId: number): Promise<void> {
-  return invoke("add_contact_to_group", { contactId, groupId });
+  return requestSyncAfter(invoke("add_contact_to_group", { contactId, groupId }));
 }
 
 export function moveContactToGroup(contactId: number, groupId: number): Promise<void> {
-  return invoke("move_contact_to_group", { contactId, groupId });
+  return requestSyncAfter(invoke("move_contact_to_group", { contactId, groupId }));
 }
 
 export function clearContactGroups(contactId: number): Promise<void> {
-  return invoke("clear_contact_groups", { contactId });
+  return requestSyncAfter(invoke("clear_contact_groups", { contactId }));
+}
+
+export function syncExchangeData(
+  calendarEvents: CalendarEvent[],
+  deletedCalendarEvents: CalendarEvent[]
+): Promise<ExchangeSyncResult> {
+  return invoke("sync_exchange_data", { request: { calendarEvents, deletedCalendarEvents } });
 }
 
 export function openOutlookClassicEmail(email: string): Promise<void> {
@@ -138,8 +155,16 @@ export function getMicrosoft365ConnectionStatus(): Promise<Microsoft365Connectio
   return invoke("get_m365_connection_status");
 }
 
-export function startMicrosoft365Connection(): Promise<Microsoft365DeviceCode> {
-  return invoke("start_m365_connection");
+export function getPortalSession(): Promise<PortalSession> {
+  return invoke("get_portal_session");
+}
+
+export function restorePortalSession(): Promise<PortalSession> {
+  return invoke("restore_portal_session");
+}
+
+export function startMicrosoft365Connection(rememberSignIn = true): Promise<Microsoft365DeviceCode> {
+  return invoke("start_m365_connection", { rememberSignIn });
 }
 
 export function pollMicrosoft365Connection(): Promise<Microsoft365PollResult> {
@@ -171,11 +196,11 @@ export function previewOutlookClassicContacts(): Promise<OutlookContactImportPre
 }
 
 export function importSelectedOutlookClassicContacts(request: OutlookContactImportRequest): Promise<OutlookContactImportResult> {
-  return invoke("import_selected_outlook_classic_contacts", { request });
+  return requestSyncAfter(invoke("import_selected_outlook_classic_contacts", { request }));
 }
 
 export function undoLastOutlookContactImport(): Promise<number> {
-  return invoke("undo_last_outlook_contact_import");
+  return requestSyncAfter(invoke("undo_last_outlook_contact_import"));
 }
 
 export function importOutlookClassicAppointmentsOnce(): Promise<OutlookOneTimeCalendarImportResult> {
@@ -183,7 +208,7 @@ export function importOutlookClassicAppointmentsOnce(): Promise<OutlookOneTimeCa
 }
 
 export function importThunderbirdContactsOnce(): Promise<ThunderbirdContactImportResult> {
-  return invoke("import_thunderbird_contacts_once");
+  return requestSyncAfter(invoke("import_thunderbird_contacts_once"));
 }
 
 export function importThunderbirdCalendarsOnce(): Promise<ThunderbirdCalendarImportResult> {

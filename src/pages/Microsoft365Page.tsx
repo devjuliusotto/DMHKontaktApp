@@ -26,16 +26,23 @@ import {
 } from "../services/db";
 import type {
   Microsoft365ConnectionStatus,
-  Microsoft365DeviceCode
+  Microsoft365DeviceCode,
+  ExchangeSyncStatus
 } from "../types/m365";
+
+interface Microsoft365PageProps {
+  syncStatus: ExchangeSyncStatus;
+  onSync: () => Promise<void>;
+}
 
 const emptyStatus: Microsoft365ConnectionStatus = {
   configured: false,
   connected: false,
-  account: null
+  account: null,
+  rememberSignIn: false
 };
 
-export function Microsoft365Page() {
+export function Microsoft365Page({ syncStatus, onSync }: Microsoft365PageProps) {
   const [status, setStatus] = useState<Microsoft365ConnectionStatus | null>(null);
   const [deviceCode, setDeviceCode] = useState<Microsoft365DeviceCode | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -73,9 +80,9 @@ export function Microsoft365Page() {
           pollingRef.current = false;
           setDeviceCode(null);
           setBusyAction(null);
-          setStatus({ configured: true, connected: true, account: result.account });
+          setStatus({ configured: true, connected: true, account: result.account, rememberSignIn: true });
           setMessageType("success");
-          setMessage("Microsoft-365-Konto wurde sicher verbunden. Es werden noch keine Kontakte oder Termine synchronisiert.");
+          setMessage("Microsoft-365-Konto wurde sicher verbunden. Kontakte und Kalender werden automatisch synchronisiert.");
           return;
         }
         timeout = window.setTimeout(
@@ -163,9 +170,10 @@ export function Microsoft365Page() {
     setMessage("");
     try {
       await disconnectMicrosoft365Account();
-      setStatus({ configured: status?.configured ?? true, connected: false, account: null });
+      setStatus({ configured: status?.configured ?? true, connected: false, account: null, rememberSignIn: false });
       setMessageType("success");
       setMessage("Microsoft-365-Konto wurde von dieser App getrennt.");
+      window.location.reload();
     } catch (error) {
       setMessageType("error");
       setMessage(`Microsoft-365-Konto konnte nicht getrennt werden: ${error}`);
@@ -190,7 +198,7 @@ export function Microsoft365Page() {
       <header className="page-header">
         <div>
           <h2>Microsoft 365</h2>
-          <p>Geschäftskonto sicher verbinden und die spätere Synchronisierung vorbereiten.</p>
+          <p>Geschäftskonto, Exchange-Synchronisierung und lokalen Offline-Cache verwalten.</p>
         </div>
       </header>
 
@@ -217,16 +225,16 @@ export function Microsoft365Page() {
             <div>
               <h3>Mit Microsoft 365 verbinden</h3>
               <p>
-                Melden Sie sich mit Ihrem dienstlichen Microsoft-Konto an. In diesem Schritt
-                wird nur Ihre Identität bestätigt.
+                Melden Sie sich mit Ihrem dienstlichen Microsoft-Konto an. Das Portal synchronisiert
+                anschließend Ihre Kontakte und Ihren Kalender mit Exchange.
               </p>
             </div>
           </div>
           <div className="m365-privacy-note">
             <ShieldCheck size={21} />
             <p>
-              Die App erhält noch keinen Zugriff auf Kontakte oder Kalender. Ihr
-              Microsoft-Kennwort wird niemals von dieser App gelesen oder gespeichert.
+              Die App verwendet delegierte Zugriffe auf Ihre eigenen Exchange-Kontakte und Ihren
+              Kalender. Ihr Microsoft-Kennwort wird niemals von dieser App gelesen oder gespeichert.
             </p>
           </div>
           <button className="primary large m365-connect-button" type="button" onClick={connect} disabled={busyAction !== null}>
@@ -279,6 +287,10 @@ export function Microsoft365Page() {
               <button type="button" onClick={testConnection} disabled={busyAction !== null}>
                 <RefreshCw className={busyAction === "test" ? "spin" : ""} size={19} /> Verbindung prüfen
               </button>
+              <button type="button" onClick={() => void onSync()} disabled={syncStatus.state === "syncing"}>
+                {syncStatus.state === "syncing" ? <LoaderCircle className="spin" size={19} /> : <RefreshCw size={19} />}
+                Jetzt synchronisieren
+              </button>
               <button className="danger-button" type="button" onClick={disconnect} disabled={busyAction !== null}>
                 <LogOut size={19} /> Konto trennen
               </button>
@@ -286,18 +298,26 @@ export function Microsoft365Page() {
           </section>
 
           <section className="form-panel m365-roadmap-card">
-            <h3>Synchronisierung wird schrittweise freigeschaltet</h3>
-            <p>Die Verbindung allein verändert aktuell keine lokalen oder Microsoft-365-Daten.</p>
+            <h3>Automatische Exchange-Synchronisierung</h3>
+            <p>
+              {syncStatus.state === "error"
+                ? `Letzter Versuch fehlgeschlagen: ${syncStatus.message}`
+                : syncStatus.state === "offline"
+                  ? "Offline-Änderungen bleiben lokal vorgemerkt und werden bei der nächsten Verbindung übertragen."
+                  : syncStatus.lastSyncedAt
+                    ? `Zuletzt erfolgreich synchronisiert: ${new Intl.DateTimeFormat("de-DE", { dateStyle: "medium", timeStyle: "short" }).format(new Date(syncStatus.lastSyncedAt))}`
+                    : "Die erste Synchronisierung startet automatisch nach der Anmeldung."}
+            </p>
             <div className="m365-capabilities">
               <article>
                 <ContactRound size={24} />
                 <div><strong>Kontakte</strong><span>Private Exchange-Kontakte</span></div>
-                <small>Geplant</small>
+                <small>Aktiv</small>
               </article>
               <article>
                 <CalendarDays size={24} />
                 <div><strong>Kalender & Teams</strong><span>Termine und Onlinebesprechungen</span></div>
-                <small>Geplant</small>
+                <small>Aktiv</small>
               </article>
               <article>
                 <KeyRound size={24} />
@@ -305,6 +325,11 @@ export function Microsoft365Page() {
                 <small>Lokal</small>
               </article>
             </div>
+            {syncStatus.result && (
+              <p className="m365-sync-summary">
+                Letzter Lauf: Kontakte {syncStatus.result.contacts.uploaded} hochgeladen, {syncStatus.result.contacts.downloaded} geladen, {syncStatus.result.contacts.updated} aktualisiert. Kalender {syncStatus.result.calendar.uploaded} hochgeladen, {syncStatus.result.calendar.downloaded} geladen, {syncStatus.result.calendar.updated} aktualisiert.
+              </p>
+            )}
           </section>
         </>
       )}

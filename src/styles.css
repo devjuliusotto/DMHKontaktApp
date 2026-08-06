@@ -198,8 +198,69 @@ button:disabled {
 }
 
 .sidebar-footer {
+  display: grid;
+  gap: 0.75rem;
   margin-top: auto;
   padding-top: 1rem;
+}
+
+.portal-sidebar-account {
+  align-items: center;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  padding: 0.65rem;
+}
+
+.portal-sidebar-avatar {
+  align-items: center;
+  background: var(--primary);
+  border-radius: 999px;
+  color: var(--on-primary);
+  display: flex;
+  font-weight: 800;
+  height: 36px;
+  justify-content: center;
+  width: 36px;
+}
+
+.portal-sidebar-identity {
+  display: grid;
+  min-width: 0;
+}
+
+.portal-sidebar-identity strong,
+.portal-sidebar-identity small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.exchange-sync-button.synced {
+  color: var(--success, #15803d);
+}
+
+.exchange-sync-button.error {
+  color: var(--danger, #b91c1c);
+}
+
+.m365-sync-summary {
+  background: var(--surface-alt);
+  border-radius: 8px;
+  font-size: 0.88rem;
+  margin-top: 1rem;
+  padding: 0.8rem 1rem;
+}
+
+.portal-sidebar-identity small {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 0.72rem;
+  gap: 0.25rem;
 }
 
 .settings-subtabs {
@@ -4187,13 +4248,200 @@ td small {
 }
 
 .app-lock-screen,
-.app-startup-screen {
+.app-startup-screen,
+.portal-login-screen {
   align-items: center;
   background: radial-gradient(circle at top, var(--surface) 0, var(--page) 60%);
   display: flex;
   justify-content: center;
   min-height: 100vh;
   padding: 1.5rem;
+}
+
+.portal-login-screen {
+  background:
+    radial-gradient(circle at 15% 10%, color-mix(in srgb, var(--soft) 72%, transparent), transparent 34%),
+    radial-gradient(circle at 88% 86%, color-mix(in srgb, var(--info-surface) 78%, transparent), transparent 38%),
+    var(--page);
+}
+
+.portal-login-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  box-shadow: 0 24px 70px rgba(62, 29, 43, 0.16);
+  display: grid;
+  gap: 1.1rem;
+  max-width: 540px;
+  padding: clamp(1.35rem, 3vw, 2.2rem);
+  width: 100%;
+}
+
+.portal-login-brand {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 0.85rem;
+  padding-bottom: 1rem;
+}
+
+.portal-login-brand img {
+  height: 62px;
+  object-fit: contain;
+  width: 62px;
+}
+
+.portal-login-brand span,
+.portal-login-brand h1,
+.portal-login-intro h2,
+.portal-login-intro p,
+.portal-device-flow h2,
+.portal-device-flow p,
+.portal-access-state h2,
+.portal-access-state p {
+  margin: 0;
+}
+
+.portal-login-brand span {
+  color: var(--accent);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.portal-login-brand h1 {
+  font-size: 1.65rem;
+}
+
+.portal-login-intro,
+.portal-device-flow,
+.portal-access-state {
+  display: grid;
+  gap: 0.8rem;
+  justify-items: center;
+  text-align: center;
+}
+
+.portal-login-intro p,
+.portal-device-flow > p,
+.portal-access-state > p {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.portal-login-icon {
+  align-items: center;
+  background: var(--soft);
+  border-radius: 999px;
+  color: var(--primary-dark);
+  display: flex;
+  height: 62px;
+  justify-content: center;
+  width: 62px;
+}
+
+.portal-login-icon.warning {
+  background: var(--warning-surface);
+  color: var(--warning-text);
+}
+
+.portal-login-trust {
+  align-items: flex-start;
+  background: var(--success-surface);
+  border: 1px solid var(--success-border);
+  border-radius: 10px;
+  color: var(--success-text);
+  display: flex;
+  gap: 0.65rem;
+  line-height: 1.45;
+  padding: 0.8rem;
+}
+
+.portal-login-trust svg {
+  flex: 0 0 auto;
+  margin-top: 0.1rem;
+}
+
+.portal-remember-option {
+  align-items: center;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  padding: 0.8rem;
+}
+
+.portal-remember-option input {
+  height: 20px;
+  width: 20px;
+}
+
+.portal-remember-option span {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.portal-remember-option small {
+  color: var(--muted);
+}
+
+.portal-login-button {
+  width: 100%;
+}
+
+.portal-login-message {
+  background: var(--info-surface);
+  border: 1px solid var(--info-border);
+  border-radius: 8px;
+  color: var(--info-text);
+  line-height: 1.45;
+  margin: 0;
+  padding: 0.7rem;
+}
+
+.portal-login-message:empty {
+  display: none;
+}
+
+.portal-login-message.error {
+  background: var(--danger-surface);
+  border-color: var(--danger-border);
+  color: var(--danger-text);
+}
+
+.portal-device-code {
+  align-items: center;
+  background: var(--surface-alt);
+  border: 2px solid var(--primary);
+  border-radius: 12px;
+  display: flex;
+  gap: 0.8rem;
+  justify-content: space-between;
+  padding: 0.7rem;
+  width: 100%;
+}
+
+.portal-device-code strong {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 1.65rem;
+  letter-spacing: 0.12em;
+  padding-left: 0.4rem;
+}
+
+.portal-waiting {
+  align-items: center;
+  color: var(--accent);
+  display: flex;
+  gap: 0.5rem;
+}
+
+.portal-access-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  justify-content: center;
 }
 
 .app-startup-screen {

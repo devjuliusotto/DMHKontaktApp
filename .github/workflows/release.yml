@@ -89,12 +89,29 @@ jobs:
         env:
           M365_CLIENT_ID: ${{ vars.M365_CLIENT_ID }}
           M365_TENANT_ID: ${{ vars.M365_TENANT_ID }}
+          DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS: ${{ vars.DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS }}
+          DMH_PORTAL_EDV_GROUP_IDS: ${{ vars.DMH_PORTAL_EDV_GROUP_IDS }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:M365_CLIENT_ID)) {
             throw "Repository variable M365_CLIENT_ID fehlt."
           }
           if ([string]::IsNullOrWhiteSpace($env:M365_TENANT_ID)) {
             throw "Repository variable M365_TENANT_ID fehlt."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS)) {
+            throw "Repository variable DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS fehlt."
+          }
+          foreach ($groupId in ($env:DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS -split ',')) {
+            try { [void][guid]::Parse($groupId.Trim()) } catch {
+              throw "DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS enthält keine gültige Gruppen-Objekt-ID: $groupId"
+            }
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:DMH_PORTAL_EDV_GROUP_IDS)) {
+            foreach ($groupId in ($env:DMH_PORTAL_EDV_GROUP_IDS -split ',')) {
+              try { [void][guid]::Parse($groupId.Trim()) } catch {
+                throw "DMH_PORTAL_EDV_GROUP_IDS enthält keine gültige Gruppen-Objekt-ID: $groupId"
+              }
+            }
           }
 
       - name: Frontend bauen
@@ -106,6 +123,8 @@ jobs:
         env:
           M365_CLIENT_ID: ${{ vars.M365_CLIENT_ID }}
           M365_TENANT_ID: ${{ vars.M365_TENANT_ID }}
+          DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS: ${{ vars.DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS }}
+          DMH_PORTAL_EDV_GROUP_IDS: ${{ vars.DMH_PORTAL_EDV_GROUP_IDS }}
           RUST_BACKTRACE: "1"
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib
 
@@ -246,6 +265,8 @@ jobs:
           DMH_RELEASE_CHANNEL: stable
           M365_CLIENT_ID: ${{ vars.M365_CLIENT_ID }}
           M365_TENANT_ID: ${{ vars.M365_TENANT_ID }}
+          DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS: ${{ vars.DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS }}
+          DMH_PORTAL_EDV_GROUP_IDS: ${{ vars.DMH_PORTAL_EDV_GROUP_IDS }}
         with:
           tagName: v${{ inputs.version }}
           releaseName: DMH Kontakte und Kalender v${{ inputs.version }}

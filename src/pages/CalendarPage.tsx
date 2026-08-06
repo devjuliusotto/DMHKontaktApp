@@ -5,6 +5,7 @@ import { StatusMessage } from "../components/StatusMessage";
 import type { CalendarEvent } from "../types/calendar";
 import { calendarColorOptions, calendarColorStyle, calendarColorValue, calendarStorageKey, calendarTrashStorageKey, defaultCalendarColor, expandCalendarEvents, formatCalendarDate, parseCalendarDate } from "../utils/calendar";
 import { findExactCalendarDuplicateGroups, removeExactCalendarDuplicates } from "../utils/calendarDuplicates";
+import { exchangeSyncCompletedEvent, requestExchangeSync } from "../utils/exchangeSync";
 
 const categoriesStorageKey = "agendakontakte.calendarCategories";
 const duplicateCleanupBackupKey = "agendakontakte.calendarExactDuplicateCleanupBackup.v1";
@@ -81,7 +82,8 @@ function blankEvent(date = new Date()): CalendarEvent {
     description: "",
     color: defaultCalendarColor,
     category: "",
-    source: "DMH Kontakte und Kalender"
+    source: "DMH Portal",
+    updatedAt: new Date().toISOString()
   };
 }
 
@@ -89,7 +91,8 @@ function normalizeEvent(event: CalendarEvent): CalendarEvent {
   return {
     ...event,
     color: calendarColorValue(event.color),
-    category: event.category ?? ""
+    category: event.category ?? "",
+    updatedAt: event.updatedAt || new Date().toISOString()
   };
 }
 
@@ -118,17 +121,22 @@ export function CalendarPage() {
   );
 
   useEffect(() => {
-    const saved = localStorage.getItem(calendarStorageKey);
-    if (saved) {
-      const storedEvents = (JSON.parse(saved) as CalendarEvent[]).map(normalizeEvent);
-      setEvents(storedEvents);
-    }
+    const loadSyncedEvents = () => {
+      const saved = localStorage.getItem(calendarStorageKey);
+      if (saved) {
+        const storedEvents = (JSON.parse(saved) as CalendarEvent[]).map(normalizeEvent);
+        setEvents(storedEvents);
+      }
+    };
+    loadSyncedEvents();
 
     const savedCategories = localStorage.getItem(categoriesStorageKey);
     if (savedCategories) {
       const storedCategories = (JSON.parse(savedCategories) as CalendarCategory[]).map(normalizeCategory).filter((category) => category.name);
       setCategories(storedCategories);
     }
+    window.addEventListener(exchangeSyncCompletedEvent, loadSyncedEvents);
+    return () => window.removeEventListener(exchangeSyncCompletedEvent, loadSyncedEvents);
   }, []);
 
   const displayRange = useMemo(() => {
@@ -197,6 +205,7 @@ export function CalendarPage() {
     const sorted = nextEvents.map(normalizeEvent).sort((a, b) => a.startsAt.localeCompare(b.startsAt));
     setEvents(sorted);
     localStorage.setItem(calendarStorageKey, JSON.stringify(sorted));
+    requestExchangeSync();
   };
 
   const persistCategories = (nextCategories: CalendarCategory[]) => {
@@ -299,7 +308,12 @@ export function CalendarPage() {
     if (!editingEvent) return;
     const next = events.filter((event) => event.id !== editingEvent.id);
     const matchingCategory = categories.find((category) => category.name === editingEvent.category.trim());
-    persist([...next, normalizeEvent({ ...editingEvent, color: matchingCategory?.color ?? editingEvent.color, source: editingEvent.source || "DMH Kontakte und Kalender" })]);
+    persist([...next, normalizeEvent({
+      ...editingEvent,
+      color: matchingCategory?.color ?? editingEvent.color,
+      source: editingEvent.source || "DMH Portal",
+      updatedAt: new Date().toISOString()
+    })]);
     const date = eventDate(editingEvent);
     if (date) setCursor(startOfDay(date));
     setEditingEvent(null);
@@ -318,7 +332,8 @@ export function CalendarPage() {
     } catch {
       deletedEvents = [];
     }
-    const deletedEvent = { ...normalizeEvent(master), deletedAt: new Date().toISOString() };
+    const deletedAt = new Date().toISOString();
+    const deletedEvent = { ...normalizeEvent(master), deletedAt, updatedAt: deletedAt };
     localStorage.setItem(
       calendarTrashStorageKey,
       JSON.stringify([deletedEvent, ...deletedEvents.filter((entry) => entry.id !== master.id)])
@@ -339,7 +354,7 @@ export function CalendarPage() {
     }
     const deletedAt = new Date().toISOString();
     const activeIds = new Set(events.map((event) => event.id));
-    const movedEvents = events.map((event) => ({ ...normalizeEvent(event), deletedAt }));
+    const movedEvents = events.map((event) => ({ ...normalizeEvent(event), deletedAt, updatedAt: deletedAt }));
     localStorage.setItem(calendarTrashStorageKey, JSON.stringify([
       ...movedEvents,
       ...deletedEvents.filter((event) => !activeIds.has(event.id))
