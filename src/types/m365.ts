@@ -9,6 +9,32 @@ export interface Microsoft365Account {
   lastValidatedAt: string;
 }
 
+export interface PortalUserProfile {
+  id: string;
+  displayName: string;
+  mail: string;
+  userPrincipalName: string;
+  jobTitle: string;
+  department: string;
+  businessPhones: string[];
+  mobilePhone: string;
+  officeLocation: string;
+  streetAddress: string;
+  postalCode: string;
+  city: string;
+  country: string;
+}
+
+export interface PortalUserProfileUpdate {
+  businessPhone: string;
+  mobilePhone: string;
+  officeLocation: string;
+  streetAddress: string;
+  postalCode: string;
+  city: string;
+  country: string;
+}
+
 export interface Microsoft365ConnectionStatus {
   configured: boolean;
   connected: boolean;

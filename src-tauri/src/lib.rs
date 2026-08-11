@@ -3692,6 +3692,8 @@ pub fn run() {
             m365::open_m365_security_info,
             m365::test_m365_connection,
             m365::disconnect_m365_account,
+            m365::get_portal_user_profile,
+            m365::update_portal_user_profile,
             m365::get_edv_admin_session_status,
             m365::start_edv_admin_connection,
             m365::disconnect_edv_admin_session,

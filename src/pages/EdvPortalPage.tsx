@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity, ArrowLeft, CalendarClock, Check, ChevronRight, CircleUserRound, CloudOff,
-  Columns3, FileClock, KeyRound, LayoutDashboard, LoaderCircle, LockKeyhole,
+  Columns3, FileClock, KeyRound, LayoutDashboard, LoaderCircle,
   LogOut, MonitorCog, Plus, RefreshCw, Search, Settings, ShieldCheck, Trash2, UserPlus,
   UsersRound, Wrench
 } from "lucide-react";
@@ -14,23 +14,28 @@ import {
   resetDirectoryUserPassword, saveEdvSystem, setEdvPlannerPlanId, startEdvAdminConnection,
   updateDirectoryGroup, updateDirectoryUser, updatePlannerTask
 } from "../services/db";
+import { PortalGlobalHeader } from "../components/PortalGlobalHeader";
 import type {
-  EdvAccessProfile, EdvAdminSessionStatus, EdvAuditEntry, EdvDirectoryGroup,
+  EdvAccessProfile, EdvAdminSessionStatus, EdvAuditEntry, EdvDirectoryGroup, ExchangeSyncStatus,
   EdvDirectoryUser, EdvSystemRecord, Microsoft365Account,
-  PlannerBoard, PlannerTask, PortalModuleId
+  PlannerBoard, PlannerTask, PortalModuleId, PortalSession
 } from "../types/m365";
 
 type EdvTab = "overview" | "tickets" | "users" | "groups" | "systems" | "audit" | "settings";
 
 interface EdvPortalPageProps {
+  session: PortalSession;
   account: Microsoft365Account;
   modules: PortalModuleId[];
+  exchangeSyncStatus: ExchangeSyncStatus;
   offline: boolean;
   refreshing: boolean;
   message: string;
   onBack: () => void;
+  onOpenPortalSearch: () => void;
   onRefreshAuthorization: () => Promise<void>;
   onSignOut: () => Promise<void>;
+  onSyncExchange: () => Promise<void>;
 }
 
 const tabs: Array<{ id: EdvTab; title: string; icon: typeof Settings }> = [
@@ -99,11 +104,16 @@ export function EdvPortalPage(props: EdvPortalPageProps) {
 
   return (
     <main className="edv-workspace">
-      <header className="edv-topbar">
-        <button className="edv-back" type="button" onClick={props.onBack}><ArrowLeft size={20} /> Portalübersicht</button>
-        <div className="edv-topbar-title"><span><Settings size={24} /></span><div><small>DMH PORTAL</small><strong>EDV-Verwaltung</strong></div></div>
-        <div className="edv-topbar-account"><span><strong>{props.account.displayName}</strong><small>{roleName(access?.level)}</small></span><button type="button" onClick={() => void props.onSignOut()}><LogOut size={19} /> Konto wechseln</button></div>
-      </header>
+      <PortalGlobalHeader
+        session={props.session}
+        exchangeSyncStatus={props.exchangeSyncStatus}
+        searchValue=""
+        onSearchActivate={props.onOpenPortalSearch}
+        onSearchChange={() => props.onOpenPortalSearch()}
+        onGoHome={props.onBack}
+        onSignOut={props.onSignOut}
+        onSyncExchange={props.onSyncExchange}
+      />
 
       <div className="edv-layout">
         <nav className="edv-nav" aria-label="EDV-Bereiche">
@@ -111,10 +121,7 @@ export function EdvPortalPage(props: EdvPortalPageProps) {
             const Icon = item.icon;
             return <button className={tab === item.id ? "active" : ""} key={item.id} type="button" onClick={() => setTab(item.id)}><Icon size={21} /><span>{item.title}</span>{tab === item.id && <ChevronRight size={17} />}</button>;
           })}
-          <div className={`edv-nav-session ${adminStatus.connected ? "connected" : ""}`}>
-            {adminStatus.connected ? <ShieldCheck size={20} /> : <LockKeyhole size={20} />}
-            <span><strong>{adminStatus.connected ? "Admin-Sitzung aktiv" : "Admin-Sitzung gesperrt"}</strong><small>{adminStatus.connected ? "Microsoft Graph verbunden" : "Bei Bedarf separat anmelden"}</small></span>
-          </div>
+          <button className="edv-nav-back" type="button" onClick={props.onBack}><ArrowLeft size={20} /><span>Portalübersicht</span></button>
         </nav>
 
         <section className="edv-main">

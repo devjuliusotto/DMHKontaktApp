@@ -274,7 +274,7 @@ export default function App() {
   }
 
   if (!activeModule) {
-    const dataPageOpen = portalPage !== "overview";
+    const dataPageOpen = ["contacts", "calendar", "passwords", "settings"].includes(portalPage);
 
     if (dataPageOpen && vaultStatus?.protectionEnabled && !vaultStatus.unlocked) {
       return <AppLockScreen status={vaultStatus} onUnlocked={setVaultStatus} />;
@@ -298,7 +298,7 @@ export default function App() {
     }
 
     return (
-      <div className={isAdminTest ? "app-channel-root admin-test-root" : "app-channel-root"}>
+      <div className={isAdminTest ? "app-channel-root admin-test-root portal-channel-root" : "app-channel-root portal-channel-root"}>
         {isAdminTest && <AdminTestBanner sourceCommit={sourceCommit} />}
         <PortalHomeScreen
           session={portalSession}
@@ -317,11 +317,13 @@ export default function App() {
 
   if (activeModule === "edv") {
     return (
-      <div className={isAdminTest ? "app-channel-root admin-test-root" : "app-channel-root"}>
+      <div className={isAdminTest ? "app-channel-root admin-test-root edv-channel-root" : "app-channel-root edv-channel-root"}>
         {isAdminTest && <AdminTestBanner sourceCommit={sourceCommit} />}
         <EdvPortalPage
+          session={portalSession}
           account={portalSession.account}
           modules={portalSession.modules}
+          exchangeSyncStatus={exchangeSyncStatus}
           offline={portalSession.state === "offline"}
           refreshing={refreshingAuthorization}
           message={portalError}
@@ -329,8 +331,13 @@ export default function App() {
             setActiveModule(null);
             setPortalPage("overview");
           }}
+          onOpenPortalSearch={() => {
+            setActiveModule(null);
+            setPortalPage("modules");
+          }}
           onRefreshAuthorization={refreshAuthorization}
           onSignOut={signOut}
+          onSyncExchange={synchronizeExchange}
         />
       </div>
     );

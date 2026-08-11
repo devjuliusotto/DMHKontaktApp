@@ -1,34 +1,31 @@
 import {
   ArrowRight,
-  BarChart3,
   CalendarDays,
-  Check,
-  CloudOff,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   ContactRound,
-  Euro,
+  Clock3,
   FileText,
   FolderOpen,
   Home,
   Info,
   KeyRound,
+  LayoutGrid,
   LockKeyhole,
-  LoaderCircle,
-  LogOut,
-  MessageCircle,
   MonitorCog,
-  RefreshCw,
-  Search,
+  MapPin,
   Settings,
-  ShieldCheck,
-  Sparkles,
-  UserRound,
   UsersRound
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { ExchangeSyncStatus, PortalModuleId, PortalSession } from "../types/m365";
+import type { CalendarEvent } from "../types/calendar";
+import { calendarColorStyle, calendarStorageKey, expandCalendarEvents, parseCalendarDate } from "../utils/calendar";
+import { exchangeSyncCompletedEvent } from "../utils/exchangeSync";
+import { PortalGlobalHeader } from "./PortalGlobalHeader";
 
-export type PortalPage = "overview" | "contacts" | "calendar" | "passwords" | "settings";
-type CatalogModuleId = PortalModuleId | "personal" | "finances" | "communication" | "reports" | "quality";
+export type PortalPage = "overview" | "modules" | "contacts" | "calendar" | "passwords" | "settings";
 
 interface PortalHomeScreenProps {
   session: PortalSession;
@@ -42,13 +39,13 @@ interface PortalHomeScreenProps {
 }
 
 interface ModuleCatalogEntry {
-  id: CatalogModuleId;
+  id: PortalModuleId;
   title: string;
   tag: string;
   description: string;
   icon: typeof UsersRound;
-  accessModule?: PortalModuleId;
-  tone: "berry" | "blue" | "green" | "teal" | "ink";
+  accessModule: PortalModuleId;
+  tone: "berry" | "teal";
 }
 
 const moduleCatalog: ModuleCatalogEntry[] = [
@@ -69,46 +66,6 @@ const moduleCatalog: ModuleCatalogEntry[] = [
     icon: MonitorCog,
     accessModule: "edv",
     tone: "teal"
-  },
-  {
-    id: "personal",
-    title: "Personal",
-    tag: "Personal",
-    description: "Mitarbeiterdaten, Abwesenheiten und Personalprozesse an einem Ort.",
-    icon: UserRound,
-    tone: "blue"
-  },
-  {
-    id: "finances",
-    title: "Finanzen",
-    tag: "Finanzen",
-    description: "Buchhaltung, Budgets und Finanzberichte übersichtlich bereitstellen.",
-    icon: Euro,
-    tone: "green"
-  },
-  {
-    id: "communication",
-    title: "Kommunikation",
-    tag: "Kommunikation",
-    description: "Mitteilungen, Newsletter und interne Kommunikation koordinieren.",
-    icon: MessageCircle,
-    tone: "berry"
-  },
-  {
-    id: "reports",
-    title: "Berichte & Auswertungen",
-    tag: "Berichte",
-    description: "Daten auswerten und verständliche Berichte zentral verfügbar machen.",
-    icon: BarChart3,
-    tone: "ink"
-  },
-  {
-    id: "quality",
-    title: "Qualitätsmanagement",
-    tag: "Qualität",
-    description: "Qualitätsstandards, Prozesse und Dokumentationen gemeinsam verwalten.",
-    icon: ShieldCheck,
-    tone: "teal"
   }
 ];
 
@@ -119,6 +76,7 @@ const sidebarEntries: Array<{
   future?: boolean;
 }> = [
   { id: "overview", label: "Übersicht", icon: Home },
+  { id: "modules", label: "Module", icon: LayoutGrid },
   { id: "passwords", label: "Passwörter", icon: KeyRound },
   { id: "contacts", label: "Kontakte", icon: UsersRound },
   { id: "calendar", label: "Agenda", icon: CalendarDays },
@@ -128,11 +86,35 @@ const sidebarEntries: Array<{
 ];
 
 const pageTitles: Record<Exclude<PortalPage, "overview">, { title: string; description: string }> = {
+  modules: { title: "Module", description: "Ihre freigegebenen Fachmodule auf einen Blick." },
   passwords: { title: "Passwörter", description: "Persönliche Zugangsdaten sicher verwalten." },
   contacts: { title: "Kontakte", description: "Ihre Kontakte und Verteiler zentral organisieren." },
   calendar: { title: "Agenda", description: "Termine und Kalender übersichtlich verwalten." },
   settings: { title: "Einstellungen", description: "Das DMH Portal und die übernommenen Funktionen konfigurieren." }
 };
+
+function startOfDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function addDays(date: Date, days: number) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+}
+
+function isSameDay(left: Date, right: Date) {
+  return left.getFullYear() === right.getFullYear()
+    && left.getMonth() === right.getMonth()
+    && left.getDate() === right.getDate();
+}
+
+function loadOverviewEvents(): CalendarEvent[] {
+  try {
+    const saved = localStorage.getItem(calendarStorageKey);
+    return saved ? JSON.parse(saved) as CalendarEvent[] : [];
+  } catch {
+    return [];
+  }
+}
 
 export function PortalHomeScreen({
   session,
@@ -145,28 +127,45 @@ export function PortalHomeScreen({
   onSyncExchange
 }: PortalHomeScreenProps) {
   const account = session.account;
-  const searchRef = useRef<HTMLInputElement>(null);
   const [search, setSearch] = useState("");
   const [notice, setNotice] = useState("");
+  const [overviewDate, setOverviewDate] = useState(() => startOfDay(new Date()));
+  const [overviewEvents, setOverviewEvents] = useState<CalendarEvent[]>(loadOverviewEvents);
 
   useEffect(() => {
-    const focusSearch = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        searchRef.current?.focus();
-      }
+    const reloadOverviewEvents = () => setOverviewEvents(loadOverviewEvents());
+    if (activePage === "overview") reloadOverviewEvents();
+    window.addEventListener(exchangeSyncCompletedEvent, reloadOverviewEvents);
+    window.addEventListener("storage", reloadOverviewEvents);
+    return () => {
+      window.removeEventListener(exchangeSyncCompletedEvent, reloadOverviewEvents);
+      window.removeEventListener("storage", reloadOverviewEvents);
     };
-    window.addEventListener("keydown", focusSearch);
-    return () => window.removeEventListener("keydown", focusSearch);
-  }, []);
+  }, [activePage]);
 
   const visibleModules = useMemo(() => {
+    const availableModules = moduleCatalog.filter((module) => session.modules.includes(module.accessModule));
     const term = search.trim().toLocaleLowerCase("de-DE");
-    if (!term) return moduleCatalog;
-    return moduleCatalog.filter((module) =>
+    if (!term) return availableModules;
+    return availableModules.filter((module) =>
       `${module.title} ${module.tag} ${module.description}`.toLocaleLowerCase("de-DE").includes(term)
     );
-  }, [search]);
+  }, [search, session.modules]);
+
+  const selectedDayEvents = useMemo(() => {
+    const dayStart = startOfDay(overviewDate);
+    return expandCalendarEvents(overviewEvents, dayStart, addDays(dayStart, 1));
+  }, [overviewDate, overviewEvents]);
+
+  const overviewIsToday = isSameDay(overviewDate, new Date());
+  const overviewDayLabel = overviewIsToday
+    ? "Heute"
+    : new Intl.DateTimeFormat("de-DE", { weekday: "long" }).format(overviewDate);
+  const overviewDateLabel = new Intl.DateTimeFormat("de-DE", {
+    day: "2-digit",
+    month: "long",
+    year: overviewDate.getFullYear() === new Date().getFullYear() ? undefined : "numeric"
+  }).format(overviewDate);
 
   const showLockedMessage = (message: string) => {
     setNotice(message);
@@ -174,10 +173,6 @@ export function PortalHomeScreen({
   };
 
   const openCatalogModule = (module: ModuleCatalogEntry) => {
-    if (!module.accessModule) {
-      showLockedMessage(`${module.title} wird derzeit vorbereitet und ist noch nicht verfügbar.`);
-      return;
-    }
     if (!session.modules.includes(module.accessModule)) {
       showLockedMessage(`Ihre EDV hat das Modul ${module.title} für Ihr Konto noch nicht freigegeben.`);
       return;
@@ -194,36 +189,18 @@ export function PortalHomeScreen({
     onNavigate(entry.id as PortalPage);
   };
 
-  const syncTitle = exchangeSyncStatus.state === "syncing"
-    ? "Exchange wird synchronisiert"
-    : exchangeSyncStatus.state === "error"
-      ? `Synchronisierungsfehler: ${exchangeSyncStatus.message ?? "Unbekannter Fehler"}`
-      : exchangeSyncStatus.lastSyncedAt
-        ? `Zuletzt synchronisiert: ${new Intl.DateTimeFormat("de-DE", { dateStyle: "short", timeStyle: "short" }).format(new Date(exchangeSyncStatus.lastSyncedAt))}`
-        : "Jetzt mit Exchange synchronisieren";
-
   return (
     <main className="portal-home-screen portal-dashboard">
-      <header className="portal-dashboard-header">
-        <div className="portal-dashboard-brand">
-          <span className="portal-dashboard-logo"><img src="/dmh-kontakte-kalender.png" alt="" /></span>
-          <span><strong>DMH Portal</strong><small>Diakonissenmutterhaus Aidlingen</small></span>
-        </div>
-        <label className="portal-dashboard-search">
-          <Search size={23} aria-hidden="true" />
-          <input
-            ref={searchRef}
-            value={activePage === "overview" ? search : ""}
-            onChange={(event) => {
-              if (activePage !== "overview") onNavigate("overview");
-              setSearch(event.target.value);
-            }}
-            placeholder="Suche im Portal …"
-            aria-label="Module im Portal suchen"
-          />
-          <kbd>Ctrl + K</kbd>
-        </label>
-      </header>
+      <PortalGlobalHeader
+        session={session}
+        exchangeSyncStatus={exchangeSyncStatus}
+        searchValue={activePage === "modules" ? search : ""}
+        onSearchActivate={() => { if (activePage !== "modules") onNavigate("modules"); }}
+        onSearchChange={setSearch}
+        onGoHome={() => { setSearch(""); onNavigate("overview"); }}
+        onSignOut={onSignOut}
+        onSyncExchange={onSyncExchange}
+      />
 
       <aside className="portal-dashboard-sidebar">
         <nav aria-label="Portalbereiche">
@@ -246,75 +223,105 @@ export function PortalHomeScreen({
           })}
         </nav>
 
-        <div className="portal-dashboard-account">
-          <div className="portal-dashboard-identity">
-            <span className="portal-sidebar-avatar" aria-hidden="true">
-              {account?.displayName.trim().slice(0, 1).toUpperCase() || "D"}
-            </span>
-            <span>
-              <strong>Mit Microsoft angemeldet</strong>
-              <small>{session.state === "offline" && <CloudOff size={13} />} {account?.userPrincipalName || account?.email}</small>
-            </span>
-            <span className="portal-microsoft-mark" aria-label="Microsoft"><i /><i /><i /><i /></span>
-          </div>
-          <button type="button" onClick={() => void onSignOut()}><LogOut size={18} /> Konto wechseln</button>
-          <button
-            className={`portal-dashboard-sync ${exchangeSyncStatus.state}`}
-            type="button"
-            title={syncTitle}
-            disabled={session.state === "offline" || exchangeSyncStatus.state === "syncing"}
-            onClick={() => void onSyncExchange()}
-          >
-            {exchangeSyncStatus.state === "syncing" ? <LoaderCircle className="spin" size={18} />
-              : exchangeSyncStatus.state === "synced" ? <Check size={18} />
-                : session.state === "offline" ? <CloudOff size={18} /> : <RefreshCw size={18} />}
-            {exchangeSyncStatus.state === "syncing" ? "Synchronisieren …" : "Exchange synchronisieren"}
-          </button>
-        </div>
       </aside>
 
-      <section className={`portal-dashboard-main ${activePage === "overview" ? "" : "portal-dashboard-feature-main"}`} aria-labelledby={activePage === "overview" ? "portal-welcome-title" : "portal-feature-title"}>
+      <section className={`portal-dashboard-main ${activePage === "overview" ? "" : "portal-dashboard-feature-main"}`} aria-labelledby={activePage === "overview" ? "portal-today-title" : "portal-feature-title"}>
         {notice && <div className="portal-dashboard-notice" role="status"><LockKeyhole size={19} /> {notice}</div>}
         {activePage === "overview" ? (
           <>
-        <div className="portal-dashboard-hero">
-          <div>
-            <span className="portal-dashboard-kicker"><Sparkles size={17} /> Ihr persönliches Portal</span>
-            <h1 id="portal-welcome-title">Willkommen zurück,<br /><strong>{account?.displayName || "im DMH Portal"}!</strong></h1>
-            <p>Hier finden Sie alle wichtigen Fachmodule und Informationen auf einen Blick.</p>
-          </div>
-        </div>
-        <div className="portal-dashboard-section-title">
-          <span><h2>Fachmodule</h2><i /></span>
-          <small>{visibleModules.length} {visibleModules.length === 1 ? "Modul" : "Module"}</small>
-        </div>
+            {/* Hero de boas-vindas temporariamente desativado para deixar a Übersicht mais limpa.
+            <div className="portal-dashboard-hero">
+              <div>
+                <h1 id="portal-welcome-title">Willkommen zurück,<br /><strong>{account?.displayName || "im DMH Portal"}!</strong></h1>
+              </div>
+            </div>
+            */}
 
-        <div className="portal-dashboard-modules">
-          {visibleModules.map((module) => {
-            const Icon = module.icon;
-            const enabled = module.accessModule ? session.modules.includes(module.accessModule) : false;
-            const future = !module.accessModule;
-            return (
-              <article className={`portal-dashboard-module tone-${module.tone} ${enabled ? "enabled" : "locked"}`} key={module.id}>
-                <div className="portal-dashboard-module-top">
-                  <span className="portal-dashboard-module-icon"><Icon size={31} /></span>
-                  <span><h3>{module.title}</h3><p>{module.description}</p></span>
+            <section className="portal-overview" aria-labelledby="portal-today-title">
+              <div className="portal-overview-day-navigation">
+                <button type="button" aria-label="Vorheriger Tag" title="Vorheriger Tag" onClick={() => setOverviewDate((date) => addDays(date, -1))}>
+                  <ChevronLeft size={25} />
+                </button>
+                <div>
+                  <small id="portal-today-title">{overviewDayLabel}</small>
+                  <strong>{overviewDateLabel}</strong>
                 </div>
-                <footer>
-                  <span className="portal-dashboard-tag">{module.tag}</span>
-                  <button type="button" onClick={() => openCatalogModule(module)}>
-                    {enabled ? "Öffnen" : future ? "In Vorbereitung" : "Nicht freigegeben"}
-                    {enabled ? <ArrowRight size={20} /> : <LockKeyhole size={17} />}
-                  </button>
-                </footer>
-              </article>
-            );
-          })}
-        </div>
-
-        {visibleModules.length === 0 && (
-          <div className="portal-dashboard-empty"><FileText size={35} /><strong>Kein Modul gefunden</strong><p>Versuchen Sie einen anderen Suchbegriff.</p></div>
-        )}
+                <button type="button" aria-label="Nächster Tag" title="Nächster Tag" onClick={() => setOverviewDate((date) => addDays(date, 1))}>
+                  <ChevronRight size={25} />
+                </button>
+                {!overviewIsToday && <button className="portal-overview-today-button" type="button" onClick={() => setOverviewDate(startOfDay(new Date()))}>Heute</button>}
+              </div>
+              <div className="portal-overview-grid">
+                <article className="portal-overview-card">
+                  <header><span><CheckCircle2 size={24} /></span><h3>Aufgaben</h3></header>
+                  <div className="portal-overview-placeholder">
+                    <strong>Alles Wichtige im Blick</strong>
+                    <p>Offene Aufgaben erscheinen künftig hier. Überfälliges bleibt unter „Heute“ sichtbar.</p>
+                  </div>
+                </article>
+                <article className="portal-overview-card">
+                  <header><span><CalendarDays size={24} /></span><h3>Termine</h3><small>{selectedDayEvents.length}</small></header>
+                  {selectedDayEvents.length > 0 ? (
+                    <div className="portal-overview-event-list">
+                      {selectedDayEvents.map((event) => {
+                        const startsAt = parseCalendarDate(event.startsAt);
+                        const time = event.exchangeIsAllDay
+                          ? "Ganztägig"
+                          : startsAt ? new Intl.DateTimeFormat("de-DE", { hour: "2-digit", minute: "2-digit" }).format(startsAt) : "";
+                        return (
+                          <article className="portal-overview-event" style={calendarColorStyle(event.color)} key={event.id}>
+                            <span className="portal-overview-event-time"><Clock3 size={16} /> {time}</span>
+                            <strong>{event.title || "Ohne Titel"}</strong>
+                            {event.location && <small><MapPin size={14} /> {event.location}</small>}
+                          </article>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="portal-overview-placeholder">
+                      <strong>Keine Termine</strong>
+                      <p>Für diesen Tag sind keine Termine eingetragen.</p>
+                    </div>
+                  )}
+                </article>
+              </div>
+            </section>
+          </>
+        ) : activePage === "modules" ? (
+          <>
+            <header className="portal-dashboard-feature-header">
+              <small>DMH PORTAL</small>
+              <h1 id="portal-feature-title">{pageTitles.modules.title}</h1>
+              <p>{pageTitles.modules.description}</p>
+            </header>
+            <div className="portal-dashboard-section-title">
+              <span><h2>Freigegeben</h2><i /></span>
+              <small>{visibleModules.length} {visibleModules.length === 1 ? "Modul" : "Module"}</small>
+            </div>
+            <div className="portal-dashboard-modules">
+              {visibleModules.map((module) => {
+                const Icon = module.icon;
+                return (
+                  <article className={`portal-dashboard-module tone-${module.tone} enabled`} key={module.id}>
+                    <div className="portal-dashboard-module-top">
+                      <span className="portal-dashboard-module-icon"><Icon size={27} /></span>
+                      <span><h3>{module.title}</h3></span>
+                    </div>
+                    <footer>
+                      <span className="portal-dashboard-tag">{module.tag}</span>
+                      <button type="button" onClick={() => openCatalogModule(module)}>Öffnen <ArrowRight size={20} /></button>
+                    </footer>
+                  </article>
+                );
+              })}
+            </div>
+            {visibleModules.length === 0 && (
+              <div className="portal-dashboard-empty">
+                <FileText size={35} />
+                <strong>{search ? "Kein Modul gefunden" : "Noch keine Module freigegeben"}</strong>
+                <p>{search ? "Versuchen Sie einen anderen Suchbegriff." : "Ihre EDV kann Ihnen hier Module freigeben."}</p>
+              </div>
+            )}
           </>
         ) : (
           <>

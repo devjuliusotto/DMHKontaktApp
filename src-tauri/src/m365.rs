@@ -26,8 +26,9 @@ const GRAPH_PROFILE_URL: &str =
     "https://graph.microsoft.com/v1.0/me?$select=id,displayName,mail,userPrincipalName";
 const GRAPH_GROUPS_URL: &str =
     "https://graph.microsoft.com/v1.0/me/transitiveMemberOf/microsoft.graph.group?$select=id";
+const GRAPH_PORTAL_PROFILE_URL: &str = "https://graph.microsoft.com/v1.0/me?$select=id,displayName,mail,userPrincipalName,jobTitle,department,businessPhones,mobilePhone,officeLocation,streetAddress,postalCode,city,country";
 const LOGIN_SCOPES: &str =
-    "openid profile offline_access User.Read Contacts.ReadWrite Calendars.ReadWrite";
+    "openid profile offline_access User.Read User.ReadWrite User-Phone.ReadWrite.All Contacts.ReadWrite Calendars.ReadWrite";
 const EDV_SCOPES: &str = "openid profile offline_access User.Read User.Read.All User.ReadWrite.All User.EnableDisableAccount.All User-PasswordProfile.ReadWrite.All Group.Read.All Group.ReadWrite.All GroupMember.ReadWrite.All Tasks.ReadWrite";
 const PRIVATSCHWESTERN_MODULE: &str = "privatschwestern";
 const EDV_MODULE: &str = "edv";
@@ -110,6 +111,48 @@ struct GraphProfile {
     mail: String,
     #[serde(default)]
     user_principal_name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortalUserProfile {
+    id: String,
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
+    mail: String,
+    #[serde(default)]
+    user_principal_name: String,
+    #[serde(default)]
+    job_title: String,
+    #[serde(default)]
+    department: String,
+    #[serde(default)]
+    business_phones: Vec<String>,
+    #[serde(default)]
+    mobile_phone: String,
+    #[serde(default)]
+    office_location: String,
+    #[serde(default)]
+    street_address: String,
+    #[serde(default)]
+    postal_code: String,
+    #[serde(default)]
+    city: String,
+    #[serde(default)]
+    country: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortalUserProfileUpdate {
+    business_phone: String,
+    mobile_phone: String,
+    office_location: String,
+    street_address: String,
+    postal_code: String,
+    city: String,
+    country: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -889,18 +932,6 @@ pub(crate) async fn acquire_graph_access_token(
     let client_id = configured_client_id()?;
     let account = read_account(app, state)?
         .ok_or_else(|| "Microsoft-365-Konto ist nicht verbunden.".to_string())?;
-    if !modules_for_groups(
-        &account.group_ids,
-        &privatschwestern_group_ids(),
-        &edv_group_ids(),
-    )
-    .iter()
-    .any(|module| module == PRIVATSCHWESTERN_MODULE)
-    {
-        return Err(
-            "Dieses Microsoft-Konto hat keinen Zugriff auf das Modul Privatschwestern.".to_string(),
-        );
-    }
     let stored = read_token(app, state)?;
     let token = request_token(&[
         ("grant_type", "refresh_token"),
@@ -917,6 +948,65 @@ pub(crate) async fn acquire_graph_access_token(
     let remember_sign_in = get_setting(app, TOKEN_SETTING_KEY)?.is_some();
     save_connection(app, state, &account, &bundle, remember_sign_in)?;
     Ok(token.access_token)
+}
+
+#[tauri::command]
+pub async fn get_portal_user_profile(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<PortalUserProfile, String> {
+    let mut access_token = acquire_graph_access_token(&app, &state).await?;
+    let response = reqwest::Client::new()
+        .get(GRAPH_PORTAL_PROFILE_URL)
+        .bearer_auth(&access_token)
+        .send()
+        .await
+        .map_err(|_| "Das Microsoft-Profil ist derzeit nicht erreichbar.".to_string())?;
+    access_token.zeroize();
+    if !response.status().is_success() {
+        return Err(format!(
+            "Microsoft konnte das Profil nicht laden (HTTP {}).",
+            response.status().as_u16()
+        ));
+    }
+    response
+        .json::<PortalUserProfile>()
+        .await
+        .map_err(|_| "Microsoft hat ein ungültiges Profil geliefert.".to_string())
+}
+
+#[tauri::command]
+pub async fn update_portal_user_profile(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    profile: PortalUserProfileUpdate,
+) -> Result<PortalUserProfile, String> {
+    let mut access_token = acquire_graph_access_token(&app, &state).await?;
+    let business_phone = profile.business_phone.trim();
+    let payload = serde_json::json!({
+        "businessPhones": if business_phone.is_empty() { Vec::<String>::new() } else { vec![business_phone.to_string()] },
+        "mobilePhone": profile.mobile_phone.trim(),
+        "officeLocation": profile.office_location.trim(),
+        "streetAddress": profile.street_address.trim(),
+        "postalCode": profile.postal_code.trim(),
+        "city": profile.city.trim(),
+        "country": profile.country.trim()
+    });
+    let response = reqwest::Client::new()
+        .patch("https://graph.microsoft.com/v1.0/me")
+        .bearer_auth(&access_token)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|_| "Das Microsoft-Profil konnte derzeit nicht gespeichert werden.".to_string())?;
+    access_token.zeroize();
+    if !response.status().is_success() {
+        return Err(format!(
+            "Microsoft hat die Profiländerung abgelehnt (HTTP {}). Bitte die Profilberechtigung durch die EDV prüfen lassen.",
+            response.status().as_u16()
+        ));
+    }
+    get_portal_user_profile(app, state).await
 }
 
 #[tauri::command]
@@ -1412,7 +1502,7 @@ mod tests {
     fn form_values_are_encoded_without_losing_scopes() {
         assert_eq!(
             form_body(&[("scope", LOGIN_SCOPES)]),
-            "scope=openid+profile+offline_access+User.Read+Contacts.ReadWrite+Calendars.ReadWrite"
+            "scope=openid+profile+offline_access+User.Read+User.ReadWrite+User-Phone.ReadWrite.All+Contacts.ReadWrite+Calendars.ReadWrite"
         );
     }
 

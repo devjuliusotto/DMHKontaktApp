@@ -35,6 +35,8 @@ import type {
   EdvDirectoryGroup,
   PlannerBoard,
   PlannerTask,
+  PortalUserProfile,
+  PortalUserProfileUpdate,
   EdvSystemRecord,
   EdvAuditEntry
 } from "../types/m365";
@@ -45,6 +47,14 @@ function requestSyncAfter<T>(promise: Promise<T>): Promise<T> {
     requestExchangeSync();
     return result;
   });
+}
+
+export function getPortalUserProfile(): Promise<PortalUserProfile> {
+  return invoke("get_portal_user_profile");
+}
+
+export function updatePortalUserProfile(profile: PortalUserProfileUpdate): Promise<PortalUserProfile> {
+  return invoke("update_portal_user_profile", { profile });
 }
 
 export function listContacts(search = "", groupId?: number): Promise<Contact[]> {
