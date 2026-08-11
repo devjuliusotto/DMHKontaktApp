@@ -6,7 +6,7 @@ DMH Kontakte und Kalender ist eine lokale Windows-Desktop-App zur einfachen Verw
 
 - Willkommensseite mit kurzer Erklärung der wichtigsten Bereiche
 - Kontakte anlegen, bearbeiten, suchen und löschen
-- Gruppen erstellen und Kontakte Gruppen zuordnen
+- Gruppen erstellen, umbenennen und Kontakte Gruppen zuordnen
 - CSV-Import mit Vorschau
 - Excel-Import (`.xlsx`) mit Vorschau
 - Import direkt in eine ausgewählte Gruppe

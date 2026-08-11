@@ -1,6 +1,6 @@
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { Ellipsis, Mail, Minus, Plus, Search, Trash2, UserPlus, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Ellipsis, Mail, Minus, Pencil, Plus, Search, Trash2, UserPlus, X } from "lucide-react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { ContactForm } from "../components/ContactForm";
 import { ContactTable } from "../components/ContactTable";
 import { StatusMessage } from "../components/StatusMessage";
@@ -80,6 +80,8 @@ export function ContactsPage() {
   const [groupSelection, setGroupSelection] = useState<GroupSelection>("ungrouped");
   const [editing, setEditing] = useState<ContactInput | null>(null);
   const [groupForm, setGroupForm] = useState<Group>(blankGroup);
+  const [renamingGroup, setRenamingGroup] = useState<Group | null>(null);
+  const [groupRenameError, setGroupRenameError] = useState("");
   const [testMenuOpen, setTestMenuOpen] = useState(false);
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState<"success" | "error" | "info">("info");
@@ -188,6 +190,38 @@ export function ContactsPage() {
     setMessage("Gruppe wurde erstellt.");
     setMessageType("success");
     await refresh();
+  };
+
+  const startGroupRename = (group: Group) => {
+    setRenamingGroup({ ...group });
+    setGroupRenameError("");
+  };
+
+  const submitGroupRename = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!renamingGroup) return;
+
+    const name = renamingGroup.name.trim();
+    if (!name) {
+      setGroupRenameError("Bitte geben Sie einen Gruppennamen ein.");
+      return;
+    }
+
+    try {
+      await saveGroup({ ...renamingGroup, name });
+      setRenamingGroup(null);
+      setGroupRenameError("");
+      setMessage(`Gruppe wurde in „${name}“ umbenannt.`);
+      setMessageType("success");
+      await refresh();
+    } catch (error) {
+      const detail = String(error);
+      setGroupRenameError(
+        detail.includes("UNIQUE constraint failed")
+          ? "Eine Gruppe mit diesem Namen existiert bereits."
+          : `Gruppe konnte nicht umbenannt werden: ${detail}`
+      );
+    }
   };
 
   const submit = async () => {
@@ -632,6 +666,35 @@ export function ContactsPage() {
         </div>
       )}
 
+      {renamingGroup && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="group-rename-title">
+          <form className="form-panel modal-card group-rename-dialog" onSubmit={submitGroupRename}>
+            <div className="panel-heading">
+              <h3 id="group-rename-title">Gruppe umbenennen</h3>
+              <button className="icon-only" type="button" aria-label="Schließen" onClick={() => setRenamingGroup(null)}>
+                <X size={22} />
+              </button>
+            </div>
+            <label className="field">
+              <span>Gruppenname</span>
+              <input
+                autoFocus
+                value={renamingGroup.name}
+                onChange={(event) => {
+                  setRenamingGroup({ ...renamingGroup, name: event.target.value });
+                  setGroupRenameError("");
+                }}
+              />
+            </label>
+            {groupRenameError && <p className="field-error">{groupRenameError}</p>}
+            <div className="button-row">
+              <button className="primary" type="submit">Speichern</button>
+              <button type="button" onClick={() => setRenamingGroup(null)}>Abbrechen</button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {tab === "all" ? (
         <ContactTable
           contacts={contacts}
@@ -687,6 +750,9 @@ export function ContactsPage() {
               >
                 <button type="button" className="group-filter" onClick={() => setGroupSelection(group.id ?? "ungrouped")}>
                   {group.name}
+                </button>
+                <button title="Gruppe umbenennen" aria-label={`${group.name} umbenennen`} type="button" onClick={() => startGroupRename(group)}>
+                  <Pencil size={18} />
                 </button>
                 <button title="Kontakte hinzufügen" type="button" onClick={() => openBulkAdd(group)}>
                   <UserPlus size={18} />

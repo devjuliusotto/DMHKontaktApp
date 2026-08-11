@@ -856,6 +856,10 @@ td input[type="checkbox"] {
   max-width: 680px;
 }
 
+.group-rename-dialog {
+  max-width: 520px;
+}
+
 .bulk-add-search {
   margin: 0.9rem 0 0.7rem;
   min-width: 0;
@@ -1029,7 +1033,7 @@ td input[type="checkbox"] {
   align-items: stretch;
   display: grid;
   gap: 0.4rem;
-  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto;
   margin-top: 0.45rem;
 }
 
