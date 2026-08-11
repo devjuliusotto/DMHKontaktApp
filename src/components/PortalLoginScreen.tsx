@@ -1,8 +1,6 @@
-import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import {
   Building2,
   Check,
-  Copy,
   ExternalLink,
   HelpCircle,
   KeyRound,
@@ -11,22 +9,18 @@ import {
   RefreshCw,
   ShieldCheck,
   Smartphone,
-  UserRoundCheck,
-  X
+  UserRoundCheck
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
-  cancelMicrosoft365Connection,
   disconnectMicrosoft365Account,
-  openMicrosoft365SignIn,
   openMicrosoft365PasswordChange,
   openMicrosoft365PasswordReset,
   openMicrosoft365SecurityInfo,
-  pollMicrosoft365Connection,
   restorePortalSession,
   startMicrosoft365Connection
 } from "../services/db";
-import type { Microsoft365DeviceCode, PortalSession } from "../types/m365";
+import type { PortalSession } from "../types/m365";
 
 interface PortalLoginScreenProps {
   session: PortalSession;
@@ -36,73 +30,23 @@ interface PortalLoginScreenProps {
 
 export function PortalLoginScreen({ session, startupError = "", onSessionChanged }: PortalLoginScreenProps) {
   const [rememberSignIn, setRememberSignIn] = useState(true);
-  const [deviceCode, setDeviceCode] = useState<Microsoft365DeviceCode | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(startupError || session.message);
   const [showAccessHelp, setShowAccessHelp] = useState(false);
-  const pollingRef = useRef(false);
-
   useEffect(() => {
     setMessage(startupError || session.message);
   }, [session.message, startupError]);
-
-  useEffect(() => {
-    if (!deviceCode) return;
-    pollingRef.current = true;
-    let timeout: number | undefined;
-
-    const poll = async () => {
-      if (!pollingRef.current) return;
-      try {
-        const result = await pollMicrosoft365Connection();
-        if (result.state === "connected") {
-          pollingRef.current = false;
-          setDeviceCode(null);
-          const restored = await restorePortalSession();
-          setBusy(false);
-          onSessionChanged(restored);
-          return;
-        }
-        timeout = window.setTimeout(
-          poll,
-          Math.max(3, result.intervalSeconds || deviceCode.intervalSeconds) * 1000
-        );
-      } catch (error) {
-        pollingRef.current = false;
-        setDeviceCode(null);
-        setBusy(false);
-        setMessage(String(error));
-      }
-    };
-
-    timeout = window.setTimeout(poll, Math.max(2, deviceCode.intervalSeconds) * 1000);
-    return () => {
-      pollingRef.current = false;
-      if (timeout) window.clearTimeout(timeout);
-    };
-  }, [deviceCode, onSessionChanged]);
 
   const startSignIn = async () => {
     setBusy(true);
     setMessage("");
     try {
-      const code = await startMicrosoft365Connection(rememberSignIn);
-      setDeviceCode(code);
-      await openMicrosoft365SignIn();
+      await startMicrosoft365Connection(rememberSignIn);
+      onSessionChanged(await restorePortalSession());
     } catch (error) {
-      setBusy(false);
       setMessage(String(error));
-    }
-  };
-
-  const cancelSignIn = async () => {
-    pollingRef.current = false;
-    setDeviceCode(null);
-    setBusy(false);
-    try {
-      await cancelMicrosoft365Connection();
-    } catch {
-      // Der kurzlebige Microsoft-Code läuft selbstständig ab.
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -129,16 +73,6 @@ export function PortalLoginScreen({ session, startupError = "", onSessionChanged
     }
   };
 
-  const copyCode = async () => {
-    if (!deviceCode) return;
-    try {
-      await writeText(deviceCode.userCode);
-      setMessage("Anmeldecode wurde kopiert.");
-    } catch (error) {
-      setMessage(`Anmeldecode konnte nicht kopiert werden: ${error}`);
-    }
-  };
-
   const openHelpPage = async (action: "reset" | "change" | "prepare") => {
     setMessage("");
     try {
@@ -149,11 +83,6 @@ export function PortalLoginScreen({ session, startupError = "", onSessionChanged
     } catch (error) {
       setMessage(String(error));
     }
-  };
-
-  const openHelpFromDeviceFlow = async () => {
-    await cancelSignIn();
-    setShowAccessHelp(true);
   };
 
   const configurationMissing = session.state === "configuration_required";
@@ -170,7 +99,7 @@ export function PortalLoginScreen({ session, startupError = "", onSessionChanged
           </div>
         </div>
 
-        {!deviceCode && !configurationMissing && !accessDenied && !showAccessHelp && (
+        {!configurationMissing && !accessDenied && !showAccessHelp && (
           <>
             <div className="portal-login-intro">
               <div className="portal-login-icon"><Building2 size={32} /></div>
@@ -193,15 +122,16 @@ export function PortalLoginScreen({ session, startupError = "", onSessionChanged
             {message && <p className="portal-login-message error" role="alert">{message}</p>}
             <button className="primary large portal-login-button" type="button" onClick={startSignIn} disabled={busy || !session.configured}>
               {busy ? <LoaderCircle className="spin" size={22} /> : <Building2 size={22} />}
-              Mit Microsoft 365 anmelden
+              {busy ? "Microsoft-Anmeldung läuft …" : "Mit Microsoft 365 anmelden"}
             </button>
-            <button className="portal-login-help-button large" type="button" onClick={() => setShowAccessHelp(true)}>
+            {busy && <p className="portal-waiting"><LoaderCircle className="spin" size={19} /> Folgen Sie einfach der geöffneten Microsoft-Seite. Danach kehren Sie automatisch zum Portal zurück.</p>}
+            <button className="portal-login-help-button large" type="button" onClick={() => setShowAccessHelp(true)} disabled={busy}>
               <HelpCircle size={22} /> Hilfe mit Anmeldung oder Kennwort
             </button>
           </>
         )}
 
-        {!deviceCode && showAccessHelp && (
+        {showAccessHelp && (
           <div className="portal-access-help">
             <div className="portal-login-icon"><HelpCircle size={32} /></div>
             <h2>Wobei brauchen Sie Hilfe?</h2>
@@ -236,28 +166,7 @@ export function PortalLoginScreen({ session, startupError = "", onSessionChanged
           </div>
         )}
 
-        {deviceCode && (
-          <div className="portal-device-flow" aria-live="polite">
-            <div className="portal-login-icon"><KeyRound size={31} /></div>
-            <h2>Microsoft-Anmeldung abschließen</h2>
-            <p>Geben Sie den einmaligen Code im geöffneten Microsoft-Fenster ein.</p>
-            <div className="portal-device-code">
-              <strong>{deviceCode.userCode}</strong>
-              <button type="button" onClick={copyCode}><Copy size={19} /> Kopieren</button>
-            </div>
-            <button className="primary large" type="button" onClick={openMicrosoft365SignIn}>
-              <ExternalLink size={20} /> Microsoft-Anmeldung öffnen
-            </button>
-            <button type="button" onClick={cancelSignIn}><X size={20} /> Abbrechen</button>
-            <button className="portal-device-help" type="button" onClick={() => void openHelpFromDeviceFlow()}>
-              <HelpCircle size={19} /> Anmeldung klappt nicht
-            </button>
-            <p className="portal-waiting"><LoaderCircle className="spin" size={19} /> Das Portal wartet auf Ihre Bestätigung.</p>
-            {message && <p className="portal-login-message" role="status">{message}</p>}
-          </div>
-        )}
-
-        {!deviceCode && configurationMissing && !showAccessHelp && (
+        {configurationMissing && !showAccessHelp && (
           <div className="portal-access-state">
             <div className="portal-login-icon warning"><ShieldCheck size={31} /></div>
             <h2>Einrichtung durch die EDV erforderlich</h2>
@@ -273,7 +182,7 @@ export function PortalLoginScreen({ session, startupError = "", onSessionChanged
           </div>
         )}
 
-        {!deviceCode && accessDenied && !showAccessHelp && (
+        {accessDenied && !showAccessHelp && (
           <div className="portal-access-state">
             <div className="portal-login-icon warning"><ShieldCheck size={31} /></div>
             <h2>Noch kein Modul freigegeben</h2>

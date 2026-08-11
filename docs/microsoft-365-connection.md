@@ -15,20 +15,23 @@ des angemeldeten Benutzers. Der Passwort-Tresor bleibt in dieser Etappe lokal.
    Registrierung von `DMH Kontakte und Kalender` weiterverwenden.
 3. Als Kontotyp ausschließlich Konten dieses Organisationsverzeichnisses wählen
    (Single Tenant).
-4. Unter **Authentifizierung → Erweiterte Einstellungen** die Option
+4. Unter **Authentifizierung → Plattform hinzufügen → Mobilgeräte- und
+   Desktopanwendungen** die Umleitungs-URI `http://localhost` hinzufügen.
+5. Unter **Authentifizierung → Erweiterte Einstellungen** die Option
    **Öffentliche Clientflows zulassen** aktivieren.
-5. Unter **API-Berechtigungen** folgende delegierte Microsoft-Graph-
+6. Unter **API-Berechtigungen** folgende delegierte Microsoft-Graph-
    Berechtigungen hinzufügen:
    - `User.Read`
    - `Contacts.ReadWrite`
    - `Calendars.ReadWrite`
-6. **Administratoreinwilligung für den DMH-Mandanten erteilen** wählen und den
+7. **Administratoreinwilligung für den DMH-Mandanten erteilen** wählen und den
    Status aller drei Berechtigungen kontrollieren.
-7. Mandanten-ID und Anwendungs-ID notieren.
+8. Mandanten-ID und Anwendungs-ID notieren.
 
-Für den Device-Code-Flow ist kein Client-Secret und keine Redirect-URI
-erforderlich. Ein Client-Secret darf niemals in den Desktop-Build aufgenommen
-werden.
+Der Desktop-Login verwendet den Systembrowser mit Authorization Code und PKCE.
+Der Browser kehrt über eine kurzlebige lokale Adresse automatisch zum Portal
+zurück; Benutzer müssen keinen Code kopieren oder eingeben. Ein Client-Secret
+ist nicht erforderlich und darf niemals in den Desktop-Build aufgenommen werden.
 
 ## 2. Sicherheitsgruppen anlegen
 
@@ -154,8 +157,9 @@ Für die sauberste Trennung wird eine zweite öffentliche Entra-App registriert
 und deren Anwendungs-ID als `M365_EDV_CLIENT_ID` hinterlegt. Ohne diese Variable
 wird vorübergehend die bestehende App-Registrierung verwendet.
 
-Für die EDV-App müssen **Allow public client flows** und folgende delegierte
-Microsoft-Graph-Berechtigungen aktiviert und per Admin Consent bestätigt werden:
+Für die EDV-App müssen ebenfalls die Desktop-Umleitungs-URI `http://localhost`
+und **Allow public client flows** konfiguriert sein. Folgende delegierte
+Microsoft-Graph-Berechtigungen werden aktiviert und per Admin Consent bestätigt:
 
 - `User.Read`, `User.Read.All`, `User.ReadWrite.All`
 - `User.EnableDisableAccount.All`

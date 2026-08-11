@@ -26,7 +26,6 @@ import type {
 } from "../types/vault";
 import type {
   Microsoft365ConnectionStatus,
-  Microsoft365DeviceCode,
   Microsoft365PollResult,
   PortalSession,
   ExchangeSyncResult,
@@ -171,20 +170,8 @@ export function restorePortalSession(): Promise<PortalSession> {
   return invoke("restore_portal_session");
 }
 
-export function startMicrosoft365Connection(rememberSignIn = true): Promise<Microsoft365DeviceCode> {
+export function startMicrosoft365Connection(rememberSignIn = true): Promise<Microsoft365PollResult> {
   return invoke("start_m365_connection", { rememberSignIn });
-}
-
-export function pollMicrosoft365Connection(): Promise<Microsoft365PollResult> {
-  return invoke("poll_m365_connection");
-}
-
-export function cancelMicrosoft365Connection(): Promise<void> {
-  return invoke("cancel_m365_connection");
-}
-
-export function openMicrosoft365SignIn(): Promise<void> {
-  return invoke("open_m365_sign_in");
 }
 
 export function openMicrosoft365PasswordReset(): Promise<void> {
@@ -211,12 +198,8 @@ export function getEdvAdminSessionStatus(): Promise<EdvAdminSessionStatus> {
   return invoke("get_edv_admin_session_status");
 }
 
-export function startEdvAdminConnection(): Promise<Microsoft365DeviceCode> {
+export function startEdvAdminConnection(): Promise<Microsoft365PollResult> {
   return invoke("start_edv_admin_connection");
-}
-
-export function pollEdvAdminConnection(): Promise<Microsoft365PollResult> {
-  return invoke("poll_edv_admin_connection");
 }
 
 export function disconnectEdvAdminSession(): Promise<void> {

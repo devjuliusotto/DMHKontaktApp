@@ -35,17 +35,9 @@ export interface PortalSession {
   message: string;
 }
 
-export interface Microsoft365DeviceCode {
-  userCode: string;
-  verificationUri: string;
-  expiresAt: string;
-  intervalSeconds: number;
-}
-
 export interface Microsoft365PollResult {
-  state: "pending" | "connected";
+  state: "connected";
   account: Microsoft365Account | null;
-  intervalSeconds: number;
 }
 
 export interface ExchangeEntitySyncSummary {

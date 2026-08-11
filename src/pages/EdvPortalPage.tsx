@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity, ArrowLeft, CalendarClock, Check, ChevronRight, CircleUserRound, CloudOff,
-  Columns3, ExternalLink, FileClock, KeyRound, LayoutDashboard, LoaderCircle, LockKeyhole,
+  Columns3, FileClock, KeyRound, LayoutDashboard, LoaderCircle, LockKeyhole,
   LogOut, MonitorCog, Plus, RefreshCw, Search, Settings, ShieldCheck, Trash2, UserPlus,
   UsersRound, Wrench
 } from "lucide-react";
@@ -10,13 +10,13 @@ import {
   deleteDirectoryGroup, deleteEdvSystem, deletePlannerTask, disconnectEdvAdminSession,
   getEdvAccessProfile, getEdvAdminSessionStatus, getEdvPlannerPlanId, listDirectoryGroupMembers,
   listDirectoryGroups, listDirectoryUsers, listEdvAuditLog, listEdvSystems, loadPlannerBoard,
-  openMicrosoft365SignIn, pollEdvAdminConnection, removeDirectoryGroupMember,
+  removeDirectoryGroupMember,
   resetDirectoryUserPassword, saveEdvSystem, setEdvPlannerPlanId, startEdvAdminConnection,
   updateDirectoryGroup, updateDirectoryUser, updatePlannerTask
 } from "../services/db";
 import type {
   EdvAccessProfile, EdvAdminSessionStatus, EdvAuditEntry, EdvDirectoryGroup,
-  EdvDirectoryUser, EdvSystemRecord, Microsoft365Account, Microsoft365DeviceCode,
+  EdvDirectoryUser, EdvSystemRecord, Microsoft365Account,
   PlannerBoard, PlannerTask, PortalModuleId
 } from "../types/m365";
 
@@ -65,7 +65,6 @@ export function EdvPortalPage(props: EdvPortalPageProps) {
   const [tab, setTab] = useState<EdvTab>("overview");
   const [access, setAccess] = useState<EdvAccessProfile | null>(null);
   const [adminStatus, setAdminStatus] = useState<EdvAdminSessionStatus>(emptyAdminStatus);
-  const [device, setDevice] = useState<Microsoft365DeviceCode | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
@@ -82,35 +81,12 @@ export function EdvPortalPage(props: EdvPortalPageProps) {
 
   useEffect(() => { void refreshFoundation(); }, [refreshFoundation]);
 
-  useEffect(() => {
-    if (!device) return;
-    let cancelled = false;
-    let timer: number | undefined;
-    const poll = async () => {
-      try {
-        const result = await pollEdvAdminConnection();
-        if (cancelled) return;
-        if (result.state === "connected") {
-          setDevice(null);
-          setNotice("Administrative Microsoft-Sitzung wurde sicher verbunden.");
-          await refreshFoundation();
-          return;
-        }
-        timer = window.setTimeout(poll, Math.max(3, result.intervalSeconds) * 1000);
-      } catch (pollError) {
-        if (!cancelled) { setDevice(null); setError(errorText(pollError)); }
-      }
-    };
-    timer = window.setTimeout(poll, Math.max(3, device.intervalSeconds) * 1000);
-    return () => { cancelled = true; if (timer) window.clearTimeout(timer); };
-  }, [device, refreshFoundation]);
-
   const connectAdmin = async () => {
     setBusy(true); setError(""); setNotice("");
     try {
-      const nextDevice = await startEdvAdminConnection();
-      setDevice(nextDevice);
-      await openMicrosoft365SignIn();
+      await startEdvAdminConnection();
+      setNotice("Administrative Microsoft-Sitzung wurde sicher verbunden.");
+      await refreshFoundation();
     } catch (connectError) { setError(errorText(connectError)); }
     finally { setBusy(false); }
   };
@@ -144,12 +120,12 @@ export function EdvPortalPage(props: EdvPortalPageProps) {
         <section className="edv-main">
           {(notice || error || props.message) && <div className={`edv-toast ${error || props.message ? "error" : "success"}`}>{error || props.message || notice}<button type="button" onClick={() => { setError(""); setNotice(""); }}>×</button></div>}
           {tab === "overview" && <Overview account={props.account} modules={props.modules} offline={props.offline} access={access} adminStatus={adminStatus} onGo={setTab} />}
-          {tab === "tickets" && <ProtectedArea status={adminStatus} device={device} busy={busy} onConnect={connectAdmin}><Tickets accountId={props.account.id} access={access} onError={setError} onNotice={setNotice} /></ProtectedArea>}
-          {tab === "users" && <ProtectedArea status={adminStatus} device={device} busy={busy} onConnect={connectAdmin}><Users access={access} onError={setError} onNotice={setNotice} /></ProtectedArea>}
-          {tab === "groups" && <ProtectedArea status={adminStatus} device={device} busy={busy} onConnect={connectAdmin}><Groups access={access} onError={setError} onNotice={setNotice} /></ProtectedArea>}
+          {tab === "tickets" && <ProtectedArea status={adminStatus} busy={busy} onConnect={connectAdmin}><Tickets accountId={props.account.id} access={access} onError={setError} onNotice={setNotice} /></ProtectedArea>}
+          {tab === "users" && <ProtectedArea status={adminStatus} busy={busy} onConnect={connectAdmin}><Users access={access} onError={setError} onNotice={setNotice} /></ProtectedArea>}
+          {tab === "groups" && <ProtectedArea status={adminStatus} busy={busy} onConnect={connectAdmin}><Groups access={access} onError={setError} onNotice={setNotice} /></ProtectedArea>}
           {tab === "systems" && <Systems access={access} onError={setError} onNotice={setNotice} />}
           {tab === "audit" && <Audit onError={setError} />}
-          {tab === "settings" && <SettingsPanel {...props} access={access} adminStatus={adminStatus} device={device} busy={busy} onConnect={connectAdmin} onDisconnect={disconnectAdmin} onError={setError} onNotice={setNotice} />}
+          {tab === "settings" && <SettingsPanel {...props} access={access} adminStatus={adminStatus} busy={busy} onConnect={connectAdmin} onDisconnect={disconnectAdmin} onError={setError} onNotice={setNotice} />}
         </section>
       </div>
     </main>
@@ -170,9 +146,9 @@ function Overview({ account, modules, offline, access, adminStatus, onGo }: { ac
   </>;
 }
 
-function ProtectedArea({ status, device, busy, onConnect, children }: { status: EdvAdminSessionStatus; device: Microsoft365DeviceCode | null; busy: boolean; onConnect: () => Promise<void>; children: React.ReactNode }) {
+function ProtectedArea({ status, busy, onConnect, children }: { status: EdvAdminSessionStatus; busy: boolean; onConnect: () => Promise<void>; children: React.ReactNode }) {
   if (status.connected) return <>{children}</>;
-  return <div className="edv-connect-card"><span className="edv-connect-icon"><KeyRound size={34} /></span><h1>Administrative Verbindung herstellen</h1><p>Dieser Bereich verwendet eine getrennte Microsoft-Sitzung. Melden Sie sich mit demselben Konto an. Berechtigungen werden weiterhin durch Ihre Entra-Administratorrolle begrenzt.</p>{device ? <div className="edv-device-code"><small>Microsoft-Anmeldecode</small><strong>{device.userCode}</strong><span><LoaderCircle className="spin" size={18} /> Anmeldung wird geprüft …</span><button type="button" onClick={() => void openMicrosoft365SignIn()}><ExternalLink size={18} /> Microsoft-Anmeldung öffnen</button></div> : <button className="primary" type="button" disabled={busy} onClick={() => void onConnect()}>{busy ? <LoaderCircle className="spin" size={20} /> : <ShieldCheck size={20} />} Sicher mit Microsoft verbinden</button>}</div>;
+  return <div className="edv-connect-card"><span className="edv-connect-icon"><KeyRound size={34} /></span><h1>Administrative Verbindung herstellen</h1><p>Dieser Bereich verwendet eine getrennte Microsoft-Sitzung. Melden Sie sich mit demselben Konto an. Berechtigungen werden weiterhin durch Ihre Entra-Administratorrolle begrenzt.</p><button className="primary" type="button" disabled={busy} onClick={() => void onConnect()}>{busy ? <LoaderCircle className="spin" size={20} /> : <ShieldCheck size={20} />} {busy ? "Microsoft-Anmeldung läuft …" : "Sicher mit Microsoft verbinden"}</button>{busy && <span className="edv-browser-wait"><LoaderCircle className="spin" size={18} /> Folgen Sie der geöffneten Microsoft-Seite. Danach geht es hier automatisch weiter.</span>}</div>;
 }
 
 function Tickets({ accountId, access, onError, onNotice }: { accountId: string; access: EdvAccessProfile | null; onError: (value: string) => void; onNotice: (value: string) => void }) {
@@ -269,8 +245,8 @@ function Audit({ onError }: { onError: (value: string) => void }) {
   return <div><DirectoryHeading eyebrow="NACHVOLLZIEHBARKEIT" title="Änderungsprotokoll" description="Die letzten 500 Änderungen auf diesem Gerät" search="" onSearch={() => undefined} onReload={load} />{loading ? <Loading label="Protokoll wird geladen …" /> : <div className="edv-timeline">{entries.length ? entries.map((entry) => <article key={entry.id}><span className="edv-timeline-icon"><Activity size={18} /></span><div><header><strong>{entry.details}</strong><time>{new Date(entry.occurredAt).toLocaleString("de-DE")}</time></header><p><b>{entry.actorName}</b> · {entry.targetType}: {entry.targetName || entry.targetId}</p></div></article>) : <div className="edv-empty"><FileClock size={36} /><strong>Noch keine Änderungen</strong><p>Administrative Aktionen erscheinen automatisch hier.</p></div>}</div>}</div>;
 }
 
-function SettingsPanel(props: EdvPortalPageProps & { access: EdvAccessProfile | null; adminStatus: EdvAdminSessionStatus; device: Microsoft365DeviceCode | null; busy: boolean; onConnect: () => Promise<void>; onDisconnect: () => Promise<void>; onError: (value: string) => void; onNotice: (value: string) => void }) {
-  return <div><div className="edv-section-heading"><div><span className="edv-eyebrow">PORTALKONFIGURATION</span><h1>Einstellungen</h1><p>Sicherheitsstatus und Verbindungen des EDV-Moduls.</p></div></div><div className="edv-settings-grid"><article><header><ShieldCheck size={24} /><div><h3>Ihre EDV-Rolle</h3><p>{roleName(props.access?.level)}</p></div></header><ul><li className={props.access?.canManageTickets ? "yes" : "no"}>Tickets bearbeiten</li><li className={props.access?.canManageSystems ? "yes" : "no"}>Systeme bearbeiten</li><li className={props.access?.canManageMembers ? "yes" : "no"}>Gruppenmitglieder ändern</li><li className={props.access?.canManageIdentities ? "yes" : "no"}>Benutzer und Gruppen verwalten</li></ul></article><article><header><KeyRound size={24} /><div><h3>Administrative Sitzung</h3><p>{props.adminStatus.connected ? "Sicher verbunden" : "Nicht verbunden"}</p></div></header>{props.device ? <div className="edv-device-code"><strong>{props.device.userCode}</strong><span><LoaderCircle className="spin" size={17} /> Anmeldung wird geprüft …</span></div> : props.adminStatus.connected ? <button type="button" onClick={() => void props.onDisconnect()}><LogOut size={18} /> Admin-Sitzung beenden</button> : <button className="primary" type="button" disabled={props.busy} onClick={() => void props.onConnect()}><ShieldCheck size={18} /> Microsoft verbinden</button>}</article><article><header><RefreshCw size={24} /><div><h3>Portalgruppen</h3><p>Zugriffe erneut aus Entra laden</p></div></header><button type="button" disabled={props.offline || props.refreshing} onClick={() => void props.onRefreshAuthorization()}><RefreshCw className={props.refreshing ? "spin" : ""} size={18} /> Gruppen erneut prüfen</button></article><article><header><Wrench size={24} /><div><h3>Zentrale Konfiguration</h3><p>Nächster Cloud-Ausbauschritt</p></div></header><p>Plan-ID und Inventar sind derzeit lokal gespeichert. Die spätere SharePoint-Liste kann ohne Änderung an Entra und Planner ergänzt werden.</p></article></div></div>;
+function SettingsPanel(props: EdvPortalPageProps & { access: EdvAccessProfile | null; adminStatus: EdvAdminSessionStatus; busy: boolean; onConnect: () => Promise<void>; onDisconnect: () => Promise<void>; onError: (value: string) => void; onNotice: (value: string) => void }) {
+  return <div><div className="edv-section-heading"><div><span className="edv-eyebrow">PORTALKONFIGURATION</span><h1>Einstellungen</h1><p>Sicherheitsstatus und Verbindungen des EDV-Moduls.</p></div></div><div className="edv-settings-grid"><article><header><ShieldCheck size={24} /><div><h3>Ihre EDV-Rolle</h3><p>{roleName(props.access?.level)}</p></div></header><ul><li className={props.access?.canManageTickets ? "yes" : "no"}>Tickets bearbeiten</li><li className={props.access?.canManageSystems ? "yes" : "no"}>Systeme bearbeiten</li><li className={props.access?.canManageMembers ? "yes" : "no"}>Gruppenmitglieder ändern</li><li className={props.access?.canManageIdentities ? "yes" : "no"}>Benutzer und Gruppen verwalten</li></ul></article><article><header><KeyRound size={24} /><div><h3>Administrative Sitzung</h3><p>{props.adminStatus.connected ? "Sicher verbunden" : props.busy ? "Microsoft-Anmeldung läuft …" : "Nicht verbunden"}</p></div></header>{props.adminStatus.connected ? <button type="button" onClick={() => void props.onDisconnect()}><LogOut size={18} /> Admin-Sitzung beenden</button> : <button className="primary" type="button" disabled={props.busy} onClick={() => void props.onConnect()}>{props.busy ? <LoaderCircle className="spin" size={18} /> : <ShieldCheck size={18} />} {props.busy ? "Bitte im Browser fortfahren" : "Microsoft verbinden"}</button>}</article><article><header><RefreshCw size={24} /><div><h3>Portalgruppen</h3><p>Zugriffe erneut aus Entra laden</p></div></header><button type="button" disabled={props.offline || props.refreshing} onClick={() => void props.onRefreshAuthorization()}><RefreshCw className={props.refreshing ? "spin" : ""} size={18} /> Gruppen erneut prüfen</button></article><article><header><Wrench size={24} /><div><h3>Zentrale Konfiguration</h3><p>Nächster Cloud-Ausbauschritt</p></div></header><p>Plan-ID und Inventar sind derzeit lokal gespeichert. Die spätere SharePoint-Liste kann ohne Änderung an Entra und Planner ergänzt werden.</p></article></div></div>;
 }
 
 function DirectoryHeading({ eyebrow, title, description, search, onSearch, action, onReload }: { eyebrow: string; title: string; description: string; search: string; onSearch: (value: string) => void; action?: React.ReactNode; onReload: () => Promise<void> }) {

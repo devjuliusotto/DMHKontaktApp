@@ -1,32 +1,24 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   CalendarDays,
   CheckCircle2,
   Cloud,
   ContactRound,
-  Copy,
-  ExternalLink,
   KeyRound,
   LoaderCircle,
   LogOut,
   RefreshCw,
-  ShieldCheck,
-  X
+  ShieldCheck
 } from "lucide-react";
-import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { StatusMessage } from "../components/StatusMessage";
 import {
-  cancelMicrosoft365Connection,
   disconnectMicrosoft365Account,
   getMicrosoft365ConnectionStatus,
-  openMicrosoft365SignIn,
-  pollMicrosoft365Connection,
   startMicrosoft365Connection,
   testMicrosoft365Connection
 } from "../services/db";
 import type {
   Microsoft365ConnectionStatus,
-  Microsoft365DeviceCode,
   ExchangeSyncStatus
 } from "../types/m365";
 
@@ -44,12 +36,9 @@ const emptyStatus: Microsoft365ConnectionStatus = {
 
 export function Microsoft365Page({ syncStatus, onSync }: Microsoft365PageProps) {
   const [status, setStatus] = useState<Microsoft365ConnectionStatus | null>(null);
-  const [deviceCode, setDeviceCode] = useState<Microsoft365DeviceCode | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState<"success" | "error" | "info">("info");
-  const pollingRef = useRef(false);
-
   const loadStatus = async () => {
     try {
       setStatus(await getMicrosoft365ConnectionStatus());
@@ -62,87 +51,21 @@ export function Microsoft365Page({ syncStatus, onSync }: Microsoft365PageProps) 
 
   useEffect(() => {
     loadStatus();
-    return () => {
-      pollingRef.current = false;
-    };
   }, []);
-
-  useEffect(() => {
-    if (!deviceCode) return;
-    pollingRef.current = true;
-    let timeout: number | undefined;
-
-    const poll = async () => {
-      if (!pollingRef.current) return;
-      try {
-        const result = await pollMicrosoft365Connection();
-        if (result.state === "connected") {
-          pollingRef.current = false;
-          setDeviceCode(null);
-          setBusyAction(null);
-          setStatus({ configured: true, connected: true, account: result.account, rememberSignIn: true });
-          setMessageType("success");
-          setMessage("Microsoft-365-Konto wurde sicher verbunden. Kontakte und Kalender werden automatisch synchronisiert.");
-          return;
-        }
-        timeout = window.setTimeout(
-          poll,
-          Math.max(3, result.intervalSeconds || deviceCode.intervalSeconds) * 1000
-        );
-      } catch (error) {
-        pollingRef.current = false;
-        setDeviceCode(null);
-        setBusyAction(null);
-        setMessageType("error");
-        setMessage(`Microsoft-365-Anmeldung wurde nicht abgeschlossen: ${error}`);
-      }
-    };
-
-    timeout = window.setTimeout(poll, Math.max(2, deviceCode.intervalSeconds) * 1000);
-    return () => {
-      pollingRef.current = false;
-      if (timeout) window.clearTimeout(timeout);
-    };
-  }, [deviceCode]);
 
   const connect = async () => {
     setBusyAction("connect");
     setMessage("");
     try {
-      const code = await startMicrosoft365Connection();
-      setDeviceCode(code);
-      setMessageType("info");
-      setMessage("Öffnen Sie die Microsoft-Anmeldung und geben Sie den angezeigten Code ein.");
-      await openMicrosoft365SignIn();
-    } catch (error) {
-      setBusyAction(null);
-      setMessageType("error");
-      setMessage(`Microsoft-365-Anmeldung konnte nicht gestartet werden: ${error}`);
-    }
-  };
-
-  const cancelConnection = async () => {
-    pollingRef.current = false;
-    setDeviceCode(null);
-    setBusyAction(null);
-    try {
-      await cancelMicrosoft365Connection();
-    } catch {
-      // The short-lived code expires on its own; cancellation remains safe locally.
-    }
-    setMessageType("info");
-    setMessage("Anmeldung wurde abgebrochen.");
-  };
-
-  const copyCode = async () => {
-    if (!deviceCode) return;
-    try {
-      await writeText(deviceCode.userCode);
+      const result = await startMicrosoft365Connection();
+      setStatus({ configured: true, connected: true, account: result.account, rememberSignIn: true });
       setMessageType("success");
-      setMessage("Anmeldecode wurde kopiert.");
+      setMessage("Microsoft-365-Konto wurde sicher verbunden. Kontakte und Kalender werden automatisch synchronisiert.");
     } catch (error) {
       setMessageType("error");
-      setMessage(`Anmeldecode konnte nicht kopiert werden: ${error}`);
+      setMessage(`Microsoft-365-Anmeldung wurde nicht abgeschlossen: ${error}`);
+    } finally {
+      setBusyAction(null);
     }
   };
 
@@ -218,7 +141,7 @@ export function Microsoft365Page({ syncStatus, onSync }: Microsoft365PageProps) 
         </section>
       )}
 
-      {status.configured && !status.connected && !deviceCode && (
+      {status.configured && !status.connected && (
         <section className="form-panel m365-connect-card">
           <div className="m365-hero">
             <div className="m365-card-icon microsoft"><Cloud size={30} /></div>
@@ -239,34 +162,9 @@ export function Microsoft365Page({ syncStatus, onSync }: Microsoft365PageProps) 
           </div>
           <button className="primary large m365-connect-button" type="button" onClick={connect} disabled={busyAction !== null}>
             {busyAction === "connect" ? <LoaderCircle className="spin" size={22} /> : <Cloud size={22} />}
-            Mit Microsoft 365 verbinden
+            {busyAction === "connect" ? "Microsoft-Anmeldung läuft …" : "Mit Microsoft 365 verbinden"}
           </button>
-        </section>
-      )}
-
-      {deviceCode && (
-        <section className="form-panel m365-device-card" aria-live="polite">
-          <div className="m365-hero">
-            <div className="m365-card-icon microsoft"><KeyRound size={29} /></div>
-            <div>
-              <h3>Microsoft-Anmeldung abschließen</h3>
-              <p>Geben Sie diesen einmaligen Code im geöffneten Microsoft-Fenster ein.</p>
-            </div>
-          </div>
-          <div className="m365-device-code-row">
-            <strong>{deviceCode.userCode}</strong>
-            <button type="button" onClick={copyCode}><Copy size={19} /> Code kopieren</button>
-          </div>
-          <div className="m365-device-actions">
-            <button className="primary" type="button" onClick={openMicrosoft365SignIn}>
-              <ExternalLink size={19} /> Microsoft-Anmeldung öffnen
-            </button>
-            <button type="button" onClick={cancelConnection}><X size={19} /> Abbrechen</button>
-          </div>
-          <p className="m365-waiting">
-            <LoaderCircle className="spin" size={19} />
-            Die App wartet auf Ihre Bestätigung. Dieses Fenster kann geöffnet bleiben.
-          </p>
+          {busyAction === "connect" && <p className="m365-waiting"><LoaderCircle className="spin" size={19} /> Folgen Sie der geöffneten Microsoft-Seite. Die Rückkehr zum Portal erfolgt automatisch.</p>}
         </section>
       )}
 

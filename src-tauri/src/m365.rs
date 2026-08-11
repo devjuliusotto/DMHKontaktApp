@@ -1,11 +1,20 @@
 use crate::{hidden_command, open_db, AppState};
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use base64::{
+    engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD},
+    Engine as _,
+};
 use chrono::{Duration as ChronoDuration, Utc};
+use rand::{rngs::OsRng, RngCore};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
+use tokio::time::{timeout, Duration};
+use url::Url;
 use uuid::Uuid;
 use zeroize::Zeroize;
 
@@ -22,22 +31,13 @@ const LOGIN_SCOPES: &str =
 const EDV_SCOPES: &str = "openid profile offline_access User.Read User.Read.All User.ReadWrite.All User.EnableDisableAccount.All User-PasswordProfile.ReadWrite.All Group.Read.All Group.ReadWrite.All GroupMember.ReadWrite.All Tasks.ReadWrite";
 const PRIVATSCHWESTERN_MODULE: &str = "privatschwestern";
 const EDV_MODULE: &str = "edv";
+const BROWSER_SIGN_IN_TIMEOUT_SECONDS: u64 = 300;
 
 #[derive(Default)]
 pub struct Microsoft365Runtime {
-    pending_device_flow: Mutex<Option<PendingDeviceFlow>>,
-    pending_edv_device_flow: Mutex<Option<PendingDeviceFlow>>,
     session_token: Mutex<Option<StoredTokenBundle>>,
     session_account: Mutex<Option<Microsoft365Account>>,
     edv_session: Mutex<Option<StoredEdvTokenBundle>>,
-}
-
-#[derive(Debug, Clone)]
-struct PendingDeviceFlow {
-    device_code: String,
-    expires_at: String,
-    interval_seconds: u64,
-    remember_sign_in: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -79,29 +79,9 @@ pub struct PortalSession {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Microsoft365DeviceCode {
-    user_code: String,
-    verification_uri: String,
-    expires_at: String,
-    interval_seconds: u64,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Microsoft365PollResult {
     state: String,
     account: Option<Microsoft365Account>,
-    interval_seconds: u64,
-}
-
-#[derive(Debug, Deserialize)]
-struct DeviceCodeResponse {
-    device_code: String,
-    user_code: String,
-    verification_uri: String,
-    expires_in: i64,
-    #[serde(default = "default_poll_interval")]
-    interval: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -166,21 +146,19 @@ pub struct EdvAdminSessionStatus {
     scopes: Vec<String>,
 }
 
-fn default_poll_interval() -> u64 {
-    5
-}
-
 fn client_id() -> Option<&'static str> {
     option_env!("M365_CLIENT_ID")
         .map(str::trim)
-        .filter(|value| is_identifier(value))
+        .filter(|value| is_identifier(value) && !value.eq_ignore_ascii_case(tenant_id()))
 }
 
 fn edv_client_id() -> Option<&'static str> {
-    option_env!("M365_EDV_CLIENT_ID")
-        .map(str::trim)
-        .filter(|value| is_identifier(value))
-        .or_else(client_id)
+    match option_env!("M365_EDV_CLIENT_ID").map(str::trim) {
+        Some(value) if !value.is_empty() => {
+            (is_identifier(value) && !value.eq_ignore_ascii_case(tenant_id())).then_some(value)
+        }
+        _ => client_id(),
+    }
 }
 
 fn tenant_id() -> &'static str {
@@ -188,6 +166,34 @@ fn tenant_id() -> &'static str {
         .map(str::trim)
         .filter(|value| is_tenant(value))
         .unwrap_or("organizations")
+}
+
+fn configured_client_id() -> Result<&'static str, String> {
+    let raw = option_env!("M365_CLIENT_ID").map(str::trim).unwrap_or("");
+    if raw.eq_ignore_ascii_case(tenant_id()) && !raw.is_empty() {
+        return Err(
+            "Die Microsoft-Anwendungs-ID darf nicht mit der Mandanten-ID identisch sein. Die EDV muss die Anwendungs-ID (Client) im Build korrigieren."
+                .to_string(),
+        );
+    }
+    client_id().ok_or_else(|| {
+        "Die EDV muss zuerst die Microsoft-Anwendungs-ID für diesen Build hinterlegen.".to_string()
+    })
+}
+
+fn configured_edv_client_id() -> Result<&'static str, String> {
+    let raw = option_env!("M365_EDV_CLIENT_ID")
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if raw.is_some_and(|value| value.eq_ignore_ascii_case(tenant_id())) {
+        return Err(
+            "Die EDV-Anwendungs-ID darf nicht mit der Mandanten-ID identisch sein. Verwenden Sie die Anwendungs-ID (Client) aus der Entra-App-Registrierung."
+                .to_string(),
+        );
+    }
+    edv_client_id().ok_or_else(|| {
+        "Die Microsoft-Anwendungs-ID für die EDV-Verwaltung fehlt oder ist ungültig.".to_string()
+    })
 }
 
 fn configured_group_ids(value: Option<&'static str>) -> Vec<String> {
@@ -296,7 +302,9 @@ fn oauth_error_message(error: &OAuthErrorResponse) -> String {
         .unwrap_or("")
         .trim();
     match error.error.as_str() {
-        "authorization_declined" => "Die Microsoft-Anmeldung wurde abgelehnt.".to_string(),
+        "authorization_declined" | "access_denied" => {
+            "Die Microsoft-Anmeldung wurde abgebrochen oder abgelehnt.".to_string()
+        }
         "expired_token" => {
             "Der Anmeldecode ist abgelaufen. Starten Sie die Verbindung erneut.".to_string()
         }
@@ -313,6 +321,14 @@ fn oauth_error_message(error: &OAuthErrorResponse) -> String {
             format!("Microsoft-Anmeldung fehlgeschlagen: {description}")
         }
         _ => "Microsoft-Anmeldung ist fehlgeschlagen.".to_string(),
+    }
+}
+
+fn focus_portal_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
     }
 }
 
@@ -609,8 +625,6 @@ fn portal_session_for_account(
         .is_ok_and(|validated_at| validated_at >= Utc::now() - ChronoDuration::hours(24));
     let state = if !authorization_configured {
         "configuration_required"
-    } else if modules.is_empty() {
-        "access_denied"
     } else if online {
         "authenticated"
     } else if !offline_access_current {
@@ -683,13 +697,198 @@ async fn request_token(fields: &[(&str, &str)]) -> Result<OAuthTokenResponse, OA
     Err(error)
 }
 
+fn random_urlsafe_secret(byte_count: usize) -> String {
+    let mut bytes = vec![0_u8; byte_count];
+    OsRng.fill_bytes(&mut bytes);
+    let value = URL_SAFE_NO_PAD.encode(&bytes);
+    bytes.zeroize();
+    value
+}
+
+async fn send_browser_response(
+    stream: &mut tokio::net::TcpStream,
+    success: bool,
+) -> Result<(), String> {
+    let (title, message, accent) = if success {
+        (
+            "Anmeldung abgeschlossen",
+            "Sie sind angemeldet. Dieses Fenster kann geschlossen werden. Kehren Sie jetzt zum DMH Portal zurück.",
+            "#007a5a",
+        )
+    } else {
+        (
+            "Anmeldung nicht abgeschlossen",
+            "Die Anmeldung wurde nicht übernommen. Kehren Sie zum DMH Portal zurück und versuchen Sie es erneut.",
+            "#b42318",
+        )
+    };
+    let body = format!(
+        "<!doctype html><html lang=\"de\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{title}</title><style>body{{margin:0;background:#f5f7fa;color:#10243e;font-family:Segoe UI,Arial,sans-serif;display:grid;min-height:100vh;place-items:center}}main{{background:#fff;border:1px solid #d8dee8;border-radius:18px;box-shadow:0 18px 50px #10243e1f;max-width:620px;margin:24px;padding:42px;text-align:center}}i{{align-items:center;background:{accent}18;border-radius:999px;color:{accent};display:inline-flex;font-size:32px;font-style:normal;height:72px;justify-content:center;width:72px}}h1{{font-size:32px;margin:24px 0 14px}}p{{font-size:21px;line-height:1.55;margin:0}}</style></head><body><main><i>{}</i><h1>{title}</h1><p>{message}</p></main></body></html>",
+        if success { "✓" } else { "!" }
+    );
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    stream
+        .write_all(response.as_bytes())
+        .await
+        .map_err(|_| "Die Browser-Rückmeldung konnte nicht angezeigt werden.".to_string())?;
+    let _ = stream.shutdown().await;
+    Ok(())
+}
+
+fn parse_browser_callback(target: &str, expected_state: &str) -> Result<String, String> {
+    let callback = Url::parse("http://localhost")
+        .and_then(|base| base.join(target))
+        .map_err(|_| "Die Browser-Rückmeldung enthielt keine gültige Adresse.".to_string())?;
+    if callback.scheme() != "http"
+        || callback.host_str() != Some("localhost")
+        || callback.path() != "/"
+    {
+        return Err("Die Browser-Rückmeldung kam nicht vom erwarteten Rückkanal.".to_string());
+    }
+    let values = callback
+        .query_pairs()
+        .collect::<std::collections::HashMap<_, _>>();
+    let returned_state = values
+        .get("state")
+        .map(|value| value.as_ref())
+        .unwrap_or("");
+    if returned_state != expected_state {
+        return Err(
+            "Die Microsoft-Anmeldung konnte aus Sicherheitsgründen nicht übernommen werden."
+                .to_string(),
+        );
+    }
+    if let Some(error) = values.get("error") {
+        return Err(oauth_error_message(&OAuthErrorResponse {
+            error: error.to_string(),
+            error_description: values
+                .get("error_description")
+                .map(ToString::to_string)
+                .unwrap_or_default(),
+        }));
+    }
+    values
+        .get("code")
+        .map(ToString::to_string)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Microsoft hat keinen Anmeldecode zurückgegeben.".to_string())
+}
+
+async fn receive_browser_authorization_code(
+    listener: TcpListener,
+    expected_state: &str,
+) -> Result<(String, tokio::net::TcpStream), String> {
+    let (mut stream, _) = timeout(
+        Duration::from_secs(BROWSER_SIGN_IN_TIMEOUT_SECONDS),
+        listener.accept(),
+    )
+    .await
+    .map_err(|_| {
+        "Die Microsoft-Anmeldung hat zu lange gedauert. Bitte starten Sie sie erneut.".to_string()
+    })?
+    .map_err(|_| "Die Rückmeldung von Microsoft konnte nicht empfangen werden.".to_string())?;
+
+    let mut request = Vec::with_capacity(4096);
+    let mut chunk = [0_u8; 2048];
+    loop {
+        let read = timeout(Duration::from_secs(15), stream.read(&mut chunk))
+            .await
+            .map_err(|_| "Die Browser-Rückmeldung war unvollständig.".to_string())?
+            .map_err(|_| "Die Browser-Rückmeldung konnte nicht gelesen werden.".to_string())?;
+        if read == 0 {
+            break;
+        }
+        request.extend_from_slice(&chunk[..read]);
+        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+        if request.len() > 16 * 1024 {
+            let _ = send_browser_response(&mut stream, false).await;
+            return Err("Die Browser-Rückmeldung war unerwartet groß.".to_string());
+        }
+    }
+
+    let request = String::from_utf8(request)
+        .map_err(|_| "Die Browser-Rückmeldung war ungültig.".to_string())?;
+    let target = request
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .ok_or_else(|| "Die Browser-Rückmeldung war unvollständig.".to_string())?;
+    let code = match parse_browser_callback(target, expected_state) {
+        Ok(code) => code,
+        Err(error) => {
+            let _ = send_browser_response(&mut stream, false).await;
+            return Err(error);
+        }
+    };
+    Ok((code, stream))
+}
+
+async fn request_interactive_token(
+    client_id: &str,
+    scopes: &str,
+    login_hint: Option<&str>,
+) -> Result<OAuthTokenResponse, String> {
+    let listener = TcpListener::bind("127.0.0.1:0").await.map_err(|_| {
+        "Der sichere Rückkanal für die Microsoft-Anmeldung konnte nicht geöffnet werden."
+            .to_string()
+    })?;
+    let port = listener
+        .local_addr()
+        .map_err(|_| "Der Rückkanal der Microsoft-Anmeldung ist ungültig.".to_string())?
+        .port();
+    let redirect_uri = format!("http://localhost:{port}");
+    let mut code_verifier = random_urlsafe_secret(48);
+    let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
+    let state = random_urlsafe_secret(32);
+    let mut authorize_url = Url::parse(&oauth_url("authorize"))
+        .map_err(|_| "Die Microsoft-Anmeldeadresse ist ungültig.".to_string())?;
+    {
+        let mut query = authorize_url.query_pairs_mut();
+        query
+            .append_pair("client_id", client_id)
+            .append_pair("response_type", "code")
+            .append_pair("redirect_uri", &redirect_uri)
+            .append_pair("response_mode", "query")
+            .append_pair("scope", scopes)
+            .append_pair("state", &state)
+            .append_pair("code_challenge", &code_challenge)
+            .append_pair("code_challenge_method", "S256");
+        if let Some(login_hint) = login_hint.filter(|value| !value.trim().is_empty()) {
+            query.append_pair("login_hint", login_hint);
+        }
+    }
+    hidden_command("explorer.exe")
+        .arg(authorize_url.as_str())
+        .spawn()
+        .map_err(|error| format!("Microsoft-Anmeldung konnte nicht geöffnet werden: {error}"))?;
+
+    let (code, mut callback_stream) = receive_browser_authorization_code(listener, &state).await?;
+    let token = request_token(&[
+        ("grant_type", "authorization_code"),
+        ("client_id", client_id),
+        ("code", &code),
+        ("redirect_uri", &redirect_uri),
+        ("code_verifier", &code_verifier),
+        ("scope", scopes),
+    ])
+    .await
+    .map_err(|error| oauth_error_message(&error));
+    let _ = send_browser_response(&mut callback_stream, token.is_ok()).await;
+    code_verifier.zeroize();
+    token
+}
+
 pub(crate) async fn acquire_graph_access_token(
     app: &AppHandle,
     state: &AppState,
 ) -> Result<String, String> {
-    let client_id = client_id().ok_or_else(|| {
-        "Die Microsoft-Anwendungs-ID ist in diesem Build nicht hinterlegt.".to_string()
-    })?;
+    let client_id = configured_client_id()?;
     let account = read_account(app, state)?
         .ok_or_else(|| "Microsoft-365-Konto ist nicht verbunden.".to_string())?;
     if !modules_for_groups(
@@ -720,25 +919,6 @@ pub(crate) async fn acquire_graph_access_token(
     let remember_sign_in = get_setting(app, TOKEN_SETTING_KEY)?.is_some();
     save_connection(app, state, &account, &bundle, remember_sign_in)?;
     Ok(token.access_token)
-}
-
-fn pending_flow(state: &State<'_, AppState>) -> Result<PendingDeviceFlow, String> {
-    state
-        .m365
-        .pending_device_flow
-        .lock()
-        .map_err(|_| "Microsoft-Anmeldung konnte intern nicht gelesen werden.".to_string())?
-        .clone()
-        .ok_or_else(|| "Es läuft keine Microsoft-Anmeldung mehr.".to_string())
-}
-
-fn clear_pending_flow(state: &State<'_, AppState>) -> Result<(), String> {
-    *state
-        .m365
-        .pending_device_flow
-        .lock()
-        .map_err(|_| "Microsoft-Anmeldung konnte intern nicht beendet werden.".to_string())? = None;
-    Ok(())
 }
 
 #[tauri::command]
@@ -778,110 +958,19 @@ pub fn get_portal_session(
 
 #[tauri::command]
 pub async fn start_m365_connection(
-    state: State<'_, AppState>,
-    remember_sign_in: Option<bool>,
-) -> Result<Microsoft365DeviceCode, String> {
-    let client_id = client_id().ok_or_else(|| {
-        "Die EDV muss zuerst die Microsoft-Anwendungs-ID für diesen Build hinterlegen.".to_string()
-    })?;
-    let response = reqwest::Client::new()
-        .post(oauth_url("devicecode"))
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body(form_body(&[
-            ("client_id", client_id),
-            ("scope", LOGIN_SCOPES),
-        ]))
-        .send()
-        .await
-        .map_err(|_| {
-            "Microsoft-Anmeldedienst ist nicht erreichbar. Internetverbindung prüfen.".to_string()
-        })?;
-    if !response.status().is_success() {
-        let error = response
-            .json::<OAuthErrorResponse>()
-            .await
-            .unwrap_or(OAuthErrorResponse {
-                error: "unknown_error".to_string(),
-                error_description: String::new(),
-            });
-        return Err(oauth_error_message(&error));
-    }
-    let device = response
-        .json::<DeviceCodeResponse>()
-        .await
-        .map_err(|_| "Microsoft-Anmeldedienst hat eine ungültige Antwort geliefert.".to_string())?;
-    let expires_at = (Utc::now() + ChronoDuration::seconds(device.expires_in)).to_rfc3339();
-    *state
-        .m365
-        .pending_device_flow
-        .lock()
-        .map_err(|_| "Microsoft-Anmeldung konnte intern nicht vorbereitet werden.".to_string())? =
-        Some(PendingDeviceFlow {
-            device_code: device.device_code,
-            expires_at: expires_at.clone(),
-            interval_seconds: device.interval.max(3),
-            remember_sign_in: remember_sign_in.unwrap_or(true),
-        });
-    Ok(Microsoft365DeviceCode {
-        user_code: device.user_code,
-        verification_uri: device.verification_uri,
-        expires_at,
-        interval_seconds: device.interval.max(3),
-    })
-}
-
-#[tauri::command]
-pub async fn poll_m365_connection(
     app: AppHandle,
     state: State<'_, AppState>,
+    remember_sign_in: Option<bool>,
 ) -> Result<Microsoft365PollResult, String> {
-    let client_id = client_id().ok_or_else(|| {
-        "Die Microsoft-Anwendungs-ID ist in diesem Build nicht hinterlegt.".to_string()
-    })?;
-    let flow = pending_flow(&state)?;
-    if flow
-        .expires_at
-        .parse::<chrono::DateTime<Utc>>()
-        .is_ok_and(|expires_at| expires_at <= Utc::now())
-    {
-        clear_pending_flow(&state)?;
-        return Err(
-            "Der Anmeldecode ist abgelaufen. Starten Sie die Verbindung erneut.".to_string(),
-        );
-    }
-    let token = match request_token(&[
-        ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-        ("client_id", client_id),
-        ("device_code", &flow.device_code),
-    ])
-    .await
-    {
+    let client_id = configured_client_id()?;
+    let token = match request_interactive_token(client_id, LOGIN_SCOPES, None).await {
         Ok(token) => token,
-        Err(error) if error.error == "authorization_pending" => {
-            return Ok(Microsoft365PollResult {
-                state: "pending".to_string(),
-                account: None,
-                interval_seconds: flow.interval_seconds,
-            })
-        }
-        Err(error) if error.error == "slow_down" => {
-            let slower_interval = flow.interval_seconds + 5;
-            if let Ok(mut pending) = state.m365.pending_device_flow.lock() {
-                if let Some(pending) = pending.as_mut() {
-                    pending.interval_seconds = slower_interval;
-                }
-            }
-            return Ok(Microsoft365PollResult {
-                state: "pending".to_string(),
-                account: None,
-                interval_seconds: slower_interval,
-            });
-        }
         Err(error) => {
-            clear_pending_flow(&state)?;
-            return Err(oauth_error_message(&error));
+            focus_portal_window(&app);
+            return Err(error);
         }
     };
+    focus_portal_window(&app);
     let refresh_token = token.refresh_token.ok_or_else(|| {
         "Microsoft hat keine erneuerbare Anmeldung bereitgestellt. Die EDV muss offline_access erlauben."
             .to_string()
@@ -903,28 +992,12 @@ pub async fn poll_m365_connection(
             refresh_token,
             scope: token.scope,
         },
-        flow.remember_sign_in,
+        remember_sign_in.unwrap_or(true),
     )?;
-    clear_pending_flow(&state)?;
     Ok(Microsoft365PollResult {
         state: "connected".to_string(),
         account: Some(account),
-        interval_seconds: flow.interval_seconds,
     })
-}
-
-#[tauri::command]
-pub fn cancel_m365_connection(state: State<'_, AppState>) -> Result<(), String> {
-    clear_pending_flow(&state)
-}
-
-#[tauri::command]
-pub fn open_m365_sign_in() -> Result<(), String> {
-    hidden_command("explorer.exe")
-        .arg("https://microsoft.com/devicelogin")
-        .spawn()
-        .map_err(|error| format!("Microsoft-Anmeldung konnte nicht geöffnet werden: {error}"))?;
-    Ok(())
 }
 
 fn open_microsoft_account_page(url: &str, label: &str) -> Result<(), String> {
@@ -1055,10 +1128,6 @@ pub async fn test_m365_connection(
 
 #[tauri::command]
 pub fn disconnect_m365_account(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    clear_pending_flow(&state)?;
-    if let Ok(mut pending) = state.m365.pending_edv_device_flow.lock() {
-        *pending = None;
-    }
     if let Ok(mut token) = state.m365.edv_session.lock() {
         *token = None;
     }
@@ -1088,95 +1157,22 @@ pub fn get_edv_admin_session_status(
 
 #[tauri::command]
 pub async fn start_edv_admin_connection(
-    state: State<'_, AppState>,
-) -> Result<Microsoft365DeviceCode, String> {
-    let client_id = edv_client_id()
-        .ok_or_else(|| "Die Microsoft-Anwendungs-ID für die EDV-Verwaltung fehlt.".to_string())?;
-    let response = reqwest::Client::new()
-        .post(oauth_url("devicecode"))
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body(form_body(&[
-            ("client_id", client_id),
-            ("scope", EDV_SCOPES),
-        ]))
-        .send()
-        .await
-        .map_err(|_| "Microsoft-Anmeldedienst ist nicht erreichbar.".to_string())?;
-    if !response.status().is_success() {
-        let error = response
-            .json::<OAuthErrorResponse>()
-            .await
-            .unwrap_or(OAuthErrorResponse {
-                error: "unknown_error".to_string(),
-                error_description: String::new(),
-            });
-        return Err(oauth_error_message(&error));
-    }
-    let device = response
-        .json::<DeviceCodeResponse>()
-        .await
-        .map_err(|_| "Microsoft hat eine ungültige EDV-Anmeldeantwort geliefert.".to_string())?;
-    let expires_at = (Utc::now() + ChronoDuration::seconds(device.expires_in)).to_rfc3339();
-    *state
-        .m365
-        .pending_edv_device_flow
-        .lock()
-        .map_err(|_| "EDV-Anmeldung konnte intern nicht vorbereitet werden.".to_string())? =
-        Some(PendingDeviceFlow {
-            device_code: device.device_code,
-            expires_at: expires_at.clone(),
-            interval_seconds: device.interval.max(3),
-            remember_sign_in: true,
-        });
-    Ok(Microsoft365DeviceCode {
-        user_code: device.user_code,
-        verification_uri: device.verification_uri,
-        expires_at,
-        interval_seconds: device.interval.max(3),
-    })
-}
-
-#[tauri::command]
-pub async fn poll_edv_admin_connection(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Microsoft365PollResult, String> {
-    let client_id = edv_client_id()
-        .ok_or_else(|| "Die Microsoft-Anwendungs-ID für die EDV-Verwaltung fehlt.".to_string())?;
-    let flow = state
-        .m365
-        .pending_edv_device_flow
-        .lock()
-        .map_err(|_| "EDV-Anmeldung konnte intern nicht gelesen werden.".to_string())?
-        .clone()
-        .ok_or_else(|| "Es läuft keine administrative EDV-Anmeldung.".to_string())?;
-    let token = match request_token(&[
-        ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-        ("client_id", client_id),
-        ("device_code", &flow.device_code),
-    ])
-    .await
-    {
-        Ok(token) => token,
-        Err(error) if error.error == "authorization_pending" => {
-            return Ok(Microsoft365PollResult {
-                state: "pending".to_string(),
-                account: None,
-                interval_seconds: flow.interval_seconds,
-            })
-        }
-        Err(error) if error.error == "slow_down" => {
-            return Ok(Microsoft365PollResult {
-                state: "pending".to_string(),
-                account: None,
-                interval_seconds: flow.interval_seconds + 5,
-            })
-        }
-        Err(error) => return Err(oauth_error_message(&error)),
-    };
-    let profile = graph_profile(&token.access_token).await?;
+    let client_id = configured_edv_client_id()?;
     let primary = read_account(&app, &state)?
         .ok_or_else(|| "Das normale Microsoft-Konto ist nicht mehr verbunden.".to_string())?;
+    let login_hint = primary.user_principal_name.clone();
+    let token = match request_interactive_token(client_id, EDV_SCOPES, Some(&login_hint)).await {
+        Ok(token) => token,
+        Err(error) => {
+            focus_portal_window(&app);
+            return Err(error);
+        }
+    };
+    focus_portal_window(&app);
+    let profile = graph_profile(&token.access_token).await?;
     if profile.id != primary.id {
         return Err(
             "Für die EDV-Verwaltung muss dasselbe Microsoft-Konto verwendet werden.".to_string(),
@@ -1203,15 +1199,9 @@ pub async fn poll_edv_admin_connection(
             account_id: profile.id,
         },
     )?;
-    *state
-        .m365
-        .pending_edv_device_flow
-        .lock()
-        .map_err(|_| "EDV-Anmeldung konnte intern nicht beendet werden.".to_string())? = None;
     Ok(Microsoft365PollResult {
         state: "connected".to_string(),
         account: Some(primary),
-        interval_seconds: flow.interval_seconds,
     })
 }
 
@@ -1227,8 +1217,7 @@ pub(crate) async fn acquire_edv_graph_access_token(
     app: &AppHandle,
     state: &AppState,
 ) -> Result<String, String> {
-    let client_id = edv_client_id()
-        .ok_or_else(|| "Die Microsoft-Anwendungs-ID für die EDV-Verwaltung fehlt.".to_string())?;
+    let client_id = configured_edv_client_id()?;
     let primary = read_account(app, state)?
         .ok_or_else(|| "Microsoft-365-Konto ist nicht verbunden.".to_string())?;
     if !modules_for_groups(
@@ -1297,9 +1286,6 @@ pub(crate) fn edv_access_level(app: &AppHandle, state: &AppState) -> Result<&'st
 
 pub(crate) fn clear_runtime(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
-    *state.m365.pending_device_flow.lock().map_err(|_| {
-        "Microsoft-Anmeldung konnte intern nicht zurückgesetzt werden.".to_string()
-    })? = None;
     *state
         .m365
         .session_token
@@ -1312,11 +1298,6 @@ pub(crate) fn clear_runtime(app: &AppHandle) -> Result<(), String> {
         .lock()
         .map_err(|_| "Microsoft-Konto konnte intern nicht zurückgesetzt werden.".to_string())? =
         None;
-    *state
-        .m365
-        .pending_edv_device_flow
-        .lock()
-        .map_err(|_| "EDV-Anmeldung konnte intern nicht zurückgesetzt werden.".to_string())? = None;
     *state
         .m365
         .edv_session
@@ -1453,7 +1434,37 @@ mod tests {
                 error: "authorization_declined".to_string(),
                 error_description: "untrusted detail".to_string(),
             }),
-            "Die Microsoft-Anmeldung wurde abgelehnt."
+            "Die Microsoft-Anmeldung wurde abgebrochen oder abgelehnt."
+        );
+    }
+
+    #[test]
+    fn browser_callback_requires_matching_state_and_decodes_code() {
+        assert_eq!(
+            parse_browser_callback("/?code=abc%2B123&state=trusted-state", "trusted-state"),
+            Ok("abc+123".to_string())
+        );
+        assert!(
+            parse_browser_callback("/?code=abc&state=other", "trusted-state")
+                .unwrap_err()
+                .contains("Sicherheitsgründen")
+        );
+        assert!(parse_browser_callback(
+            "http://example.invalid/?code=abc&state=trusted-state",
+            "trusted-state"
+        )
+        .unwrap_err()
+        .contains("Rückkanal"));
+    }
+
+    #[test]
+    fn browser_callback_reports_cancelled_sign_in() {
+        assert_eq!(
+            parse_browser_callback(
+                "/?error=access_denied&error_description=cancelled&state=trusted-state",
+                "trusted-state"
+            ),
+            Err("Die Microsoft-Anmeldung wurde abgebrochen oder abgelehnt.".to_string())
         );
     }
 

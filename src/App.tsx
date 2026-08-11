@@ -2,7 +2,8 @@ import { LoaderCircle, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppLockScreen } from "./components/AppLockScreen";
 import { PortalLoginScreen } from "./components/PortalLoginScreen";
-import { PortalHomeScreen } from "./components/PortalHomeScreen";
+import { PortalHomeScreen, type PortalPage } from "./components/PortalHomeScreen";
+import { PortalLegacySettingsPage } from "./components/PortalLegacySettingsPage";
 import { Sidebar, type Page } from "./components/Sidebar";
 import { SettingsSubtabs } from "./components/SettingsSubtabs";
 import { AdvancedSubtabs } from "./components/AdvancedSubtabs";
@@ -81,6 +82,7 @@ export default function App() {
   const isAdminTest = import.meta.env.VITE_APP_CHANNEL === "admin-test";
   const sourceCommit = import.meta.env.VITE_SOURCE_COMMIT?.slice(0, 8);
   const [page, setPage] = useState<Page>("contacts");
+  const [portalPage, setPortalPage] = useState<PortalPage>("overview");
   const [activeModule, setActiveModule] = useState<PortalModuleId | null>(null);
   const [portalSession, setPortalSession] = useState<PortalSession | null>(null);
   const [portalError, setPortalError] = useState("");
@@ -138,8 +140,6 @@ export default function App() {
       });
   }, []);
 
-  const privatschwesternAllowed = portalSession?.modules.includes("privatschwestern") ?? false;
-
   const synchronizeExchange = useCallback(async () => {
     if (isBrowserPreview() || exchangeSyncRunning.current || portalSession?.state !== "authenticated") return;
     exchangeSyncRunning.current = true;
@@ -176,9 +176,9 @@ export default function App() {
   }, [portalSession?.state]);
 
   useEffect(() => {
-    if (portalSession && privatschwesternAllowed) loadVaultStatus();
+    if (portalSession && ["authenticated", "offline"].includes(portalSession.state)) loadVaultStatus();
     else setVaultStatus(null);
-  }, [portalSession, privatschwesternAllowed]);
+  }, [portalSession]);
 
   useEffect(() => {
     if (activeModule && portalSession && !portalSession.modules.includes(activeModule)) {
@@ -197,7 +197,7 @@ export default function App() {
       publishExchangeSyncStatus(offlineStatus);
       return;
     }
-    if (portalSession?.state !== "authenticated" || !privatschwesternAllowed || isBrowserPreview()) return;
+    if (portalSession?.state !== "authenticated" || isBrowserPreview()) return;
     let debounceTimer: number | undefined;
     const initialTimer = window.setTimeout(() => void synchronizeExchange(), 1_200);
     const interval = window.setInterval(() => void synchronizeExchange(), 5 * 60 * 1000);
@@ -214,7 +214,7 @@ export default function App() {
       window.removeEventListener(exchangeSyncRequestedEvent, requestSync);
       window.removeEventListener("online", requestSync);
     };
-  }, [privatschwesternAllowed, portalSession?.state, synchronizeExchange]);
+  }, [portalSession?.state, synchronizeExchange]);
 
   const openModule = (module: PortalModuleId) => {
     if (!portalSession?.modules.includes(module)) return;
@@ -237,6 +237,7 @@ export default function App() {
   const signOut = async () => {
     await disconnectMicrosoft365Account();
     setPage("contacts");
+    setPortalPage("overview");
     setActiveModule(null);
     setVaultStatus(null);
     setExchangeSyncStatus({ state: "idle" });
@@ -256,15 +257,12 @@ export default function App() {
     );
   }
 
-  if (!portalSession.account || portalSession.modules.length === 0 || !["authenticated", "offline"].includes(portalSession.state)) {
-    const loginSession = portalSession.state === "authenticated" || portalSession.state === "offline"
-      ? { ...portalSession, state: "access_denied" as const }
-      : portalSession;
+  if (!portalSession.account || !["authenticated", "offline"].includes(portalSession.state)) {
     return (
       <div className={isAdminTest ? "app-channel-root admin-test-root" : "app-channel-root"}>
         {isAdminTest && <AdminTestBanner sourceCommit={sourceCommit} />}
         <PortalLoginScreen
-          session={loginSession}
+          session={portalSession}
           startupError={portalError}
           onSessionChanged={(session) => {
             setPortalError("");
@@ -276,10 +274,43 @@ export default function App() {
   }
 
   if (!activeModule) {
+    const dataPageOpen = portalPage !== "overview";
+
+    if (dataPageOpen && vaultStatus?.protectionEnabled && !vaultStatus.unlocked) {
+      return <AppLockScreen status={vaultStatus} onUnlocked={setVaultStatus} />;
+    }
+
+    let portalContent = null;
+    if (dataPageOpen && !vaultStatus) {
+      portalContent = (
+        <div className="portal-feature-loading">
+          <LoaderCircle className="spin" size={30} />
+          <p>Lokale Daten werden vorbereitet …</p>
+        </div>
+      );
+    } else if (vaultStatus) {
+      if (portalPage === "contacts") portalContent = <ContactsPage />;
+      if (portalPage === "calendar") portalContent = <CalendarPage />;
+      if (portalPage === "passwords") portalContent = <PasswordsPage status={vaultStatus} onStatusChanged={setVaultStatus} />;
+      if (portalPage === "settings") {
+        portalContent = <PortalLegacySettingsPage exchangeSyncStatus={exchangeSyncStatus} onSyncExchange={synchronizeExchange} />;
+      }
+    }
+
     return (
       <div className={isAdminTest ? "app-channel-root admin-test-root" : "app-channel-root"}>
         {isAdminTest && <AdminTestBanner sourceCommit={sourceCommit} />}
-        <PortalHomeScreen session={portalSession} onOpenModule={openModule} onSignOut={signOut} />
+        <PortalHomeScreen
+          session={portalSession}
+          activePage={portalPage}
+          exchangeSyncStatus={exchangeSyncStatus}
+          onNavigate={setPortalPage}
+          onOpenModule={openModule}
+          onSignOut={signOut}
+          onSyncExchange={synchronizeExchange}
+        >
+          {portalContent}
+        </PortalHomeScreen>
       </div>
     );
   }
@@ -294,7 +325,10 @@ export default function App() {
           offline={portalSession.state === "offline"}
           refreshing={refreshingAuthorization}
           message={portalError}
-          onBack={() => setActiveModule(null)}
+          onBack={() => {
+            setActiveModule(null);
+            setPortalPage("overview");
+          }}
           onRefreshAuthorization={refreshAuthorization}
           onSignOut={signOut}
         />
@@ -333,7 +367,10 @@ export default function App() {
           offline={portalSession.state === "offline"}
           exchangeSyncStatus={exchangeSyncStatus}
           onNavigate={setPage}
-          onOpenPortal={() => setActiveModule(null)}
+          onOpenPortal={() => {
+            setActiveModule(null);
+            setPortalPage("overview");
+          }}
           onSignOut={signOut}
           onSyncExchange={synchronizeExchange}
         />
