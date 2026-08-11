@@ -1,24 +1,24 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Activity, ArrowLeft, CalendarClock, Check, ChevronRight, CircleUserRound, CloudOff,
-  Columns3, FileClock, KeyRound, LayoutDashboard, LoaderCircle,
-  LogOut, MonitorCog, Plus, RefreshCw, Search, Settings, ShieldCheck, Trash2, UserPlus,
-  UsersRound, Wrench
+  Activity, AlignLeft, ArrowLeft, CalendarClock, Check, ChevronRight, CircleUserRound, CloudOff,
+  Columns3, FileClock, Filter, KeyRound, LayoutDashboard, LoaderCircle,
+  LogOut, MonitorCog, Pencil, Plus, RefreshCw, Search, Settings, ShieldCheck, Trash2, UserPlus,
+  UserRound, UsersRound, Wrench, X
 } from "lucide-react";
 import {
-  addDirectoryGroupMember, createDirectoryGroup, createDirectoryUser, createPlannerTask,
+  addDirectoryGroupMember, createDirectoryGroup, createDirectoryUser, createPlannerBucket, createPlannerTask,
   deleteDirectoryGroup, deleteEdvSystem, deletePlannerTask, disconnectEdvAdminSession,
-  getEdvAccessProfile, getEdvAdminSessionStatus, getEdvPlannerPlanId, listDirectoryGroupMembers,
+  getEdvAccessProfile, getEdvAdminSessionStatus, getEdvPlannerPlanId, getPlannerTaskDetails, listDirectoryGroupMembers,
   listDirectoryGroups, listDirectoryUsers, listEdvAuditLog, listEdvSystems, loadPlannerBoard,
   removeDirectoryGroupMember,
   resetDirectoryUserPassword, saveEdvSystem, setEdvPlannerPlanId, startEdvAdminConnection,
-  updateDirectoryGroup, updateDirectoryUser, updatePlannerTask
+  updateDirectoryGroup, updateDirectoryUser, updatePlannerBucket, updatePlannerTask, updatePlannerTaskDetails
 } from "../services/db";
 import { PortalGlobalHeader } from "../components/PortalGlobalHeader";
 import type {
   EdvAccessProfile, EdvAdminSessionStatus, EdvAuditEntry, EdvDirectoryGroup, ExchangeSyncStatus,
   EdvDirectoryUser, EdvSystemRecord, Microsoft365Account,
-  PlannerBoard, PlannerTask, PortalModuleId, PortalSession
+  PlannerBoard, PlannerBucket, PlannerTask, PlannerTaskDetails, PortalModuleId, PortalSession
 } from "../types/m365";
 
 type EdvTab = "overview" | "tickets" | "users" | "groups" | "systems" | "audit" | "settings";
@@ -73,6 +73,8 @@ export function EdvPortalPage(props: EdvPortalPageProps) {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchValue, setSearchValue] = useState("");
 
   const refreshFoundation = useCallback(async () => {
     try {
@@ -107,9 +109,10 @@ export function EdvPortalPage(props: EdvPortalPageProps) {
       <PortalGlobalHeader
         session={props.session}
         exchangeSyncStatus={props.exchangeSyncStatus}
-        searchValue=""
-        onSearchActivate={props.onOpenPortalSearch}
-        onSearchChange={() => props.onOpenPortalSearch()}
+        searchValue={searchValue}
+        searchPlaceholder="Im EDV-Modul suchen …"
+        onSearchActivate={() => setSearchOpen(true)}
+        onSearchChange={(value) => { setSearchValue(value); setSearchOpen(true); }}
         onGoHome={props.onBack}
         onSignOut={props.onSignOut}
         onSyncExchange={props.onSyncExchange}
@@ -135,8 +138,65 @@ export function EdvPortalPage(props: EdvPortalPageProps) {
           {tab === "settings" && <SettingsPanel {...props} access={access} adminStatus={adminStatus} busy={busy} onConnect={connectAdmin} onDisconnect={disconnectAdmin} onError={setError} onNotice={setNotice} />}
         </section>
       </div>
+      {searchOpen && <EdvSearchCenter query={searchValue} adminConnected={adminStatus.connected} onQueryChange={setSearchValue} onClose={() => { setSearchOpen(false); setSearchValue(""); }} onOpenTab={(nextTab) => { setTab(nextTab); setSearchOpen(false); setSearchValue(""); }} />}
     </main>
   );
+}
+
+interface EdvSearchEntry {
+  id: string;
+  tab: EdvTab;
+  kind: string;
+  title: string;
+  subtitle: string;
+  keywords: string;
+  icon: typeof Settings;
+}
+
+function EdvSearchCenter({ query, adminConnected, onQueryChange, onClose, onOpenTab }: { query: string; adminConnected: boolean; onQueryChange: (value: string) => void; onClose: () => void; onOpenTab: (tab: EdvTab) => void }) {
+  const [entries, setEntries] = useState<EdvSearchEntry[]>(() => tabs.map((item) => ({ id: `tab-${item.id}`, tab: item.id, kind: "Bereich", title: item.title, subtitle: "EDV-Modul öffnen", keywords: item.title, icon: item.icon })));
+  const [loading, setLoading] = useState(true);
+  const [partial, setPartial] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setLoading(true);
+      const base = tabs.map((item): EdvSearchEntry => ({ id: `tab-${item.id}`, tab: item.id, kind: "Bereich", title: item.title, subtitle: "EDV-Modul öffnen", keywords: item.title, icon: item.icon }));
+      const requests: Array<Promise<EdvSearchEntry[]>> = [
+        listEdvSystems().then((systems) => systems.map((system) => ({ id: `system-${system.id}`, tab: "systems", kind: "System", title: system.name, subtitle: [system.category, system.owner].filter(Boolean).join(" · ") || "Systeminventar", keywords: `${system.name} ${system.category} ${system.owner} ${system.provider} ${system.notes}`, icon: MonitorCog })))
+      ];
+      if (adminConnected) {
+        requests.push(
+          listDirectoryUsers().then((users) => users.map((user) => ({ id: `user-${user.id}`, tab: "users", kind: "Benutzer", title: user.displayName, subtitle: user.userPrincipalName, keywords: `${user.displayName} ${user.userPrincipalName} ${user.mail} ${user.department} ${user.jobTitle}`, icon: CircleUserRound }))),
+          listDirectoryGroups().then((groups) => groups.map((group) => ({ id: `group-${group.id}`, tab: "groups", kind: "Gruppe", title: group.displayName, subtitle: group.securityEnabled ? "Sicherheitsgruppe" : "Microsoft-Gruppe", keywords: `${group.displayName} ${group.description} ${group.mail}`, icon: UsersRound }))),
+          (async () => {
+            const planId = await getEdvPlannerPlanId();
+            if (!planId) return [];
+            const board = await loadPlannerBoard(planId);
+            return board.tasks.map((task): EdvSearchEntry => ({ id: `task-${task.id}`, tab: "tickets", kind: "Ticket", title: task.title, subtitle: board.buckets.find((bucket) => bucket.id === task.bucketId)?.name || board.plan.title, keywords: `${task.title} ${board.plan.title}`, icon: Columns3 }));
+          })()
+        );
+      }
+      const results = await Promise.allSettled(requests);
+      if (cancelled) return;
+      setPartial(results.some((result) => result.status === "rejected"));
+      setEntries([...base, ...results.flatMap((result) => result.status === "fulfilled" ? result.value : [])]);
+      setLoading(false);
+    };
+    void load();
+    return () => { cancelled = true; };
+  }, [adminConnected]);
+
+  useEffect(() => {
+    const close = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [onClose]);
+
+  const normalized = query.trim().toLocaleLowerCase("de-DE");
+  const visible = entries.filter((entry) => !normalized || `${entry.title} ${entry.subtitle} ${entry.kind} ${entry.keywords}`.toLocaleLowerCase("de-DE").includes(normalized)).slice(0, 60);
+  return <div className="edv-search-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="edv-search-center" role="dialog" aria-modal="true" aria-label="EDV-Suchzentrale"><header><Search size={24} /><input autoFocus value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder="Benutzer, Gruppen, Tickets und Systeme suchen …" /><button type="button" onClick={onClose} aria-label="Suche schließen"><X size={22} /></button></header><div className="edv-search-status">{loading ? <><LoaderCircle className="spin" size={17} /> Microsoft-Daten werden durchsucht …</> : <>{visible.length} Treffer{partial && <span> · Einige Quellen waren nicht erreichbar</span>}</>}</div><div className="edv-search-results">{visible.map((entry) => { const Icon = entry.icon; return <button type="button" key={entry.id} onClick={() => onOpenTab(entry.tab)}><span className="edv-search-result-icon"><Icon size={21} /></span><span><small>{entry.kind}</small><strong>{entry.title}</strong><em>{entry.subtitle}</em></span><ChevronRight size={19} /></button>; })}{!loading && visible.length === 0 && <div className="edv-empty"><Search size={34} /><strong>Nichts gefunden</strong><p>Versuchen Sie einen Namen, eine E-Mail-Adresse oder einen Ticket-Titel.</p></div>}</div></section></div>;
 }
 
 function Overview({ account, modules, offline, access, adminStatus, onGo }: { account: Microsoft365Account; modules: PortalModuleId[]; offline: boolean; access: EdvAccessProfile | null; adminStatus: EdvAdminSessionStatus; onGo: (tab: EdvTab) => void }) {
@@ -158,21 +218,39 @@ function ProtectedArea({ status, busy, onConnect, children }: { status: EdvAdmin
   return <div className="edv-connect-card"><span className="edv-connect-icon"><KeyRound size={34} /></span><h1>Administrative Verbindung herstellen</h1><p>Dieser Bereich verwendet eine getrennte Microsoft-Sitzung. Melden Sie sich mit demselben Konto an. Berechtigungen werden weiterhin durch Ihre Entra-Administratorrolle begrenzt.</p><button className="primary" type="button" disabled={busy} onClick={() => void onConnect()}>{busy ? <LoaderCircle className="spin" size={20} /> : <ShieldCheck size={20} />} {busy ? "Microsoft-Anmeldung läuft …" : "Sicher mit Microsoft verbinden"}</button>{busy && <span className="edv-browser-wait"><LoaderCircle className="spin" size={18} /> Folgen Sie der geöffneten Microsoft-Seite. Danach geht es hier automatisch weiter.</span>}</div>;
 }
 
+function taskAssigneeIds(task: PlannerTask) {
+  return Object.keys(task.assignments ?? {});
+}
+
 function Tickets({ accountId, access, onError, onNotice }: { accountId: string; access: EdvAccessProfile | null; onError: (value: string) => void; onNotice: (value: string) => void }) {
   const [planId, setPlanId] = useState("");
   const [planDraft, setPlanDraft] = useState("");
   const [board, setBoard] = useState<PlannerBoard | null>(null);
+  const [teamUsers, setTeamUsers] = useState<EdvDirectoryUser[]>([]);
   const [loading, setLoading] = useState(true);
-  const [onlyMine, setOnlyMine] = useState(false);
+  const [filterUser, setFilterUser] = useState("all");
   const [newBucket, setNewBucket] = useState<string | null>(null);
   const [newTitle, setNewTitle] = useState("");
+  const [newColumnName, setNewColumnName] = useState("");
+  const [addingColumn, setAddingColumn] = useState(false);
+  const [editingBucket, setEditingBucket] = useState<string | null>(null);
+  const [bucketName, setBucketName] = useState("");
+  const [draggingTask, setDraggingTask] = useState<string | null>(null);
+  const [dragTarget, setDragTarget] = useState<string | null>(null);
+  const [editingTask, setEditingTask] = useState<PlannerTask | null>(null);
 
   const load = useCallback(async (id?: string) => {
     setLoading(true);
     try {
       const configured = id ?? await getEdvPlannerPlanId();
       setPlanId(configured); setPlanDraft(configured);
-      setBoard(configured ? await loadPlannerBoard(configured) : null);
+      if (!configured) { setBoard(null); setTeamUsers([]); return; }
+      const nextBoard = await loadPlannerBoard(configured);
+      setBoard(nextBoard);
+      if (nextBoard.plan.owner) {
+        try { setTeamUsers(await listDirectoryGroupMembers(nextBoard.plan.owner)); }
+        catch { setTeamUsers([]); }
+      }
     } catch (loadError) { onError(errorText(loadError)); }
     finally { setLoading(false); }
   }, [onError]);
@@ -189,20 +267,58 @@ function Tickets({ accountId, access, onError, onNotice }: { accountId: string; 
   };
   const moveTask = async (task: PlannerTask, bucketId: string) => {
     if (task.bucketId === bucketId || !access?.canManageTickets) return;
-    try { await updatePlannerTask({ id: task.id, etag: task.etag, title: task.title, bucketId, dueDateTime: task.dueDateTime, priority: task.priority, percentComplete: task.percentComplete }); await load(planId); onNotice("Ticket wurde verschoben."); }
+    try { await updatePlannerTask({ id: task.id, etag: task.etag, title: task.title, bucketId, dueDateTime: task.dueDateTime, priority: task.priority, percentComplete: task.percentComplete, assigneeIds: taskAssigneeIds(task) }); await load(planId); onNotice("Ticket wurde verschoben."); }
     catch (moveError) { onError(errorText(moveError)); await load(planId); }
+    finally { setDraggingTask(null); setDragTarget(null); }
+  };
+  const addColumn = async () => {
+    if (!newColumnName.trim()) return;
+    try { await createPlannerBucket(planId, newColumnName); setNewColumnName(""); setAddingColumn(false); await load(planId); onNotice("Spalte wurde erstellt."); }
+    catch (createError) { onError(errorText(createError)); }
+  };
+  const renameColumn = async (bucket: PlannerBucket) => {
+    if (!bucketName.trim() || bucketName.trim() === bucket.name) { setEditingBucket(null); return; }
+    try { await updatePlannerBucket(bucket.id, bucket.etag, bucketName); setEditingBucket(null); await load(planId); onNotice("Spalte wurde umbenannt."); }
+    catch (updateError) { onError(errorText(updateError)); await load(planId); }
   };
   const removeTask = async (task: PlannerTask) => {
     if (!window.confirm(`Ticket „${task.title}“ wirklich löschen?`)) return;
-    try { await deletePlannerTask(task.id, task.etag, task.title); await load(planId); }
+    try { await deletePlannerTask(task.id, task.etag, task.title); setEditingTask(null); await load(planId); }
     catch (deleteError) { onError(errorText(deleteError)); }
   };
   if (loading) return <Loading label="Tickets werden aus Microsoft Planner geladen …" />;
   if (!planId || !board) return <div className="edv-setup-card"><Columns3 size={38} /><h1>Ticket-Board verbinden</h1><p>Das Portal zeigt später nur diese Kanban-Ansicht. Der Microsoft Planner dient unsichtbar als Datenspeicher.</p><label>Planner-Plan-ID<input value={planDraft} onChange={(event) => setPlanDraft(event.target.value)} placeholder="Plan-ID aus der Planner-Adresse" /></label><button className="primary" type="button" disabled={!planDraft.trim() || !access?.canManageTickets} onClick={() => void savePlan()}><Check size={19} /> Board verbinden</button></div>;
-  return <div className="edv-tickets-page"><div className="edv-section-heading"><div><span className="edv-eyebrow">TICKETS</span><h1>{board.plan.title}</h1><p>Kanban-Ansicht · automatisch mit Microsoft Planner synchronisiert</p></div><div className="edv-heading-actions"><label className="edv-toggle"><input type="checkbox" checked={onlyMine} onChange={(event) => setOnlyMine(event.target.checked)} /> Meine Tickets</label><button type="button" onClick={() => void load(planId)}><RefreshCw size={18} /> Aktualisieren</button></div></div><div className="kanban-board">{board.buckets.map((bucket) => {
-    const tasks = board.tasks.filter((task) => task.bucketId === bucket.id).filter((task) => !onlyMine || Object.prototype.hasOwnProperty.call(task.assignments ?? {}, accountId));
-    return <section className="kanban-column" key={bucket.id} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { const id = event.dataTransfer.getData("text/plain"); const task = board.tasks.find((item) => item.id === id); if (task) void moveTask(task, bucket.id); }}><header><strong>{bucket.name}</strong><span>{tasks.length}</span></header><div className="kanban-cards">{tasks.map((task) => <article className="kanban-card" key={task.id} draggable={Boolean(access?.canManageTickets)} onDragStart={(event) => event.dataTransfer.setData("text/plain", task.id)}><div className={`kanban-priority p${task.priority}`} /><strong>{task.title}</strong><div className="kanban-meta">{task.dueDateTime && <span><CalendarClock size={15} /> {formatDate(task.dueDateTime)}</span>}{task.percentComplete === 100 && <span><Check size={15} /> Erledigt</span>}</div>{access?.canManageTickets && <footer><select aria-label="Ticket verschieben" value={task.bucketId} onChange={(event) => void moveTask(task, event.target.value)}>{board.buckets.map((target) => <option value={target.id} key={target.id}>{target.name}</option>)}</select><button className="icon-only danger" type="button" aria-label="Ticket löschen" onClick={() => void removeTask(task)}><Trash2 size={16} /></button></footer>}</article>)}</div>{access?.canManageTickets && (newBucket === bucket.id ? <div className="kanban-add"><textarea autoFocus value={newTitle} onChange={(event) => setNewTitle(event.target.value)} placeholder="Titel des Tickets" /><div><button type="button" onClick={() => { setNewBucket(null); setNewTitle(""); }}>Abbrechen</button><button className="primary" type="button" onClick={() => void addTask()}>Hinzufügen</button></div></div> : <button className="kanban-add-button" type="button" onClick={() => setNewBucket(bucket.id)}><Plus size={18} /> Ticket hinzufügen</button>)}</section>;
-  })}</div></div>;
+  const colleagueFilter = filterUser !== "all" && filterUser !== accountId && filterUser !== "unassigned" ? filterUser : "";
+  return <div className="edv-tickets-page"><div className="edv-section-heading"><div><span className="edv-eyebrow">TICKETS</span><h1>{board.plan.title}</h1><p>Kanban-Ansicht · automatisch mit Microsoft Planner synchronisiert</p></div><div className="edv-heading-actions"><div className="kanban-filter" aria-label="Tickets filtern"><Filter size={18} /><button className={filterUser === "all" ? "active" : ""} type="button" onClick={() => setFilterUser("all")}>Alle</button><button className={filterUser === accountId ? "active" : ""} type="button" onClick={() => setFilterUser(accountId)}>Meine</button><select className={colleagueFilter || filterUser === "unassigned" ? "active" : ""} value={colleagueFilter || (filterUser === "unassigned" ? "unassigned" : "")} onChange={(event) => setFilterUser(event.target.value || "all")} aria-label="Tickets eines Kollegen anzeigen"><option value="">Kolleg/in …</option><option value="unassigned">Nicht zugewiesen</option>{teamUsers.filter((user) => user.id !== accountId).map((user) => <option key={user.id} value={user.id}>{user.displayName}</option>)}</select></div><button type="button" onClick={() => void load(planId)}><RefreshCw size={18} /> Aktualisieren</button></div></div><div className="kanban-board">{board.buckets.map((bucket) => {
+    const tasks = board.tasks.filter((task) => task.bucketId === bucket.id).filter((task) => filterUser === "all" || (filterUser === "unassigned" ? taskAssigneeIds(task).length === 0 : taskAssigneeIds(task).includes(filterUser)));
+    return <section className={`kanban-column ${dragTarget === bucket.id ? "drag-over" : ""}`} key={bucket.id} onDragEnter={() => setDragTarget(bucket.id)} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragTarget(null); }} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const id = event.dataTransfer.getData("text/plain"); const task = board.tasks.find((item) => item.id === id); if (task) void moveTask(task, bucket.id); }}><header>{editingBucket === bucket.id ? <form className="kanban-column-rename" onSubmit={(event) => { event.preventDefault(); void renameColumn(bucket); }}><input autoFocus value={bucketName} onChange={(event) => setBucketName(event.target.value)} onBlur={() => void renameColumn(bucket)} aria-label="Spaltenname" /></form> : <strong>{bucket.name}</strong>}<span>{tasks.length}</span>{access?.canManageTickets && editingBucket !== bucket.id && <button type="button" aria-label={`${bucket.name} umbenennen`} onClick={() => { setEditingBucket(bucket.id); setBucketName(bucket.name); }}><Pencil size={15} /></button>}</header><div className="kanban-cards">{tasks.map((task) => { const assigned = taskAssigneeIds(task).map((id) => teamUsers.find((user) => user.id === id)).filter((user): user is EdvDirectoryUser => Boolean(user)); return <article className={`kanban-card ${draggingTask === task.id ? "dragging" : ""}`} key={task.id} draggable={Boolean(access?.canManageTickets)} tabIndex={0} role="button" onClick={() => setEditingTask(task)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") setEditingTask(task); }} onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", task.id); setDraggingTask(task.id); }} onDragEnd={() => { setDraggingTask(null); setDragTarget(null); }}><div className={`kanban-priority p${task.priority}`} /><strong>{task.title}</strong><div className="kanban-meta">{task.dueDateTime && <span><CalendarClock size={15} /> {formatDate(task.dueDateTime)}</span>}{task.percentComplete === 100 && <span><Check size={15} /> Erledigt</span>}</div>{assigned.length > 0 && <div className="kanban-assignees" aria-label="Zugewiesene Personen">{assigned.slice(0, 4).map((user) => <span key={user.id} title={user.displayName}>{user.displayName.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase()}</span>)}{assigned.length > 4 && <b>+{assigned.length - 4}</b>}</div>}</article>; })}</div>{access?.canManageTickets && (newBucket === bucket.id ? <div className="kanban-add"><textarea autoFocus value={newTitle} onChange={(event) => setNewTitle(event.target.value)} placeholder="Titel des Tickets" /><div><button type="button" onClick={() => { setNewBucket(null); setNewTitle(""); }}>Abbrechen</button><button className="primary" type="button" onClick={() => void addTask()}>Hinzufügen</button></div></div> : <button className="kanban-add-button" type="button" onClick={() => setNewBucket(bucket.id)}><Plus size={18} /> Ticket hinzufügen</button>)}</section>;
+  })}{access?.canManageTickets && <section className="kanban-new-column">{addingColumn ? <form onSubmit={(event) => { event.preventDefault(); void addColumn(); }}><input autoFocus value={newColumnName} onChange={(event) => setNewColumnName(event.target.value)} placeholder="Name der neuen Spalte" /><div><button type="button" onClick={() => { setAddingColumn(false); setNewColumnName(""); }}>Abbrechen</button><button className="primary" type="submit">Erstellen</button></div></form> : <button type="button" onClick={() => setAddingColumn(true)}><Plus size={19} /> Weitere Spalte</button>}</section>}</div>{editingTask && <PlannerTaskDialog task={editingTask} board={board} users={teamUsers} canEdit={Boolean(access?.canManageTickets)} onClose={() => setEditingTask(null)} onDelete={() => removeTask(editingTask)} onSaved={async () => { setEditingTask(null); await load(planId); onNotice("Ticket wurde gespeichert."); }} onError={onError} />}</div>;
+}
+
+function PlannerTaskDialog({ task, board, users, canEdit, onClose, onDelete, onSaved, onError }: { task: PlannerTask; board: PlannerBoard; users: EdvDirectoryUser[]; canEdit: boolean; onClose: () => void; onDelete: () => Promise<void>; onSaved: () => Promise<void>; onError: (value: string) => void }) {
+  const [details, setDetails] = useState<PlannerTaskDetails | null>(null);
+  const [title, setTitle] = useState(task.title);
+  const [bucketId, setBucketId] = useState(task.bucketId);
+  const [dueDate, setDueDate] = useState(task.dueDateTime?.slice(0, 10) ?? "");
+  const [priority, setPriority] = useState(task.priority);
+  const [percentComplete, setPercentComplete] = useState(task.percentComplete);
+  const [assigneeIds, setAssigneeIds] = useState(taskAssigneeIds(task));
+  const [description, setDescription] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [loadingDetails, setLoadingDetails] = useState(true);
+  useEffect(() => { let cancelled = false; void getPlannerTaskDetails(task.id).then((value) => { if (!cancelled) { setDetails(value); setDescription(value.description); } }).catch((error) => { if (!cancelled) onError(errorText(error)); }).finally(() => { if (!cancelled) setLoadingDetails(false); }); return () => { cancelled = true; }; }, [task.id, onError]);
+  const toggleAssignee = (id: string) => setAssigneeIds((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id]);
+  const save = async () => {
+    if (!title.trim()) return;
+    setBusy(true);
+    try {
+      await updatePlannerTask({ id: task.id, etag: task.etag, title, bucketId, dueDateTime: dueDate ? new Date(`${dueDate}T12:00:00`).toISOString() : null, priority, percentComplete, assigneeIds });
+      if (details && description !== details.description) await updatePlannerTaskDetails(task.id, details.etag, description);
+      await onSaved();
+    } catch (error) { onError(errorText(error)); }
+    finally { setBusy(false); }
+  };
+  return <div className="edv-modal-backdrop planner-card-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><form className="edv-modal planner-card-dialog" onSubmit={(event) => { event.preventDefault(); void save(); }}><header><div><small>MICROSOFT PLANNER</small><h2>Ticket bearbeiten</h2></div><button type="button" onClick={onClose} aria-label="Schließen"><X size={22} /></button></header><label>Titel<input required disabled={!canEdit} value={title} onChange={(event) => setTitle(event.target.value)} /></label><div className="edv-form-grid"><label>Spalte<select disabled={!canEdit} value={bucketId} onChange={(event) => setBucketId(event.target.value)}>{board.buckets.map((bucket) => <option key={bucket.id} value={bucket.id}>{bucket.name}</option>)}</select></label><label>Fällig am<input disabled={!canEdit} type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></label><label>Priorität<select disabled={!canEdit} value={priority} onChange={(event) => setPriority(Number(event.target.value))}><option value={1}>Dringend</option><option value={3}>Wichtig</option><option value={5}>Mittel</option><option value={9}>Niedrig</option></select></label><label>Fortschritt<select disabled={!canEdit} value={percentComplete} onChange={(event) => setPercentComplete(Number(event.target.value))}><option value={0}>Nicht begonnen</option><option value={50}>In Bearbeitung</option><option value={100}>Erledigt</option></select></label></div><fieldset className="planner-assignee-picker" disabled={!canEdit}><legend><UserRound size={18} /> Zuständig</legend><div>{users.map((user) => <label key={user.id}><input type="checkbox" checked={assigneeIds.includes(user.id)} onChange={() => toggleAssignee(user.id)} /><span className="planner-user-avatar">{user.displayName.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase()}</span><span><strong>{user.displayName}</strong><small>{user.userPrincipalName}</small></span></label>)}</div>{users.length === 0 && <p>Keine Mitglieder des Planner-Teams konnten geladen werden.</p>}</fieldset><label><span className="planner-label-title"><AlignLeft size={18} /> Beschreibung und Notizen</span><textarea disabled={!canEdit || loadingDetails} value={description} onChange={(event) => setDescription(event.target.value)} placeholder={loadingDetails ? "Notizen werden geladen …" : "Informationen, Arbeitsschritte oder Rückfragen …"} /></label><footer>{canEdit && <button className="danger planner-delete" type="button" onClick={() => void onDelete()}><Trash2 size={18} /> Löschen</button>}<span /><button type="button" onClick={onClose}>Abbrechen</button>{canEdit && <button className="primary" type="submit" disabled={busy || loadingDetails}>{busy && <LoaderCircle className="spin" size={18} />} Speichern</button>}</footer></form></div>;
 }
 
 function Users({ access, onError, onNotice }: { access: EdvAccessProfile | null; onError: (value: string) => void; onNotice: (value: string) => void }) {

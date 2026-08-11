@@ -128,7 +128,7 @@ export interface EdvDirectoryGroup {
 }
 
 export interface PlannerPlan { id: string; title: string; owner: string }
-export interface PlannerBucket { id: string; name: string; planId: string; orderHint: string }
+export interface PlannerBucket { id: string; name: string; planId: string; orderHint: string; etag: string }
 export interface PlannerTask {
   id: string;
   title: string;
@@ -142,6 +142,7 @@ export interface PlannerTask {
   assignments: Record<string, unknown>;
   etag: string;
 }
+export interface PlannerTaskDetails { id: string; description: string; previewType: string; etag: string }
 export interface PlannerBoard { plan: PlannerPlan; buckets: PlannerBucket[]; tasks: PlannerTask[] }
 
 export interface EdvSystemRecord {

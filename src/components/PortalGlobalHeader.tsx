@@ -7,6 +7,7 @@ interface PortalGlobalHeaderProps {
   session: PortalSession;
   exchangeSyncStatus: ExchangeSyncStatus;
   searchValue: string;
+  searchPlaceholder?: string;
   onSearchChange: (value: string) => void;
   onSearchActivate: () => void;
   onGoHome: () => void;
@@ -18,6 +19,7 @@ export function PortalGlobalHeader({
   session,
   exchangeSyncStatus,
   searchValue,
+  searchPlaceholder = "Suche im Portal …",
   onSearchChange,
   onSearchActivate,
   onGoHome,
@@ -80,8 +82,8 @@ export function PortalGlobalHeader({
             value={searchValue}
             onFocus={onSearchActivate}
             onChange={(event) => onSearchChange(event.target.value)}
-            placeholder="Suche im Portal …"
-            aria-label="Module im Portal suchen"
+            placeholder={searchPlaceholder}
+            aria-label={searchPlaceholder}
           />
           <kbd>Ctrl + K</kbd>
         </label>

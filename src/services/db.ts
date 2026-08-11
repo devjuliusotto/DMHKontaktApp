@@ -239,9 +239,25 @@ export function createPlannerTask(planId: string, input: {
 }
 
 export function updatePlannerTask(input: {
-  id: string; etag: string; title: string; bucketId: string; dueDateTime: string | null; priority: number; percentComplete: number;
+  id: string; etag: string; title: string; bucketId: string; dueDateTime: string | null; priority: number; percentComplete: number; assigneeIds: string[];
 }): Promise<void> {
   return invoke("update_planner_task", { input });
+}
+
+export function getPlannerTaskDetails(taskId: string): Promise<import("../types/m365").PlannerTaskDetails> {
+  return invoke("get_planner_task_details", { taskId });
+}
+
+export function updatePlannerTaskDetails(taskId: string, etag: string, description: string): Promise<void> {
+  return invoke("update_planner_task_details", { taskId, etag, description });
+}
+
+export function createPlannerBucket(planId: string, name: string): Promise<import("../types/m365").PlannerBucket> {
+  return invoke("create_planner_bucket", { planId, name });
+}
+
+export function updatePlannerBucket(bucketId: string, etag: string, name: string): Promise<void> {
+  return invoke("update_planner_bucket", { bucketId, etag, name });
 }
 
 export function deletePlannerTask(id: string, etag: string, title: string): Promise<void> {

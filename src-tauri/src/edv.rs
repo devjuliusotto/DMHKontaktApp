@@ -2,7 +2,7 @@ use crate::{m365, open_db, AppState};
 use chrono::Utc;
 use reqwest::{Method, StatusCode};
 use rusqlite::{params, OptionalExtension};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, State};
 use uuid::Uuid;
@@ -37,22 +37,30 @@ struct GraphError {
     message: Option<String>,
 }
 
+fn deserialize_null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct EdvDirectoryUser {
     id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     display_name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     user_principal_name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     mail: String,
     account_enabled: Option<bool>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     job_title: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     department: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     mobile_phone: String,
 }
 
@@ -60,15 +68,15 @@ pub struct EdvDirectoryUser {
 #[serde(rename_all = "camelCase")]
 pub struct EdvDirectoryGroup {
     id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     display_name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     description: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     mail: String,
     mail_enabled: Option<bool>,
     security_enabled: Option<bool>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     group_types: Vec<String>,
 }
 
@@ -135,6 +143,8 @@ pub struct PlannerBucket {
     plan_id: String,
     #[serde(default)]
     order_hint: String,
+    #[serde(rename = "@odata.etag", default)]
+    etag: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -157,6 +167,18 @@ pub struct PlannerTask {
     due_date_time: Option<String>,
     #[serde(default)]
     assignments: Value,
+    #[serde(rename = "@odata.etag", default)]
+    etag: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PlannerTaskDetails {
+    id: String,
+    #[serde(default, deserialize_with = "deserialize_null_default")]
+    description: String,
+    #[serde(default)]
+    preview_type: String,
     #[serde(rename = "@odata.etag", default)]
     etag: String,
 }
@@ -195,6 +217,35 @@ pub struct PlannerTaskUpdate {
     due_date_time: Option<String>,
     priority: i32,
     percent_complete: i32,
+    #[serde(default)]
+    assignee_ids: Vec<String>,
+}
+
+fn assignment_changes(current: &Value, desired_ids: &[String]) -> serde_json::Map<String, Value> {
+    let desired = desired_ids
+        .iter()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
+    let current_ids = current
+        .as_object()
+        .map(|assignments| {
+            assignments
+                .keys()
+                .cloned()
+                .collect::<std::collections::HashSet<_>>()
+        })
+        .unwrap_or_default();
+    let mut changes = serde_json::Map::new();
+    for removed in current_ids.difference(&desired) {
+        changes.insert(removed.clone(), Value::Null);
+    }
+    for added in desired.difference(&current_ids) {
+        changes.insert(
+            added.clone(),
+            json!({"@odata.type": "#microsoft.graph.plannerAssignment", "orderHint": " !"}),
+        );
+    }
+    changes
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -332,7 +383,7 @@ async fn graph_json<T: DeserializeOwned>(token: &str, url: &str) -> Result<T, St
         .await?
         .json::<T>()
         .await
-        .map_err(|_| "Microsoft Graph hat ungültige Daten geliefert.".to_string())
+        .map_err(|error| format!("Microsoft Graph hat ungültige Daten geliefert: {error}"))
 }
 
 async fn graph_pages<T: DeserializeOwned>(
@@ -519,17 +570,34 @@ pub async fn update_planner_task(
         return Err("Die Ticket-Version fehlt; bitte neu laden.".to_string());
     }
     let token = m365::acquire_edv_graph_access_token(&app, &state).await?;
+    let current: PlannerTask = graph_json(
+        &token,
+        &format!("https://graph.microsoft.com/v1.0/planner/tasks/{id}"),
+    )
+    .await?;
+    let assignee_ids = input
+        .assignee_ids
+        .iter()
+        .map(|value| safe_id(value, "Benutzer-ID"))
+        .collect::<Result<Vec<_>, _>>()?;
+    let assignments = assignment_changes(&current.assignments, &assignee_ids);
+    let mut body = json!({
+        "title": title,
+        "bucketId": bucket_id,
+        "dueDateTime": input.due_date_time,
+        "priority": input.priority.clamp(0, 10),
+        "percentComplete": input.percent_complete.clamp(0, 100)
+    });
+    if !assignments.is_empty() {
+        body.as_object_mut()
+            .expect("planner update body must be an object")
+            .insert("assignments".to_string(), Value::Object(assignments));
+    }
     graph_response(
         &token,
         Method::PATCH,
         &format!("https://graph.microsoft.com/v1.0/planner/tasks/{id}"),
-        Some(json!({
-            "title": title,
-            "bucketId": bucket_id,
-            "dueDateTime": input.due_date_time,
-            "priority": input.priority.clamp(0, 10),
-            "percentComplete": input.percent_complete.clamp(0, 100)
-        })),
+        Some(body),
         Some(input.etag.trim()),
     )
     .await?;
@@ -541,6 +609,121 @@ pub async fn update_planner_task(
         &id,
         &title,
         "Ticket bearbeitet oder verschoben",
+        "success",
+    )?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_planner_task_details(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<PlannerTaskDetails, String> {
+    require_level(&app, &state, "reader")?;
+    let task_id = safe_id(&task_id, "Planner-Ticket-ID")?;
+    let token = m365::acquire_edv_graph_access_token(&app, &state).await?;
+    graph_json(
+        &token,
+        &format!("https://graph.microsoft.com/v1.0/planner/tasks/{task_id}/details"),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn update_planner_task_details(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    task_id: String,
+    etag: String,
+    description: String,
+) -> Result<(), String> {
+    require_level(&app, &state, "operator")?;
+    let task_id = safe_id(&task_id, "Planner-Ticket-ID")?;
+    if etag.trim().is_empty() {
+        return Err("Die Version der Ticket-Notizen fehlt; bitte neu laden.".to_string());
+    }
+    if description.chars().count() > 4000 {
+        return Err("Die Ticket-Notizen dürfen höchstens 4.000 Zeichen enthalten.".to_string());
+    }
+    let token = m365::acquire_edv_graph_access_token(&app, &state).await?;
+    graph_response(
+        &token,
+        Method::PATCH,
+        &format!("https://graph.microsoft.com/v1.0/planner/tasks/{task_id}/details"),
+        Some(json!({"description": description, "previewType": "description"})),
+        Some(etag.trim()),
+    )
+    .await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn create_planner_bucket(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    plan_id: String,
+    name: String,
+) -> Result<PlannerBucket, String> {
+    require_level(&app, &state, "operator")?;
+    let plan_id = safe_id(&plan_id, "Planner-Plan-ID")?;
+    let name = validate_text(&name, "Spaltenname", 120)?;
+    let token = m365::acquire_edv_graph_access_token(&app, &state).await?;
+    let bucket = graph_response(
+        &token,
+        Method::POST,
+        "https://graph.microsoft.com/v1.0/planner/buckets",
+        Some(json!({"name": name, "planId": plan_id, "orderHint": " !"})),
+        None,
+    )
+    .await?
+    .json::<PlannerBucket>()
+    .await
+    .map_err(|error| format!("Planner hat eine ungültige Spalte geliefert: {error}"))?;
+    audit(
+        &app,
+        &state,
+        "create",
+        "planner_bucket",
+        &bucket.id,
+        &bucket.name,
+        "Ticket-Spalte erstellt",
+        "success",
+    )?;
+    Ok(bucket)
+}
+
+#[tauri::command]
+pub async fn update_planner_bucket(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    bucket_id: String,
+    etag: String,
+    name: String,
+) -> Result<(), String> {
+    require_level(&app, &state, "operator")?;
+    let bucket_id = safe_id(&bucket_id, "Planner-Spalten-ID")?;
+    let name = validate_text(&name, "Spaltenname", 120)?;
+    if etag.trim().is_empty() {
+        return Err("Die Spalten-Version fehlt; bitte neu laden.".to_string());
+    }
+    let token = m365::acquire_edv_graph_access_token(&app, &state).await?;
+    graph_response(
+        &token,
+        Method::PATCH,
+        &format!("https://graph.microsoft.com/v1.0/planner/buckets/{bucket_id}"),
+        Some(json!({"name": name})),
+        Some(etag.trim()),
+    )
+    .await?;
+    audit(
+        &app,
+        &state,
+        "update",
+        "planner_bucket",
+        &bucket_id,
+        &name,
+        "Ticket-Spalte umbenannt",
         "success",
     )?;
     Ok(())
@@ -1012,4 +1195,82 @@ pub fn list_edv_audit_log(
         .map_err(|error| error.to_string())?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{assignment_changes, EdvDirectoryGroup, EdvDirectoryUser, GraphPage};
+    use serde_json::json;
+
+    #[test]
+    fn directory_users_accept_null_optional_graph_fields() {
+        let page: GraphPage<EdvDirectoryUser> = serde_json::from_str(
+            r#"{
+                "value": [{
+                    "id": "11111111-1111-1111-1111-111111111111",
+                    "displayName": "Test User",
+                    "userPrincipalName": "test@dmh-aidlingen.de",
+                    "mail": null,
+                    "accountEnabled": true,
+                    "jobTitle": null,
+                    "department": null,
+                    "mobilePhone": null
+                }]
+            }"#,
+        )
+        .expect("Microsoft Graph user payload with null fields must be accepted");
+
+        let user = &page.value[0];
+        assert_eq!(user.display_name, "Test User");
+        assert!(user.mail.is_empty());
+        assert!(user.job_title.is_empty());
+        assert!(user.department.is_empty());
+        assert!(user.mobile_phone.is_empty());
+    }
+
+    #[test]
+    fn directory_groups_accept_null_optional_graph_fields() {
+        let page: GraphPage<EdvDirectoryGroup> = serde_json::from_str(
+            r#"{
+                "value": [{
+                    "id": "22222222-2222-2222-2222-222222222222",
+                    "displayName": "DMH Portal - EDV",
+                    "description": null,
+                    "mail": null,
+                    "mailEnabled": false,
+                    "securityEnabled": true,
+                    "groupTypes": null
+                }]
+            }"#,
+        )
+        .expect("Microsoft Graph group payload with null fields must be accepted");
+
+        let group = &page.value[0];
+        assert_eq!(group.display_name, "DMH Portal - EDV");
+        assert!(group.description.is_empty());
+        assert!(group.mail.is_empty());
+        assert!(group.group_types.is_empty());
+    }
+
+    #[test]
+    fn planner_assignment_changes_add_and_remove_only_differences() {
+        let current = json!({
+            "11111111-1111-1111-1111-111111111111": {"orderHint": "A"},
+            "22222222-2222-2222-2222-222222222222": {"orderHint": "B"}
+        });
+        let changes = assignment_changes(
+            &current,
+            &[
+                "22222222-2222-2222-2222-222222222222".to_string(),
+                "33333333-3333-3333-3333-333333333333".to_string(),
+            ],
+        );
+
+        assert_eq!(
+            changes.get("11111111-1111-1111-1111-111111111111"),
+            Some(&serde_json::Value::Null)
+        );
+        assert!(changes.contains_key("33333333-3333-3333-3333-333333333333"));
+        assert!(!changes.contains_key("22222222-2222-2222-2222-222222222222"));
+    }
 }
