@@ -1,4 +1,4 @@
-use crate::{hidden_command, open_db, AppState};
+use crate::{open_db, AppState};
 use base64::{
     engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD},
     Engine as _,
@@ -863,9 +863,7 @@ async fn request_interactive_token(
             query.append_pair("login_hint", login_hint);
         }
     }
-    hidden_command("explorer.exe")
-        .arg(authorize_url.as_str())
-        .spawn()
+    tauri_plugin_opener::open_url(authorize_url.as_str(), None::<&str>)
         .map_err(|error| format!("Microsoft-Anmeldung konnte nicht geöffnet werden: {error}"))?;
 
     let (code, mut callback_stream) = receive_browser_authorization_code(listener, &state).await?;
@@ -1001,9 +999,7 @@ pub async fn start_m365_connection(
 }
 
 fn open_microsoft_account_page(url: &str, label: &str) -> Result<(), String> {
-    hidden_command("explorer.exe")
-        .arg(url)
-        .spawn()
+    tauri_plugin_opener::open_url(url, None::<&str>)
         .map_err(|error| format!("{label} konnte nicht geöffnet werden: {error}"))?;
     Ok(())
 }
