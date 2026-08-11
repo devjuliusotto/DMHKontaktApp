@@ -15,8 +15,8 @@ continua gerando MSI e NSIS.
 
 ## Configuração inicial no GitHub
 
-1. Mesclar estas alterações em `main`.
-2. Criar o branch `staging` a partir desse mesmo commit e enviá-lo ao GitHub:
+1. Manter a branch `main` como fonte das releases oficiais.
+2. Opcionalmente, criar o branch `staging` quando a equipe quiser um fluxo separado de desenvolvimento e enviá-lo ao GitHub:
 
    ```powershell
    git switch -c staging
@@ -35,36 +35,35 @@ continua gerando MSI e NSIS.
    - em **Secrets**: `MIGRATION_CAPTURE_URL`.
 5. Verificar se **Actions > General > Workflow permissions** permite escrita do `GITHUB_TOKEN`, necessária para publicar releases.
 
-O ambiente `production` funciona como o último portão humano. Se a conta/plano não disponibilizar revisores obrigatórios para este repositório, o workflow continua sendo manual e ainda valida que o conteúdo publicado foi exatamente o conteúdo da última versão Admin Test.
+O ambiente `production` funciona como o último portão humano. Se a conta/plano não disponibilizar revisores obrigatórios para este repositório, o workflow continua sendo manual e executa todas as verificações antes de publicar diretamente o commit selecionado da `main`.
 
-## Trabalho normal
+## Release oficial diretamente da main
 
-1. Criar um branch de funcionalidade a partir de `staging`.
-2. Implementar e testar localmente.
-3. Abrir PR para `staging`. O workflow `CI` valida frontend, formatação e testes Rust.
-4. Antes do ciclo de teste, confirmar apenas que a versão-base já existente no código está consistente:
+1. Implementar e testar a alteração, fazer commit na `main` e enviá-la ao GitHub.
+2. Aguardar o workflow `CI`, que valida frontend, formatação e testes Rust.
+3. Confirmar que a versão-base existente no código está consistente:
 
    ```powershell
    npm run version:check
    ```
 
-5. Em **Actions > Admin-Test-Version veröffentlichen > Run workflow**:
-   - branch do workflow: `main`;
-   - `source_ref`: `staging` no fluxo normal, ou `main` na primeira execução enquanto o branch `staging` ainda não tiver sido criado;
-   - `version`: por exemplo `0.1.1-beta.1`.
-6. Instalar a versão Admin Test na primeira vez. Nas próximas execuções do workflow, ela recebe apenas atualizações Admin Test.
-7. Testar com uma cópia dos dados reais, registrar problemas e repetir com `beta.2`, `beta.3` etc.
-8. Quando aprovada, mesclar `staging` em `main` sem fazer novas alterações de conteúdo.
-9. Em **Actions > Offizielle Windows-Version veröffentlichen > Run workflow**, selecionar `main` e informar `0.1.1`.
-10. Aprovar o ambiente `production`. O workflow só libera a versão se:
+4. Em **Actions > Offizielle Windows-Version veröffentlichen > Run workflow**, selecionar `main` e informar a próxima versão oficial, por exemplo `0.1.1`.
+5. Aprovar o ambiente `production`. O workflow só libera a versão se:
     - a versão informada for aplicada e conferida automaticamente em todos os manifestos e lockfiles do build;
     - testes e build passarem;
-    - o endpoint EDV de produção estiver configurado;
-    - a árvore de arquivos de `main` for exatamente igual à release Admin Test mais recente.
+    - o endpoint EDV e a assinatura de produção estiverem configurados.
+6. Depois da publicação, as instalações oficiais encontram a nova release pelo atualizador automático.
 
-Uma correção feita depois do teste exige uma nova Admin Test antes da release oficial. Isso é intencional.
+## Admin Test opcional
 
-Não crie manualmente commits ou tags do tipo `Release vX.Y.Z`. O workflow oficial cria a tag e a release. A versão final é aplicada apenas no ambiente temporário de build, depois da comparação com o Admin Test; por isso o conteúdo testado continua sendo exatamente o conteúdo publicado.
+Para alterações que mereçam um ciclo isolado, o canal Admin Test continua disponível, mas não é pré-requisito para a release oficial:
+
+1. Em **Actions > Admin-Test-Version veröffentlichen > Run workflow**, selecionar `main`.
+2. Usar `source_ref: main` e uma versão como `0.1.1-beta.1`.
+3. Instalar ou atualizar o Admin Test, validar com uma cópia dos dados e repetir com `beta.2`, `beta.3` etc. quando necessário.
+4. Quando o mesmo commit estiver aprovado, executar a release oficial diretamente da `main`.
+
+Não crie manualmente commits ou tags do tipo `Release vX.Y.Z`. O workflow oficial cria a tag e a release. A versão final é aplicada apenas no ambiente temporário de build, mantendo os manifestos e lockfiles da `main` consistentes.
 
 Se um deploy falhar, abra o resumo da execução em **Actions**. Os workflows de Admin Test e release oficial escrevem uma tabela de resultados no *Step summary* e disponibilizam um artefato `*-diagnostics-...` por 30 dias. O relatório contém somente referências, versões e resultados dos passos; valores de secrets e tokens nunca são incluídos.
 
@@ -105,13 +104,10 @@ A versão-base fica consistente no código. Tanto o sufixo beta do Admin Test qu
 ## Primeira publicação 0.1.0
 
 1. Rodar `npm run version:check` e confirmar que todos os arquivos mostram a mesma versão-base.
-2. Publicar `0.1.0-beta.1` do branch `staging`.
-3. Instalar o Admin Test e importar uma Sicherung real.
-4. Testar contatos, calendário, importações, restauração e atualização automática.
-5. Confirmar que a faixa vermelha aparece e que o botão de envio ao EDV está desativado no Admin Test.
-6. Mesclar `staging` em `main`.
-7. Executar a release oficial `0.1.0` e aprovar `production`.
-8. Instalar a release oficial em um PC piloto antes de distribuí-la às usuárias.
+2. Confirmar que a CI da `main` passou.
+3. Opcionalmente, publicar e validar `0.1.0-beta.1` no canal Admin Test.
+4. Executar a release oficial `0.1.0` diretamente da `main` e aprovar `production`.
+5. Instalar a release oficial em um PC piloto antes de distribuí-la às usuárias.
 
 ## Rollback
 

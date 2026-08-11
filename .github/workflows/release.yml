@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   verify:
-    name: Getesteten Stand verifizieren
+    name: Main-Stand verifizieren
     runs-on: windows-latest
     permissions:
       contents: read
@@ -38,20 +38,6 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.sha }}
-
-      - name: Admin-Test-Stand vergleichen
-        id: compare_admin_test
-        shell: pwsh
-        run: |
-          git fetch origin refs/tags/admin-test:refs/tags/admin-test --force
-          if ($LASTEXITCODE -ne 0) {
-            throw "Es gibt noch keine veröffentlichte Admin-Test-Version."
-          }
-          $adminTree = git rev-parse "admin-test^{tree}"
-          $stableTree = git rev-parse "HEAD^{tree}"
-          if ($adminTree -ne $stableTree) {
-            throw "Der Inhalt auf main entspricht nicht exakt der zuletzt getesteten Admin-Test-Version."
-          }
 
       - name: Node.js installieren
         uses: actions/setup-node@v5
@@ -117,7 +103,6 @@ jobs:
           REQUESTED_VERSION: ${{ inputs.version }}
           VALIDATE_OUTCOME: ${{ steps.validate_request.outcome }}
           CHECKOUT_OUTCOME: ${{ steps.checkout_source.outcome }}
-          ADMIN_TEST_OUTCOME: ${{ steps.compare_admin_test.outcome }}
           INSTALL_OUTCOME: ${{ steps.install_dependencies.outcome }}
           VERSION_OUTCOME: ${{ steps.set_release_version.outcome }}
           THEME_OUTCOME: ${{ steps.check_theme.outcome }}
@@ -136,7 +121,6 @@ jobs:
             "requested_version=$env:REQUESTED_VERSION"
             "validate_request=$env:VALIDATE_OUTCOME"
             "checkout=$env:CHECKOUT_OUTCOME"
-            "compare_admin_test=$env:ADMIN_TEST_OUTCOME"
             "install_dependencies=$env:INSTALL_OUTCOME"
             "set_release_version=$env:VERSION_OUTCOME"
             "check_theme=$env:THEME_OUTCOME"
