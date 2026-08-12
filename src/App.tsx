@@ -20,6 +20,7 @@ import { PasswordsPage } from "./pages/PasswordsPage";
 import { BackupPage } from "./pages/BackupPage";
 import { Microsoft365Page } from "./pages/Microsoft365Page";
 import { EdvPortalPage } from "./pages/EdvPortalPage";
+import { KfzPortalPage } from "./pages/KfzPortalPage";
 import { disconnectMicrosoft365Account, getPortalSession, getVaultStatus, restorePortalSession, syncExchangeData } from "./services/db";
 import type { ExchangeSyncStatus, PortalModuleId, PortalSession } from "./types/m365";
 import type { VaultStatus } from "./types/vault";
@@ -55,7 +56,7 @@ const browserPreviewPortalSession: PortalSession = {
   },
   rememberSignIn: false,
   authorizationConfigured: true,
-  modules: ["privatschwestern", "edv"],
+  modules: ["privatschwestern", "edv", "kfz"],
   message: ""
 };
 
@@ -336,6 +337,22 @@ export default function App() {
             setPortalPage("modules");
           }}
           onRefreshAuthorization={refreshAuthorization}
+          onSignOut={signOut}
+          onSyncExchange={synchronizeExchange}
+        />
+      </div>
+    );
+  }
+
+  if (activeModule === "kfz") {
+    return (
+      <div className={isAdminTest ? "app-channel-root admin-test-root kfz-channel-root" : "app-channel-root kfz-channel-root"}>
+        {isAdminTest && <AdminTestBanner sourceCommit={sourceCommit} />}
+        <KfzPortalPage
+          session={portalSession}
+          exchangeSyncStatus={exchangeSyncStatus}
+          offline={portalSession.state === "offline"}
+          onBack={() => { setActiveModule(null); setPortalPage("overview"); }}
           onSignOut={signOut}
           onSyncExchange={synchronizeExchange}
         />

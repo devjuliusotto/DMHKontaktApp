@@ -29,9 +29,11 @@ const GRAPH_GROUPS_URL: &str =
 const GRAPH_PORTAL_PROFILE_URL: &str = "https://graph.microsoft.com/v1.0/me?$select=id,displayName,mail,userPrincipalName,jobTitle,department,businessPhones,mobilePhone,officeLocation,streetAddress,postalCode,city,country";
 const LOGIN_SCOPES: &str =
     "openid profile offline_access User.Read User.ReadWrite User-Phone.ReadWrite.All Contacts.ReadWrite Calendars.ReadWrite";
+const KFZ_SCOPES: &str = "openid profile offline_access User.Read Sites.Selected";
 const EDV_SCOPES: &str = "openid profile offline_access User.Read User.Read.All User.ReadWrite.All User.EnableDisableAccount.All User-PasswordProfile.ReadWrite.All Group.Read.All Group.ReadWrite.All GroupMember.ReadWrite.All Tasks.ReadWrite";
 const PRIVATSCHWESTERN_MODULE: &str = "privatschwestern";
 const EDV_MODULE: &str = "edv";
+const KFZ_MODULE: &str = "kfz";
 const BROWSER_SIGN_IN_TIMEOUT_SECONDS: u64 = 300;
 
 #[derive(Default)]
@@ -257,10 +259,15 @@ fn edv_group_ids() -> Vec<String> {
     configured_group_ids(option_env!("DMH_PORTAL_EDV_GROUP_IDS"))
 }
 
+fn kfz_group_ids() -> Vec<String> {
+    configured_group_ids(option_env!("DMH_PORTAL_KFZ_GROUP_IDS"))
+}
+
 fn modules_for_groups(
     memberships: &[String],
     privatschwestern_groups: &[String],
     edv_groups: &[String],
+    kfz_groups: &[String],
 ) -> Vec<String> {
     let memberships = memberships
         .iter()
@@ -279,11 +286,19 @@ fn modules_for_groups(
     {
         modules.push(EDV_MODULE.to_string());
     }
+    if kfz_groups
+        .iter()
+        .any(|group| memberships.contains(&group.to_ascii_lowercase()))
+    {
+        modules.push(KFZ_MODULE.to_string());
+    }
     modules
 }
 
 fn authorization_configured() -> bool {
-    !privatschwestern_group_ids().is_empty() || !edv_group_ids().is_empty()
+    !privatschwestern_group_ids().is_empty()
+        || !edv_group_ids().is_empty()
+        || !kfz_group_ids().is_empty()
 }
 
 fn is_identifier(value: &str) -> bool {
@@ -660,8 +675,15 @@ fn portal_session_for_account(
 ) -> PortalSession {
     let private_groups = privatschwestern_group_ids();
     let edv_groups = edv_group_ids();
-    let authorization_configured = !private_groups.is_empty() || !edv_groups.is_empty();
-    let mut modules = modules_for_groups(&account.group_ids, &private_groups, &edv_groups);
+    let kfz_groups = kfz_group_ids();
+    let authorization_configured =
+        !private_groups.is_empty() || !edv_groups.is_empty() || !kfz_groups.is_empty();
+    let mut modules = modules_for_groups(
+        &account.group_ids,
+        &private_groups,
+        &edv_groups,
+        &kfz_groups,
+    );
     let offline_access_current = account
         .last_validated_at
         .parse::<chrono::DateTime<Utc>>()
@@ -941,6 +963,54 @@ pub(crate) async fn acquire_graph_access_token(
     ])
     .await
     .map_err(|error| oauth_error_message(&error))?;
+    let bundle = StoredTokenBundle {
+        refresh_token: token.refresh_token.unwrap_or(stored.refresh_token),
+        scope: token.scope,
+    };
+    let remember_sign_in = get_setting(app, TOKEN_SETTING_KEY)?.is_some();
+    save_connection(app, state, &account, &bundle, remember_sign_in)?;
+    Ok(token.access_token)
+}
+
+/// Requests SharePoint access only when KFZ is opened. This keeps a missing
+/// tenant-side grant from blocking sign-in to the rest of the portal.
+pub(crate) async fn acquire_kfz_graph_access_token(
+    app: &AppHandle,
+    state: &AppState,
+) -> Result<String, String> {
+    let client_id = configured_client_id()?;
+    let account = read_account(app, state)?
+        .ok_or_else(|| "Microsoft-365-Konto ist nicht verbunden.".to_string())?;
+    if !modules_for_groups(
+        &account.group_ids,
+        &privatschwestern_group_ids(),
+        &edv_group_ids(),
+        &kfz_group_ids(),
+    )
+    .iter()
+    .any(|module| module == KFZ_MODULE)
+    {
+        return Err("Dieses Konto ist nicht für das KFZ-Modul freigegeben.".to_string());
+    }
+    let stored = read_token(app, state)?;
+    let token = request_token(&[
+        ("grant_type", "refresh_token"),
+        ("client_id", client_id),
+        ("refresh_token", &stored.refresh_token),
+        ("scope", KFZ_SCOPES),
+    ])
+    .await
+    .map_err(|error| {
+        if matches!(
+            error.error.as_str(),
+            "invalid_grant" | "interaction_required" | "consent_required"
+        ) {
+            "Das KFZ-Modul ist im Microsoft-365-Mandanten noch nicht freigegeben. Die EDV muss Sites.Selected für die Portal-App genehmigen und den Fuhrpark-SharePoint zuweisen."
+                .to_string()
+        } else {
+            oauth_error_message(&error)
+        }
+    })?;
     let bundle = StoredTokenBundle {
         refresh_token: token.refresh_token.unwrap_or(stored.refresh_token),
         scope: token.scope,
@@ -1268,6 +1338,7 @@ pub async fn start_edv_admin_connection(
         &primary.group_ids,
         &privatschwestern_group_ids(),
         &edv_group_ids(),
+        &kfz_group_ids(),
     )
     .iter()
     .any(|module| module == EDV_MODULE)
@@ -1310,6 +1381,7 @@ pub(crate) async fn acquire_edv_graph_access_token(
         &primary.group_ids,
         &privatschwestern_group_ids(),
         &edv_group_ids(),
+        &kfz_group_ids(),
     )
     .iter()
     .any(|module| module == EDV_MODULE)
@@ -1564,7 +1636,7 @@ mod tests {
         let edv_groups = vec!["bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb".to_string()];
 
         assert_eq!(
-            modules_for_groups(&memberships, &private_groups, &edv_groups),
+            modules_for_groups(&memberships, &private_groups, &edv_groups, &[]),
             vec![PRIVATSCHWESTERN_MODULE.to_string()]
         );
     }
@@ -1574,6 +1646,7 @@ mod tests {
         assert!(modules_for_groups(
             &["11111111-1111-1111-1111-111111111111".to_string()],
             &["22222222-2222-2222-2222-222222222222".to_string()],
+            &[],
             &[]
         )
         .is_empty());
@@ -1596,8 +1669,23 @@ mod tests {
                 std::slice::from_ref(&edv_group),
                 &[],
                 std::slice::from_ref(&edv_group),
+                &[],
             ),
             vec![EDV_MODULE.to_string()]
+        );
+    }
+
+    #[test]
+    fn kfz_group_opens_only_the_kfz_module() {
+        let kfz_group = "cccccccc-cccc-cccc-cccc-cccccccccccc".to_string();
+        assert_eq!(
+            modules_for_groups(
+                std::slice::from_ref(&kfz_group),
+                &[],
+                &[],
+                std::slice::from_ref(&kfz_group),
+            ),
+            vec![KFZ_MODULE.to_string()]
         );
     }
 

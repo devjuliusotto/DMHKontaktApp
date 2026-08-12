@@ -92,6 +92,7 @@ jobs:
           M365_TENANT_ID: ${{ vars.M365_TENANT_ID }}
           DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS: ${{ vars.DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS }}
           DMH_PORTAL_EDV_GROUP_IDS: ${{ vars.DMH_PORTAL_EDV_GROUP_IDS }}
+          DMH_PORTAL_KFZ_GROUP_IDS: ${{ vars.DMH_PORTAL_KFZ_GROUP_IDS }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:M365_CLIENT_ID)) {
             throw "Repository variable M365_CLIENT_ID fehlt."
@@ -110,9 +111,10 @@ jobs:
           }
           if (
             [string]::IsNullOrWhiteSpace($env:DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS) -and
-            [string]::IsNullOrWhiteSpace($env:DMH_PORTAL_EDV_GROUP_IDS)
+            [string]::IsNullOrWhiteSpace($env:DMH_PORTAL_EDV_GROUP_IDS) -and
+            [string]::IsNullOrWhiteSpace($env:DMH_PORTAL_KFZ_GROUP_IDS)
           ) {
-            throw "Mindestens eine Portalgruppe muss über DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS oder DMH_PORTAL_EDV_GROUP_IDS konfiguriert sein."
+            throw "Mindestens eine Portalgruppe muss für Privatschwestern, EDV oder KFZ konfiguriert sein."
           }
           if (-not [string]::IsNullOrWhiteSpace($env:DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS)) {
             foreach ($groupId in ($env:DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS -split ',')) {
@@ -125,6 +127,13 @@ jobs:
             foreach ($groupId in ($env:DMH_PORTAL_EDV_GROUP_IDS -split ',')) {
               try { [void][guid]::Parse($groupId.Trim()) } catch {
                 throw "DMH_PORTAL_EDV_GROUP_IDS enthält keine gültige Gruppen-Objekt-ID: $groupId"
+              }
+            }
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:DMH_PORTAL_KFZ_GROUP_IDS)) {
+            foreach ($groupId in ($env:DMH_PORTAL_KFZ_GROUP_IDS -split ',')) {
+              try { [void][guid]::Parse($groupId.Trim()) } catch {
+                throw "DMH_PORTAL_KFZ_GROUP_IDS enthält keine gültige Gruppen-Objekt-ID: $groupId"
               }
             }
           }
@@ -142,6 +151,7 @@ jobs:
           M365_TENANT_ID: ${{ vars.M365_TENANT_ID }}
           DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS: ${{ vars.DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS }}
           DMH_PORTAL_EDV_GROUP_IDS: ${{ vars.DMH_PORTAL_EDV_GROUP_IDS }}
+          DMH_PORTAL_KFZ_GROUP_IDS: ${{ vars.DMH_PORTAL_KFZ_GROUP_IDS }}
           RUST_BACKTRACE: "1"
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib
 
@@ -285,6 +295,7 @@ jobs:
           M365_TENANT_ID: ${{ vars.M365_TENANT_ID }}
           DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS: ${{ vars.DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS }}
           DMH_PORTAL_EDV_GROUP_IDS: ${{ vars.DMH_PORTAL_EDV_GROUP_IDS }}
+          DMH_PORTAL_KFZ_GROUP_IDS: ${{ vars.DMH_PORTAL_KFZ_GROUP_IDS }}
         with:
           tagName: v${{ inputs.version }}
           releaseName: DMH Kontakte und Kalender v${{ inputs.version }}

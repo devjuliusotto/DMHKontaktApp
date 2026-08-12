@@ -14,6 +14,7 @@ use tauri::{AppHandle, Manager};
 
 mod edv;
 mod exchange_sync;
+mod kfz;
 mod m365;
 mod mail_accounts;
 mod thunderbird;
@@ -657,6 +658,21 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
         );
         CREATE INDEX IF NOT EXISTS idx_edv_audit_occurred_at
             ON edv_audit_log(occurred_at DESC);
+        CREATE TABLE IF NOT EXISTS kfz_cache (
+            entity_type TEXT NOT NULL,
+            remote_id TEXT NOT NULL,
+            modified_at TEXT,
+            etag TEXT NOT NULL DEFAULT '',
+            payload TEXT NOT NULL,
+            PRIMARY KEY (entity_type, remote_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_kfz_cache_type_modified
+            ON kfz_cache(entity_type, modified_at DESC);
+        CREATE TABLE IF NOT EXISTS kfz_sync_state (
+            resource TEXT PRIMARY KEY,
+            last_synced_at TEXT,
+            last_error TEXT NOT NULL DEFAULT ''
+        );
         ",
     )
     .map_err(|err| err.to_string())?;
@@ -1477,6 +1493,8 @@ fn clear_local_database(conn: &mut Connection) -> Result<(), String> {
             DELETE FROM mail_accounts;
             DELETE FROM vault_entries;
             DELETE FROM vault_config;
+            DELETE FROM kfz_cache;
+            DELETE FROM kfz_sync_state;
             DELETE FROM app_settings;
             DELETE FROM sqlite_sequence
              WHERE name IN ('contacts', 'groups', 'import_history', 'mail_accounts', 'vault_entries');
@@ -3697,6 +3715,8 @@ pub fn run() {
             m365::get_edv_admin_session_status,
             m365::start_edv_admin_connection,
             m365::disconnect_edv_admin_session,
+            kfz::get_kfz_snapshot,
+            kfz::sync_kfz_data,
             edv::get_edv_access_profile,
             edv::get_edv_planner_plan_id,
             edv::set_edv_planner_plan_id,
@@ -3798,6 +3818,13 @@ mod tests {
             CREATE TABLE mail_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT);
             CREATE TABLE vault_entries (id INTEGER PRIMARY KEY AUTOINCREMENT);
             CREATE TABLE vault_config (id INTEGER PRIMARY KEY);
+            CREATE TABLE kfz_cache (
+                entity_type TEXT NOT NULL,
+                remote_id TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                PRIMARY KEY (entity_type, remote_id)
+            );
+            CREATE TABLE kfz_sync_state (resource TEXT PRIMARY KEY);
             INSERT INTO contacts DEFAULT VALUES;
             INSERT INTO groups DEFAULT VALUES;
             INSERT INTO contact_groups VALUES (1, 1);
@@ -3806,6 +3833,8 @@ mod tests {
             INSERT INTO mail_accounts DEFAULT VALUES;
             INSERT INTO vault_entries DEFAULT VALUES;
             INSERT INTO vault_config VALUES (1);
+            INSERT INTO kfz_cache VALUES ('vehicle', 'vehicle-1', '{}');
+            INSERT INTO kfz_sync_state VALUES ('vehicles');
             ",
         )
         .expect("test schema and data");
@@ -3821,6 +3850,8 @@ mod tests {
             "mail_accounts",
             "vault_entries",
             "vault_config",
+            "kfz_cache",
+            "kfz_sync_state",
         ] {
             let count: i64 = conn
                 .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {

@@ -41,6 +41,7 @@ import type {
   EdvAuditEntry
 } from "../types/m365";
 import { requestExchangeSync } from "../utils/exchangeSync";
+import type { KfzSnapshot, KfzSyncResult } from "../types/kfz";
 
 function requestSyncAfter<T>(promise: Promise<T>): Promise<T> {
   return promise.then((result) => {
@@ -214,6 +215,14 @@ export function startEdvAdminConnection(): Promise<Microsoft365PollResult> {
 
 export function disconnectEdvAdminSession(): Promise<void> {
   return invoke("disconnect_edv_admin_session");
+}
+
+export function getKfzSnapshot(): Promise<KfzSnapshot> {
+  return invoke("get_kfz_snapshot");
+}
+
+export function syncKfzData(forceFull = false): Promise<KfzSyncResult> {
+  return invoke("sync_kfz_data", { forceFull });
 }
 
 export function getEdvAccessProfile(): Promise<EdvAccessProfile> {

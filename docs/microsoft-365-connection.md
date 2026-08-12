@@ -24,6 +24,7 @@ des angemeldeten Benutzers. Der Passwort-Tresor bleibt in dieser Etappe lokal.
    - `User.Read`
    - `Contacts.ReadWrite`
    - `Calendars.ReadWrite`
+   - `Sites.Selected` (für das KFZ-Modul, delegiert)
 7. **Administratoreinwilligung für den DMH-Mandanten erteilen** wählen und den
    Status aller drei Berechtigungen kontrollieren.
 8. Mandanten-ID und Anwendungs-ID notieren.
@@ -40,6 +41,7 @@ anlegen. Es ist zulässig, zunächst ausschließlich die EDV-Gruppe zu verwenden
 
 - `DMH-Portal-Privatschwestern`
 - optional `DMH-Portal-EDV`
+- optional `DMH-Portal-KFZ`
 
 Die Benutzer den passenden Gruppen zuordnen und unter **Gruppen → Übersicht**
 jeweils die **Objekt-ID** kopieren. Verwendet werden ausschließlich Objekt-IDs;
@@ -58,10 +60,11 @@ Unter `Repository → Settings → Secrets and variables → Actions → Variabl
 | `M365_TENANT_ID` | Mandanten-ID des DMH-Tenants |
 | `DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS` | Optional: Objekt-ID der Gruppe für das Kontakte-/Kalender-Modul |
 | `DMH_PORTAL_EDV_GROUP_IDS` | Optional: Objekt-ID der EDV-Gruppe |
+| `DMH_PORTAL_KFZ_GROUP_IDS` | Optional: Objekt-ID der KFZ-Gruppe |
 | `M365_EDV_CLIENT_ID` | Optional: separate Entra-App für die administrative EDV-Sitzung |
 
 Mehrere Gruppen-IDs für dasselbe Modul werden durch Kommas getrennt. Mindestens
-eine der beiden Modulgruppen ist für Release-Builds verpflichtend. Ohne
+eine der Modulgruppen ist für Release-Builds verpflichtend. Ohne
 konfigurierte Modulgruppe bleibt das Portal sicher geschlossen und zeigt einen
 EDV-Hinweis.
 
@@ -81,6 +84,7 @@ $env:M365_CLIENT_ID = "<Anwendungs-ID>"
 $env:M365_TENANT_ID = "<Mandanten-ID>"
 $env:DMH_PORTAL_PRIVATSCHWESTERN_GROUP_IDS = "<Objekt-ID der Sicherheitsgruppe>"
 $env:DMH_PORTAL_EDV_GROUP_IDS = "<optionale Objekt-ID der EDV-Gruppe>"
+$env:DMH_PORTAL_KFZ_GROUP_IDS = "<optionale Objekt-ID der KFZ-Gruppe>"
 npm run tauri:dev:admin-test
 ```
 
@@ -93,6 +97,8 @@ beenden und neu bauen.
 - Angefordert werden `openid`, `profile`, `offline_access`, `User.Read`,
   `Contacts.ReadWrite` und `Calendars.ReadWrite` als delegierte Rechte. Die App
   arbeitet damit ausschließlich im Kontext des angemeldeten Benutzers.
+- Das KFZ-Modul fordert `Sites.Selected` erst beim Fuhrpark-Abgleich an. Die
+  Portal-App erhält dadurch keinen pauschalen Zugriff auf andere SharePoint-Sites.
 - Mit **Angemeldet bleiben** wird der erneuerbare Token mit Windows DPAPI an den
   aktuellen Windows-Benutzer und Computer gebunden gespeichert.
 - Ohne **Angemeldet bleiben** verbleibt die Sitzung nur im Arbeitsspeicher und
@@ -148,6 +154,26 @@ beenden und neu bauen.
   `Contacts.ReadWrite` und `Calendars.ReadWrite` sowie die
   Administratoreinwilligung kontrollieren. Danach einmal ab- und wieder
   anmelden, damit der Token die neuen Rechte erhält.
+
+## KFZ-Modul und SharePoint
+
+Das KFZ-Modul liest im Pilotbetrieb ausschließlich die vorhandenen Ressourcen
+im Site `dmhaidlingen.sharepoint.com/sites/DMHFuhrpark`:
+
+- Liste `Fahrzeuge`
+- Liste `Wartungen`
+- Liste `Standorte`
+- Dokumentbibliothek `Fahrzeugdokumente`
+
+Neben der Entra-Einwilligung für `Sites.Selected` muss die Portal-App explizit
+mit der Rolle `read` auf genau diesen Site berechtigt werden. Ohne diese
+Ressourcenzuweisung bleibt das Modul geschlossen und zeigt einen verständlichen
+Hinweis. Während des Piloten bietet der Client keine SharePoint-Schreibbefehle.
+
+Die erste erfolgreiche Synchronisierung baut einen lokalen SQLite-Cache auf.
+Weitere Läufe verwenden den SharePoint-Änderungszeitpunkt und laden mit zwei
+Minuten Sicherheitsüberlappung nur neue oder geänderte Einträge. Ein manueller
+Vollabgleich kann unter **KFZ → Einstellungen** ausgelöst werden.
 
 ## EDV-Verwaltung und Planner
 

@@ -14,6 +14,7 @@ import {
   LayoutGrid,
   LockKeyhole,
   MonitorCog,
+  Truck,
   MapPin,
   Settings,
   UsersRound
@@ -45,7 +46,7 @@ interface ModuleCatalogEntry {
   description: string;
   icon: typeof UsersRound;
   accessModule: PortalModuleId;
-  tone: "berry" | "teal";
+  tone: "berry" | "teal" | "blue";
 }
 
 const moduleCatalog: ModuleCatalogEntry[] = [
@@ -66,6 +67,15 @@ const moduleCatalog: ModuleCatalogEntry[] = [
     icon: MonitorCog,
     accessModule: "edv",
     tone: "teal"
+  },
+  {
+    id: "kfz",
+    title: "KFZ",
+    tag: "Fuhrpark",
+    description: "Fahrzeuge, Wartungen, Standorte und Dokumente zentral verwalten.",
+    icon: Truck,
+    accessModule: "kfz",
+    tone: "blue"
   }
 ];
 

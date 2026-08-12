@@ -49,7 +49,7 @@ export type PortalSessionState =
   | "access_denied"
   | "configuration_required";
 
-export type PortalModuleId = "privatschwestern" | "edv";
+export type PortalModuleId = "privatschwestern" | "edv" | "kfz";
 
 export interface PortalSession {
   configured: boolean;
