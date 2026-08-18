@@ -361,9 +361,7 @@ fn automatic_password_backup_path(app: &AppHandle) -> Result<std::path::PathBuf,
     Ok(crate::automatic_backup_dir(app)?.join(AUTOMATIC_PASSWORD_BACKUP_LATEST))
 }
 
-fn automatic_password_backup_app_data_path(
-    app: &AppHandle,
-) -> Result<std::path::PathBuf, String> {
+fn automatic_password_backup_app_data_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(crate::automatic_backup_app_data_dir(app)?.join(AUTOMATIC_PASSWORD_BACKUP_LATEST))
 }
 
@@ -594,10 +592,7 @@ pub(crate) fn write_automatic_password_backup(
     let merged = merge_automatic_password_backup(previous, current)?;
     let json = serde_json::to_string_pretty(&merged).map_err(|error| error.to_string())?;
     crate::replace_json_file(&latest_path, &json)?;
-    crate::replace_json_file(
-        &automatic_password_backup_app_data_path(&app)?,
-        &json,
-    )?;
+    crate::replace_json_file(&automatic_password_backup_app_data_path(&app)?, &json)?;
 
     if snapshot {
         let snapshots = directory.join("Snapshots");

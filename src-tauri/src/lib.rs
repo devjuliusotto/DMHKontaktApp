@@ -711,9 +711,8 @@ pub(crate) fn automatic_backup_app_data_dir(app: &AppHandle) -> Result<PathBuf, 
         .app_data_dir()
         .map_err(|error| format!("AppData-Ordner konnte nicht ermittelt werden: {error}"))?;
     let directory = app_data.join("backups");
-    fs::create_dir_all(&directory).map_err(|error| {
-        format!("AppData-Backup-Ordner konnte nicht erstellt werden: {error}")
-    })?;
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("AppData-Backup-Ordner konnte nicht erstellt werden: {error}"))?;
     Ok(directory)
 }
 
@@ -937,10 +936,7 @@ fn write_automatic_backup(
     let merged = merge_automatic_backup(previous, current)?;
     let json = serde_json::to_string_pretty(&merged).map_err(|error| error.to_string())?;
     replace_json_file(&latest_path, &json)?;
-    replace_json_file(
-        &app_data_directory.join(AUTOMATIC_BACKUP_LATEST),
-        &json,
-    )?;
+    replace_json_file(&app_data_directory.join(AUTOMATIC_BACKUP_LATEST), &json)?;
 
     if snapshot {
         let snapshots = directory.join("Snapshots");
@@ -1631,7 +1627,7 @@ fn restore_automatic_backup(
     let content = fs::read_to_string(&latest_path)
         .or_else(|_| fs::read_to_string(&app_data_latest_path))
         .map_err(|error| {
-        format!("Die automatische Sicherung konnte nicht gelesen werden: {error}")
+            format!("Die automatische Sicherung konnte nicht gelesen werden: {error}")
         })?;
     let backup = serde_json::from_str::<BackupData>(&content).map_err(|error| {
         format!(
@@ -2226,11 +2222,7 @@ fn outlook_store_name(record: &OutlookContactRecord) -> String {
 
 fn original_outlook_folder_name(folder_path: &str) -> String {
     let trimmed = folder_path.trim().trim_end_matches(['\\', '/']);
-    let folder_name = trimmed
-        .rsplit(['\\', '/'])
-        .next()
-        .unwrap_or(trimmed)
-        .trim();
+    let folder_name = trimmed.rsplit(['\\', '/']).next().unwrap_or(trimmed).trim();
     if folder_name.is_empty() {
         "Kontakte".to_string()
     } else {

@@ -387,7 +387,9 @@ async fn graph_json(access_token: &str, url: &str) -> Result<Value, String> {
         .bearer_auth(access_token)
         .send()
         .await
-        .map_err(|_| "Microsoft Graph ist derzeit nicht erreichbar. Internetverbindung prüfen.".to_string())?;
+        .map_err(|_| {
+            "Microsoft Graph ist derzeit nicht erreichbar. Internetverbindung prüfen.".to_string()
+        })?;
     if !response.status().is_success() {
         return Err(format!(
             "Microsoft Graph konnte die Synchronisierungsquellen nicht lesen (HTTP {}).",
@@ -400,10 +402,7 @@ async fn graph_json(access_token: &str, url: &str) -> Result<Value, String> {
     })
 }
 
-async fn graph_collection(
-    access_token: &str,
-    url: &str,
-) -> Result<Vec<Value>, String> {
+async fn graph_collection(access_token: &str, url: &str) -> Result<Vec<Value>, String> {
     let mut next_url = Some(url.to_string());
     let mut values = Vec::new();
     while let Some(current_url) = next_url.take() {
@@ -435,7 +434,10 @@ fn sync_source(value: &Value, kind: &str, shared: bool) -> Option<Microsoft365Sy
         id: id.to_string(),
         name,
         kind: kind.to_string(),
-        editable: value.get("canEdit").and_then(Value::as_bool).unwrap_or(true),
+        editable: value
+            .get("canEdit")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
         shared,
     })
 }
@@ -465,8 +467,13 @@ pub async fn list_m365_sync_sources(app: AppHandle) -> Result<Microsoft365SyncSo
         .filter_map(|value| sync_source(value, "calendar", false))
         .collect();
     for group in calendar_groups {
-        let Some(group_id) = group.get("id").and_then(Value::as_str) else { continue };
-        let group_name = group.get("name").and_then(Value::as_str).unwrap_or("Freigegeben");
+        let Some(group_id) = group.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let group_name = group
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("Freigegeben");
         let url = format!(
             "https://graph.microsoft.com/v1.0/me/calendarGroups/{group_id}/calendars?$select=id,name,canEdit,owner&$top=100"
         );
@@ -553,7 +560,11 @@ fn remote_event_key(value: &Value) -> String {
 }
 
 fn local_event_key(event: &crate::CalendarEvent) -> String {
-    format!("{}|{}", event.title.trim().to_lowercase(), event.starts_at.trim())
+    format!(
+        "{}|{}",
+        event.title.trim().to_lowercase(),
+        event.starts_at.trim()
+    )
 }
 
 fn add_preview_change(
@@ -603,28 +614,62 @@ pub async fn preview_m365_sync(
                 remote_contact_values.extend(values);
             }
         }
-        let remote_keys: HashSet<String> = remote_contact_values.iter().map(normalized_contact_key).collect();
-        let local_keys: HashSet<String> = request.backup.contacts.iter().filter(|contact| contact.deleted_at.is_none()).map(local_contact_key).collect();
+        let remote_keys: HashSet<String> = remote_contact_values
+            .iter()
+            .map(normalized_contact_key)
+            .collect();
+        let local_keys: HashSet<String> = request
+            .backup
+            .contacts
+            .iter()
+            .filter(|contact| contact.deleted_at.is_none())
+            .map(local_contact_key)
+            .collect();
         remote_contacts = remote_keys.len();
-        for contact in request.backup.contacts.iter().filter(|contact| contact.deleted_at.is_none()) {
+        for contact in request
+            .backup
+            .contacts
+            .iter()
+            .filter(|contact| contact.deleted_at.is_none())
+        {
             if !remote_keys.contains(&local_contact_key(contact)) {
                 if request.direction != "import" {
                     create_in_m365 += 1;
-                    add_preview_change(&mut changes, "Kontakt", "export", contact.display_name.clone(), "Wird in Microsoft 365 angelegt.");
+                    add_preview_change(
+                        &mut changes,
+                        "Kontakt",
+                        "export",
+                        contact.display_name.clone(),
+                        "Wird in Microsoft 365 angelegt.",
+                    );
                 }
             }
         }
         for value in &remote_contact_values {
-            if !local_keys.contains(&normalized_contact_key(value)) && request.direction != "export" {
+            if !local_keys.contains(&normalized_contact_key(value)) && request.direction != "export"
+            {
                 import_to_app += 1;
-                add_preview_change(&mut changes, "Kontakt", "import", value.get("displayName").and_then(Value::as_str).unwrap_or("Ohne Namen"), "Wird in der App angelegt.");
+                add_preview_change(
+                    &mut changes,
+                    "Kontakt",
+                    "import",
+                    value
+                        .get("displayName")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Ohne Namen"),
+                    "Wird in der App angelegt.",
+                );
             }
         }
     }
 
     if request.calendars {
         let local_events = local_calendar_events(&request.backup);
-        let local_keys: HashSet<String> = local_events.iter().filter(|event| event.deleted_at.is_none()).map(local_event_key).collect();
+        let local_keys: HashSet<String> = local_events
+            .iter()
+            .filter(|event| event.deleted_at.is_none())
+            .map(local_event_key)
+            .collect();
         for calendar in &sources.calendars {
             if calendar.shared {
                 if request.shared_calendars {
@@ -642,15 +687,33 @@ pub async fn preview_m365_sync(
             remote_events += values.len();
             let remote_keys: HashSet<String> = values.iter().map(remote_event_key).collect();
             for event in &local_events {
-                if event.deleted_at.is_none() && !remote_keys.contains(&local_event_key(event)) && request.direction != "import" {
+                if event.deleted_at.is_none()
+                    && !remote_keys.contains(&local_event_key(event))
+                    && request.direction != "import"
+                {
                     create_in_m365 += 1;
-                    add_preview_change(&mut changes, "Kalender", "export", event.title.clone(), "Wird in Microsoft 365 angelegt.");
+                    add_preview_change(
+                        &mut changes,
+                        "Kalender",
+                        "export",
+                        event.title.clone(),
+                        "Wird in Microsoft 365 angelegt.",
+                    );
                 }
             }
             for value in &values {
                 if !local_keys.contains(&remote_event_key(value)) && request.direction != "export" {
                     import_to_app += 1;
-                    add_preview_change(&mut changes, "Kalender", "import", value.get("subject").and_then(Value::as_str).unwrap_or("Ohne Titel"), format!("Wird aus {} in die App übernommen.", calendar.name));
+                    add_preview_change(
+                        &mut changes,
+                        "Kalender",
+                        "import",
+                        value
+                            .get("subject")
+                            .and_then(Value::as_str)
+                            .unwrap_or("Ohne Titel"),
+                        format!("Wird aus {} in die App übernommen.", calendar.name),
+                    );
                 }
             }
         }
@@ -661,14 +724,26 @@ pub async fn preview_m365_sync(
     }
 
     Ok(Microsoft365SyncPreview {
-        local_contacts: request.backup.contacts.iter().filter(|contact| contact.deleted_at.is_none()).count(),
+        local_contacts: request
+            .backup
+            .contacts
+            .iter()
+            .filter(|contact| contact.deleted_at.is_none())
+            .count(),
         remote_contacts,
-        local_events: local_calendar_events(&request.backup).iter().filter(|event| event.deleted_at.is_none()).count(),
+        local_events: local_calendar_events(&request.backup)
+            .iter()
+            .filter(|event| event.deleted_at.is_none())
+            .count(),
         remote_events,
         create_in_m365,
         import_to_app,
         conflicts,
-        shared_sources_skipped: sources.calendars.iter().filter(|source| source.shared).count(),
+        shared_sources_skipped: sources
+            .calendars
+            .iter()
+            .filter(|source| source.shared)
+            .count(),
         changes,
     })
 }
