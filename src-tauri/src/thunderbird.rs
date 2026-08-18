@@ -764,7 +764,10 @@ pub fn import_thunderbird_contacts_once(
     let mut skipped_invalid = 0usize;
 
     for book in books {
-        let book_group_name = format!("Thunderbird – {}", book.name);
+        // Use the original Thunderbird address-book name as the local group name.
+        // The source remains available in the description, but should not be shown
+        // as a technical prefix to users.
+        let book_group_name = book.name.trim().to_string();
         let book_group_id = ensure_group(
             &tx,
             &mut groups,
@@ -777,7 +780,7 @@ pub fn import_thunderbird_contacts_once(
         )?;
         let mut list_group_ids = HashMap::new();
         for (list_id, list_name) in &book.lists {
-            let group_name = format!("{book_group_name} / {list_name}");
+            let group_name = list_name.trim().to_string();
             let id = ensure_group(
                 &tx,
                 &mut groups,

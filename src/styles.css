@@ -995,7 +995,8 @@ td input[type="checkbox"] {
 .contacts-page .group-create input,
 .contacts-page .group-create button,
 .contacts-page .group-filter,
-.contacts-page .group-drop > button {
+.contacts-page .group-drop > button,
+.contacts-page .group-actions button {
   min-height: 36px;
   padding: 0.35rem 0.55rem;
 }
@@ -1018,7 +1019,11 @@ td input[type="checkbox"] {
 }
 
 .group-filter {
+  min-width: 0;
   justify-content: flex-start;
+  overflow-wrap: anywhere;
+  text-align: left;
+  white-space: normal;
 }
 
 .group-filter.active,
@@ -1033,8 +1038,19 @@ td input[type="checkbox"] {
   align-items: stretch;
   display: grid;
   gap: 0.4rem;
-  grid-template-columns: minmax(0, 1fr) auto auto auto auto;
+  grid-template-columns: minmax(0, 1fr);
   margin-top: 0.45rem;
+}
+
+.group-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  justify-content: flex-end;
+}
+
+.group-actions button {
+  flex: 0 0 auto;
 }
 
 .group-drop:hover {
@@ -1876,6 +1892,7 @@ table {
 .contacts-page .group-create button,
 .contacts-page .group-filter,
 .contacts-page .group-drop > button,
+.contacts-page .group-actions button,
 .contacts-page .bulk-add-row,
 .contacts-page .email-app-dialog,
 .contacts-page .contact-form,
@@ -2446,7 +2463,7 @@ td small {
 }
 
 .settings-page {
-  max-width: 980px;
+  max-width: 1160px;
 }
 
 .m365-page {
@@ -2758,6 +2775,122 @@ td small {
 .settings-undo-import:not(:disabled):hover {
   background: var(--soft);
   color: var(--primary-dark);
+}
+
+.simple-import-page {
+  max-width: 1160px;
+}
+
+.simple-import-source-list {
+  display: grid;
+  gap: 1rem;
+}
+
+.simple-import-source-card {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.simple-import-source-card > header {
+  align-items: center;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 0.8rem;
+  padding: 0.95rem 1rem;
+}
+
+.simple-import-source-card > header h3,
+.simple-import-source-card > header p,
+.simple-import-data-card h4,
+.simple-import-data-card p,
+.simple-import-data-card small {
+  margin: 0;
+}
+
+.simple-import-source-card > header p,
+.simple-import-data-card p,
+.simple-import-data-card small {
+  color: var(--accent);
+  line-height: 1.4;
+}
+
+.simple-import-source-card > header p {
+  font-size: 0.88rem;
+  margin-top: 0.15rem;
+}
+
+.simple-import-source-icon {
+  align-items: center;
+  background: var(--soft);
+  border-radius: 9px;
+  color: var(--primary);
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 42px;
+  justify-content: center;
+  width: 42px;
+}
+
+.simple-import-data-grid {
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 1rem;
+}
+
+.simple-import-data-card {
+  align-items: start;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 0.9rem;
+}
+
+.simple-import-data-card > svg {
+  color: var(--primary);
+  margin-top: 0.1rem;
+}
+
+.simple-import-data-card h4 {
+  font-size: 1rem;
+}
+
+.simple-import-data-card p {
+  font-size: 0.88rem;
+  margin-top: 0.22rem;
+}
+
+.simple-import-data-card small {
+  display: block;
+  font-size: 0.78rem;
+  margin-top: 0.28rem;
+}
+
+.simple-import-data-card .settings-action-button {
+  grid-column: 1 / -1;
+  justify-content: center;
+  min-height: 42px;
+  padding: 0.55rem 0.7rem;
+  text-align: center;
+  width: 100%;
+}
+
+.simple-import-undo {
+  border-top: 1px solid var(--border);
+  padding: 0.15rem 0.8rem 0.35rem;
+}
+
+.simple-import-note {
+  color: var(--accent);
+  font-size: 0.84rem;
+  line-height: 1.45;
+  margin: 0.85rem 0 0;
 }
 
 .outlook-import-backdrop {
@@ -4512,5 +4645,734 @@ td small {
 @media (max-width: 680px) {
   .appearance-options {
     grid-template-columns: 1fr;
+  }
+}
+
+/* Settings use a compact application rail plus a dedicated vertical section rail. */
+.settings-app-shell {
+  grid-template-columns: 72px 240px minmax(0, 1fr);
+}
+
+.settings-app-shell .sidebar.compact {
+  align-items: center;
+  padding: 1rem 0.6rem;
+  width: 72px;
+}
+
+.sidebar.compact .brand {
+  justify-content: center;
+  margin-bottom: 1.25rem;
+  width: 100%;
+}
+
+.sidebar.compact .brand-logo,
+.sidebar.compact .brand-mark {
+  height: 44px;
+  width: 44px;
+}
+
+.sidebar.compact .nav-list,
+.sidebar.compact .sidebar-footer {
+  width: 100%;
+}
+
+.sidebar.compact .nav-button {
+  justify-content: center;
+  min-height: 48px;
+  padding: 0.65rem 0.35rem;
+}
+
+.settings-app-shell > .settings-subtabs {
+  align-items: stretch;
+  background: var(--surface);
+  border-bottom: 0;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  height: 100vh;
+  margin: 0;
+  max-width: none;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 1.35rem 0.75rem;
+  position: sticky;
+  top: 0;
+  width: auto;
+}
+
+.settings-app-shell .settings-subtab {
+  border: 0;
+  border-left: 4px solid transparent;
+  border-radius: 9px;
+  justify-content: flex-start;
+  margin: 0;
+  min-height: 44px;
+  padding: 0.7rem 0.75rem;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.settings-app-shell .settings-subtab.active {
+  background: var(--soft);
+  border-left-color: var(--primary);
+  color: var(--primary-dark);
+}
+
+.settings-app-shell .settings-subtab:last-child {
+  border-top: 1px solid var(--border);
+  border-left-color: transparent;
+  border-radius: 0;
+  margin-top: auto;
+  padding-top: 1rem;
+}
+
+.settings-page-header {
+  margin-bottom: 0;
+}
+
+.settings-page-header h2 {
+  cursor: default;
+}
+
+.settings-search-shell {
+  display: grid;
+  gap: 0.5rem;
+  position: relative;
+}
+
+.settings-search-box {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--accent);
+  display: flex;
+  gap: 0.7rem;
+  padding: 0.1rem 0.9rem;
+}
+
+.settings-search-box:focus-within {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(192, 45, 111, 0.18);
+}
+
+.settings-search-box input {
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  min-height: 52px;
+  outline: 0;
+  padding: 0;
+  width: 100%;
+}
+
+.settings-search-box input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.settings-search-clear {
+  background: transparent;
+  border: 0;
+  min-height: 34px;
+  padding: 0.3rem;
+}
+
+.settings-search-results {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.2);
+  display: grid;
+  gap: 0.25rem;
+  max-height: 300px;
+  overflow: auto;
+  padding: 0.35rem;
+  position: absolute;
+  top: 3.5rem;
+  width: 100%;
+  z-index: 15;
+}
+
+.settings-search-result {
+  align-items: flex-start;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  display: grid;
+  gap: 0.15rem;
+  justify-content: flex-start;
+  padding: 0.65rem 0.75rem;
+  text-align: left;
+  width: 100%;
+}
+
+.settings-search-result.active,
+.settings-search-result:hover {
+  background: var(--soft);
+}
+
+.settings-search-result span {
+  color: var(--accent);
+  font-size: 0.85rem;
+}
+
+.settings-search-chips {
+  align-items: center;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  padding: 0.45rem 0.7rem;
+}
+
+.settings-search-chips > span {
+  color: var(--accent);
+  font-size: 0.85rem;
+  margin-right: 0.2rem;
+}
+
+.settings-search-chip {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 0.85rem;
+  gap: 0.35rem;
+  min-height: 34px;
+  padding: 0.35rem 0.7rem;
+}
+
+.settings-search-chip:hover {
+  border-color: var(--primary);
+}
+
+.settings-overview,
+.settings-detail-view {
+  display: grid;
+  gap: 1.2rem;
+}
+
+.settings-overview-section,
+.settings-danger-zone {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.settings-overview-section > h3,
+.settings-danger-zone > h3 {
+  font-size: 1.02rem;
+  margin: 0.2rem 0 0;
+}
+
+.settings-overview-card {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  padding: 1rem 1.1rem;
+}
+
+.settings-overview-card h3,
+.settings-overview-card p {
+  margin: 0;
+}
+
+.settings-overview-card p,
+.settings-overview-card .settings-state {
+  color: var(--accent);
+  margin-top: 0.25rem;
+}
+
+.settings-overview-icon {
+  align-items: center;
+  background: var(--soft);
+  border-radius: 10px;
+  color: var(--primary);
+  display: inline-flex;
+  height: 52px;
+  justify-content: center;
+  width: 52px;
+}
+
+.settings-overview-card > button:not(.primary) {
+  background: transparent;
+  border-color: var(--border);
+  min-width: 120px;
+}
+
+.settings-danger-zone > h3 {
+  color: var(--danger-text);
+}
+
+@media (max-width: 1100px) {
+  .settings-app-shell {
+    display: grid;
+    grid-template-columns: 68px 210px minmax(0, 1fr);
+  }
+
+  .settings-app-shell > .sidebar.compact,
+  .settings-app-shell > .settings-subtabs {
+    height: 100vh;
+    position: sticky;
+    top: 0;
+  }
+
+  .settings-app-shell .content {
+    padding: 0.9rem;
+  }
+
+  .settings-overview-card {
+    align-items: stretch;
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .settings-overview-card > button {
+    grid-column: 2;
+    justify-self: start;
+  }
+}
+
+@media (max-width: 680px) {
+  .settings-app-shell {
+    grid-template-columns: 58px 176px minmax(0, 1fr);
+  }
+
+  .settings-app-shell .sidebar.compact {
+    padding-left: 0.35rem;
+    padding-right: 0.35rem;
+    width: 58px;
+  }
+
+  .settings-app-shell > .settings-subtabs {
+    padding-left: 0.45rem;
+    padding-right: 0.45rem;
+  }
+
+  .settings-app-shell .settings-subtab {
+    font-size: 0.85rem;
+    padding-left: 0.55rem;
+    padding-right: 0.35rem;
+  }
+
+  .settings-overview-card {
+    padding: 0.85rem;
+  }
+
+  .settings-search-chips > span {
+    flex-basis: 100%;
+  }
+}
+
+.synchronizations-page {
+  max-width: 1160px;
+}
+
+.synchronization-intro-card,
+.synchronization-card,
+.synchronization-settings-card,
+.synchronization-options-card,
+.synchronization-safety-card,
+.synchronization-import-card {
+  align-items: center;
+  display: grid;
+  gap: 1rem;
+  padding: 1rem 1.1rem;
+}
+
+.synchronization-intro-card {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.synchronization-intro-card h3,
+.synchronization-intro-card p,
+.synchronization-settings-card h3,
+.synchronization-settings-card p,
+.synchronization-options-card h3 {
+  margin: 0;
+}
+
+.synchronization-icon {
+  align-items: center;
+  background: var(--soft);
+  border-radius: 10px;
+  color: var(--primary);
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 52px;
+  justify-content: center;
+  width: 52px;
+}
+
+.synchronization-icon.microsoft {
+  background: rgba(43, 108, 176, 0.16);
+  color: #4d9de0;
+}
+
+.synchronization-intro-card h3,
+.synchronization-intro-card p,
+.synchronization-card h3,
+.synchronization-card p,
+.synchronization-capability-card h3,
+.synchronization-capability-card p,
+.synchronization-safety-card h3,
+.synchronization-safety-card p,
+.synchronization-import-card h3,
+.synchronization-import-card p {
+  margin: 0;
+}
+
+.synchronization-intro-card p,
+.synchronization-card p,
+.synchronization-capability-card p,
+.synchronization-safety-card p,
+.synchronization-import-card p {
+  color: var(--accent);
+  line-height: 1.45;
+  margin-top: 0.25rem;
+}
+
+.synchronization-section {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.synchronization-section-heading {
+  align-items: flex-start;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.synchronization-section-heading p,
+.synchronization-choice-grid small {
+  color: var(--accent);
+  display: block;
+  line-height: 1.4;
+  margin: 0.25rem 0 0;
+}
+
+.synchronization-toggle,
+.synchronization-choice-grid label,
+.synchronization-check-grid label {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.synchronization-toggle {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 0.45rem;
+  font-weight: 800;
+}
+
+.synchronization-choice-grid {
+  display: grid;
+  gap: 0.9rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 1rem;
+}
+
+.synchronization-choice-grid label > span {
+  font-weight: 800;
+}
+
+.synchronization-flow-preview {
+  align-items: center;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  display: flex;
+  gap: 0.8rem;
+  margin-top: 1rem;
+  padding: 0.75rem;
+}
+
+.synchronization-flow-preview strong {
+  color: var(--primary);
+  font-size: 1.35rem;
+}
+
+.synchronization-flow-preview small {
+  color: var(--accent);
+  margin-left: auto;
+}
+
+.synchronization-section > h3 {
+  font-size: 1.02rem;
+  margin: 0.2rem 0 0;
+}
+
+.synchronization-card {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.synchronization-provider-grid {
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.synchronization-provider-card {
+  align-items: center;
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  padding: 0.8rem;
+}
+
+.synchronization-provider-card > svg {
+  color: var(--primary);
+}
+
+.synchronization-provider-card span {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.synchronization-provider-card small {
+  color: var(--accent);
+}
+
+.synchronization-card-copy {
+  min-width: 0;
+}
+
+.synchronization-state {
+  align-items: center;
+  color: var(--accent);
+  display: inline-flex;
+  font-size: 0.88rem;
+  gap: 0.35rem;
+  margin-top: 0.45rem;
+}
+
+.synchronization-state.connected {
+  color: var(--success-text);
+}
+
+.synchronization-card-actions {
+  align-items: flex-end;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.synchronization-card-actions button,
+.synchronization-safety-card button,
+.synchronization-import-card button {
+  background: transparent;
+  border-color: var(--border);
+  min-width: 150px;
+}
+
+.synchronization-source-summary {
+  align-items: center;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+  padding: 0.75rem 0.9rem;
+}
+
+.synchronization-source-summary span {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--accent);
+  padding: 0.25rem 0.55rem;
+}
+
+.synchronization-source-summary small {
+  color: var(--accent);
+  flex-basis: 100%;
+}
+
+.synchronization-preview-card {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--primary);
+  border-radius: 9px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+  padding: 0.85rem 0.95rem;
+}
+
+.synchronization-preview-card > span {
+  background: var(--soft);
+  border-radius: 999px;
+  color: var(--primary-dark);
+  font-weight: 800;
+  padding: 0.3rem 0.6rem;
+}
+
+.synchronization-preview-card > small {
+  color: var(--accent);
+  flex-basis: 100%;
+}
+
+.synchronization-preview-card details {
+  border-top: 1px solid var(--border);
+  flex-basis: 100%;
+  padding-top: 0.65rem;
+}
+
+.synchronization-preview-card summary {
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.synchronization-preview-card ul {
+  display: grid;
+  gap: 0.4rem;
+  list-style: none;
+  margin: 0.65rem 0 0;
+  padding: 0;
+}
+
+.synchronization-preview-card li {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.synchronization-preview-card li span {
+  color: var(--accent);
+  font-size: 0.88rem;
+}
+
+.synchronization-status {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 0.78rem;
+  font-weight: 800;
+  padding: 0.25rem 0.55rem;
+  white-space: nowrap;
+}
+
+.synchronization-status.planned {
+  background: var(--soft);
+  color: var(--primary-dark);
+}
+
+.synchronization-status.local {
+  background: var(--surface-alt);
+  color: var(--accent);
+}
+
+.synchronization-capabilities {
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.synchronization-capability-card {
+  align-items: flex-start;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.synchronization-capability-card span {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.synchronization-capability-card small {
+  color: var(--accent);
+}
+
+.synchronization-capability-card input {
+  align-self: center;
+  grid-column: 3;
+  grid-row: 1;
+}
+
+.synchronization-options-card h3 {
+  margin-bottom: 0.8rem;
+}
+
+.synchronization-check-grid {
+  display: grid;
+  gap: 0.7rem 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.synchronization-capability-card > svg {
+  color: var(--primary);
+}
+
+.synchronization-capability-card .synchronization-status {
+  grid-column: 2;
+  justify-self: start;
+}
+
+.synchronization-safety-card,
+.synchronization-import-card {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.synchronization-safety-card > svg,
+.synchronization-import-card > svg {
+  color: var(--primary);
+}
+
+@media (max-width: 900px) {
+  .synchronization-capabilities {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 680px) {
+  .synchronization-intro-card,
+  .synchronization-card,
+  .synchronization-settings-card,
+  .synchronization-options-card,
+  .synchronization-safety-card,
+  .synchronization-import-card {
+    align-items: stretch;
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .synchronization-intro-card > .synchronization-status,
+  .synchronization-settings-card .synchronization-toggle,
+  .synchronization-card-actions,
+  .synchronization-safety-card > button,
+  .synchronization-import-card > button {
+    grid-column: 2;
+  }
+
+  .synchronization-card-actions {
+    align-items: stretch;
+  }
+
+  .synchronization-card-actions button,
+  .synchronization-safety-card button,
+  .synchronization-import-card button {
+    width: 100%;
+  }
+
+  .synchronization-choice-grid,
+  .synchronization-check-grid,
+  .synchronization-provider-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .synchronization-flow-preview {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .synchronization-flow-preview small {
+    flex-basis: 100%;
+    margin-left: 0;
   }
 }

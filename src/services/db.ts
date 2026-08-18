@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { CalendarEvent, OutlookOneTimeCalendarImportResult, ThunderbirdCalendarImportResult } from "../types/calendar";
 import type {
   BackupData,
+  AutomaticBackupRestoreResult,
   Contact,
   ContactInput,
   Group,
@@ -27,7 +28,9 @@ import type {
 import type {
   Microsoft365ConnectionStatus,
   Microsoft365DeviceCode,
-  Microsoft365PollResult
+  Microsoft365PollResult,
+  Microsoft365SyncPreview,
+  Microsoft365SyncSources
 } from "../types/m365";
 
 export function listContacts(search = "", groupId?: number): Promise<Contact[]> {
@@ -88,6 +91,18 @@ export function getBackupData(): Promise<BackupData> {
 
 export function restoreBackup(backup: BackupData): Promise<void> {
   return invoke("restore_backup", { backup });
+}
+
+export function createAutomaticBackup(backup: BackupData, snapshot = false): Promise<void> {
+  return invoke("create_automatic_backup", { backup, snapshot });
+}
+
+export function createAutomaticPasswordBackup(snapshot = false): Promise<void> {
+  return invoke("create_automatic_password_backup", { snapshot });
+}
+
+export function restoreAutomaticBackup(authorization: string): Promise<AutomaticBackupRestoreResult> {
+  return invoke("restore_automatic_backup", { authorization });
 }
 
 export function writeExportFile(path: string, content: string): Promise<void> {
@@ -160,6 +175,21 @@ export function testMicrosoft365Connection(): Promise<Microsoft365ConnectionStat
 
 export function disconnectMicrosoft365Account(): Promise<void> {
   return invoke("disconnect_m365_account");
+}
+
+export function listMicrosoft365SyncSources(): Promise<Microsoft365SyncSources> {
+  return invoke("list_m365_sync_sources");
+}
+
+export function previewMicrosoft365Sync(request: {
+  direction: string;
+  base: string;
+  contacts: boolean;
+  calendars: boolean;
+  sharedCalendars: boolean;
+  backup: BackupData;
+}): Promise<Microsoft365SyncPreview> {
+  return invoke("preview_m365_sync", { request });
 }
 
 export function importOutlookStore(path: string): Promise<{ contacts: ContactInput[]; events: CalendarEvent[] }> {

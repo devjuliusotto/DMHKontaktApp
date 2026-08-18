@@ -157,55 +157,91 @@ export function SimpleImportPage() {
       <header className="page-header">
         <div>
           <h2>Einfach importieren</h2>
-          <p>Kontakte und Termine mit wenigen Schritten aus Outlook übernehmen.</p>
+          <p>Wählen Sie zuerst die Quelle und danach den Datenbereich aus.</p>
         </div>
       </header>
 
       <StatusMessage message={message} type={messageType} />
 
-      <section className="form-panel settings-task-panel">
-        <div className="settings-task-heading">
-          <Download size={25} aria-hidden="true" />
-          <div>
-            <h3>Einfach übernehmen</h3>
-            <p>Einmalig kopieren. Outlook und Thunderbird bleiben unverändert.</p>
+      <div className="simple-import-source-list">
+        <section className="simple-import-source-card">
+          <header>
+            <span className="simple-import-source-icon"><Download size={23} aria-hidden="true" /></span>
+            <div>
+              <h3>Outlook</h3>
+              <p>Outlook Classic und neues Outlook</p>
+            </div>
+          </header>
+          <div className="simple-import-data-grid">
+            <article className="simple-import-data-card">
+              <UsersRound size={24} aria-hidden="true" />
+              <div>
+                <h4>Kontakte</h4>
+                <p>Kontakte aus Outlook prüfen und einmalig in die App übernehmen.</p>
+                <small>Quellen und mögliche Duplikate werden vorher angezeigt.</small>
+              </div>
+              <button className="settings-action-button" type="button" onClick={() => setContactImportDialogOpen(true)} disabled={busyAction !== null}>
+                Kontakte prüfen und importieren
+              </button>
+            </article>
+            <article className="simple-import-data-card">
+              {busyAction === "import-outlook-appointments-once" ? <LoaderCircle className="spin" size={24} aria-hidden="true" /> : <CalendarDays size={24} aria-hidden="true" />}
+              <div>
+                <h4>Kalender</h4>
+                <p>Termine aus allen erreichbaren Outlook-Kalendern übernehmen.</p>
+                <small>Einmalige Kopie aus Outlook Classic; Outlook bleibt unverändert.</small>
+              </div>
+              <button className="settings-action-button" type="button" onClick={importAppointmentsOnce} disabled={busyAction !== null}>
+                {busyAction === "import-outlook-appointments-once" ? "Kalender werden gelesen …" : "Outlook-Kalender importieren"}
+              </button>
+            </article>
           </div>
-        </div>
-        <div className="settings-action-grid">
-          <button className="settings-action-button" type="button" onClick={() => setContactImportDialogOpen(true)} disabled={busyAction !== null}>
-            <UsersRound size={25} />
-            <span>
-              <strong>Kontakte suchen und importieren</strong>
-              <small>Quellen und mögliche Duplikate vorher prüfen</small>
-            </span>
-          </button>
-          <button className="settings-action-button" type="button" onClick={importAppointmentsOnce} disabled={busyAction !== null}>
-            {busyAction === "import-outlook-appointments-once" ? <LoaderCircle className="spin" size={25} /> : <CalendarDays size={25} />}
-            <span>
-              <strong>{busyAction === "import-outlook-appointments-once" ? "Kalender werden gelesen …" : "Outlook-Termine importieren"}</strong>
-              <small>Aus allen Outlook-Kalendern</small>
-            </span>
-          </button>
-          <button className="settings-action-button" type="button" onClick={importThunderbirdContacts} disabled={busyAction !== null}>
-            {busyAction === "import-thunderbird-contacts" ? <LoaderCircle className="spin" size={25} /> : <Bird size={25} />}
-            <span>
-              <strong>{busyAction === "import-thunderbird-contacts" ? "Thunderbird wird gelesen …" : "Thunderbird-Kontakte importieren"}</strong>
-              <small>Adressbücher und Listen automatisch als Gruppen übernehmen</small>
-            </span>
-          </button>
-          <button className="settings-action-button" type="button" onClick={importThunderbirdCalendars} disabled={busyAction !== null}>
-            {busyAction === "import-thunderbird-calendars" ? <LoaderCircle className="spin" size={25} /> : <CalendarRange size={25} />}
-            <span>
-              <strong>{busyAction === "import-thunderbird-calendars" ? "Thunderbird-Kalender werden gelesen …" : "Thunderbird-Kalender importieren"}</strong>
-              <small>Alle Kalender, Terminserien und Ausnahmen übernehmen</small>
-            </span>
-          </button>
-        </div>
-        <button className="settings-undo-import" type="button" onClick={undoOutlookContactImport} disabled={busyAction !== null}>
-          {busyAction === "undo-outlook-contact-import" ? <LoaderCircle className="spin" size={17} /> : <Undo2 size={17} />}
-          Letzten Outlook-Kontaktimport rückgängig machen
-        </button>
-      </section>
+          <div className="simple-import-undo">
+            <button className="settings-undo-import" type="button" onClick={undoOutlookContactImport} disabled={busyAction !== null}>
+              {busyAction === "undo-outlook-contact-import" ? <LoaderCircle className="spin" size={17} /> : <Undo2 size={17} />}
+              Letzten Outlook-Kontaktimport rückgängig machen
+            </button>
+          </div>
+        </section>
+
+        <section className="simple-import-source-card">
+          <header>
+            <span className="simple-import-source-icon"><Bird size={23} aria-hidden="true" /></span>
+            <div>
+              <h3>Thunderbird</h3>
+              <p>Das aktive lokale Thunderbird-Profil</p>
+            </div>
+          </header>
+          <div className="simple-import-data-grid">
+            <article className="simple-import-data-card">
+              {busyAction === "import-thunderbird-contacts" ? <LoaderCircle className="spin" size={24} aria-hidden="true" /> : <UsersRound size={24} aria-hidden="true" />}
+              <div>
+                <h4>Kontakte</h4>
+                <p>Kontakte aus allen Thunderbird-Adressbüchern übernehmen.</p>
+                <small>Adressbücher und Verteilerlisten werden als Gruppen angelegt.</small>
+              </div>
+              <button className="settings-action-button" type="button" onClick={importThunderbirdContacts} disabled={busyAction !== null}>
+                {busyAction === "import-thunderbird-contacts" ? "Thunderbird wird gelesen …" : "Thunderbird-Kontakte importieren"}
+              </button>
+            </article>
+            <article className="simple-import-data-card">
+              {busyAction === "import-thunderbird-calendars" ? <LoaderCircle className="spin" size={24} aria-hidden="true" /> : <CalendarRange size={24} aria-hidden="true" />}
+              <div>
+                <h4>Kalender</h4>
+                <p>Termine aus allen Thunderbird-Kalendern übernehmen.</p>
+                <small>Kalender, Serien, Ausnahmen, Kategorien und Farben werden berücksichtigt.</small>
+              </div>
+              <button className="settings-action-button" type="button" onClick={importThunderbirdCalendars} disabled={busyAction !== null}>
+                {busyAction === "import-thunderbird-calendars" ? "Kalender werden gelesen …" : "Thunderbird-Kalender importieren"}
+              </button>
+            </article>
+          </div>
+        </section>
+      </div>
+
+      <p className="simple-import-note">
+        Alle Aktionen auf dieser Seite sind einmalige Übernahmen. Die Originaldaten in Outlook und Thunderbird werden nicht verändert und es wird keine Synchronisierung eingerichtet.
+      </p>
 
       <OutlookContactImportDialog
         open={contactImportDialogOpen}

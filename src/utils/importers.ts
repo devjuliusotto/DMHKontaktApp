@@ -1,5 +1,4 @@
 import Papa from "papaparse";
-import * as XLSX from "xlsx";
 import type { ContactInput } from "../types/contact";
 import { emptyContact } from "./contact";
 
@@ -228,7 +227,10 @@ export function parseCsv(text: string): ImportPreview {
   return createPreview(fallback);
 }
 
-export function parseXlsx(bytes: Uint8Array): ImportPreview {
+export async function parseXlsx(bytes: Uint8Array): Promise<ImportPreview> {
+  // XLSX is only needed for spreadsheet imports. Keep it out of the initial
+  // application bundle so normal startup and calendar/CSV imports stay small.
+  const XLSX = await import("xlsx");
   const workbook = XLSX.read(bytes, { type: "array" });
   const firstSheetName = workbook.SheetNames[0];
   if (!firstSheetName) return createPreview([]);

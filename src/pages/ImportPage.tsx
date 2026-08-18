@@ -105,7 +105,7 @@ export function ImportPage() {
         return;
       }
 
-      const result = lower.endsWith(".xlsx") ? parseXlsx(bytes) : parseCsvBytes(bytes);
+      const result = lower.endsWith(".xlsx") ? await parseXlsx(bytes) : parseCsvBytes(bytes);
       setPreview(result);
       setMessage(
         result.emailColumnMissing

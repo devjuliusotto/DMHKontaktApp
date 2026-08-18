@@ -5,3 +5,10 @@ outlook-profile-reader/target
 src-tauri/resources/*.exe
 *.log
 .DS_Store
+
+# O pacote distribuído é Windows-only; o Tauri usa somente este ícone.
+src-tauri/icons/android/
+src-tauri/icons/ios/
+src-tauri/icons/*.png
+src-tauri/icons/*.icns
+src-tauri/icons/*.ini

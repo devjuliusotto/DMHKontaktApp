@@ -41,6 +41,15 @@ export function BackupPage() {
             Kontakte, Gruppen, Kalender und Darstellung sichern oder wiederherstellen.
             Kennwörter und EDV-Übertragungsstatus werden nicht exportiert.
           </p>
+          <p>
+            Zusätzlich erstellt die App automatisch eine kumulative Sicherung in
+            <code>Dokumente\DMH Kontakte und Kalender\Automatische Sicherung</code>.
+            Diese Sicherung wird während der Nutzung regelmäßig und beim Schließen aktualisiert.
+            Gelöschte Kontakte, Termine und Kennworteinträge bleiben dort erhalten und werden mit
+            „Gelöschtes Element“ gekennzeichnet. Kennwörter werden dabei ausschließlich verschlüsselt
+            gespeichert. Die Wiederherstellung dieser automatischen Sicherung ist aus Sicherheitsgründen
+            nur verdeckt in den Einstellungen und zusammen mit der EDV möglich.
+          </p>
         </div>
       </header>
       <StatusMessage message={message} />

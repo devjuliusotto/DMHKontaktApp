@@ -20,7 +20,7 @@ DMH Kontakte und Kalender ist eine lokale Windows-Desktop-App zur einfachen Verw
 - Zeitlich begrenzte, einmalige Übergabe von IMAP-Zugangsdaten an die EDV nach ausdrücklicher Zustimmung
 - E-Mail und Telefonnummer kopieren
 - Kontaktliste drucken
-- Automatische lokale Sicherung beim Start
+- Automatische kumulative Sicherung während der Nutzung und beim Schließen
 
 ## Voraussetzungen für Entwickler
 
@@ -63,6 +63,14 @@ Die Installer-Dateien werden unter `src-tauri\target\release\bundle\` erstellt. 
 ## Datenspeicherung
 
 Die SQLite-Datenbank liegt im lokalen App-Datenverzeichnis von Windows. Die Anwendung legt die Datenbank und das Schema beim ersten Start automatisch an.
+
+Zusätzlich schreibt die Anwendung automatisch eine kumulative Sicherung außerhalb des internen App-Verzeichnisses nach:
+
+`Dokumente\DMH Kontakte und Kalender\Automatische Sicherung`
+
+Die Datei `DMH-Kontakte-Kalender-Auto-Backup.json` wird während der Nutzung regelmäßig und synchron vor dem Schließen aktualisiert. Beim Schließen wird außerdem ein unveränderlicher Snapshot unter `Snapshots` geschrieben. Kontakte und Gruppen, die im App-Datenbestand gelöscht oder durch einen vollständigen Reset entfernt wurden, bleiben in der automatischen Sicherung erhalten. Bei Kontakten wird `Gelöschtes Element` an die bisherigen Notizen angehängt; bei Kalenderterminen wird der Hinweis an die bisherige Beschreibung angehängt. Die Sicherung wird vom vollständigen Zurücksetzen der App nicht gelöscht. Das App-eigene Kennwortarchiv wird zusätzlich als `DMH-Kennwörter-Auto-Backup.enc.json` verschlüsselt und kumulativ gesichert; gelöschte Einträge erhalten den Hinweis in ihrer Beschreibung. Microsoft-365-Tokens, Credential-Manager-Referenzen und EDV-Übertragungsstatus werden weiterhin nicht archiviert.
+
+Die Wiederherstellung der automatischen Sicherung ist absichtlich nicht im normalen Sicherungsmenü sichtbar. Sie wird in den Einstellungen durch sieben Klicks auf `Allgemein` sichtbar und verlangt einen EDV-Freigabecode sowie eine zweite Bestätigung. Diese Wiederherstellung sollte ausschließlich gemeinsam mit der EDV im Büro durchgeführt werden. Die Kennwortdatei enthält keine Kennwörter im Klartext, sondern die vorhandenen verschlüsselten Tresoreinträge und einen an den Windows-Benutzer gebundenen DPAPI-Schlüsselschutz.
 
 ## Importhinweise
 

@@ -3,6 +3,8 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{Duration as ChronoDuration, Utc};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashSet;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 use zeroize::Zeroize;
@@ -12,7 +14,7 @@ const PROFILE_SETTING_KEY: &str = "m365_connection_profile_v1";
 const DPAPI_ENTROPY: &[u8] = b"de.dmh.agendakontakte.m365.v1";
 const GRAPH_PROFILE_URL: &str =
     "https://graph.microsoft.com/v1.0/me?$select=id,displayName,mail,userPrincipalName";
-const LOGIN_SCOPES: &str = "openid profile offline_access User.Read";
+const LOGIN_SCOPES: &str = "openid profile offline_access User.Read Contacts.ReadWrite Calendars.ReadWrite Calendars.Read.Shared";
 
 #[derive(Default)]
 pub struct Microsoft365Runtime {
@@ -59,6 +61,58 @@ pub struct Microsoft365PollResult {
     state: String,
     account: Option<Microsoft365Account>,
     interval_seconds: u64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Microsoft365SyncSource {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub editable: bool,
+    pub shared: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Microsoft365SyncSources {
+    pub contacts: Vec<Microsoft365SyncSource>,
+    pub calendars: Vec<Microsoft365SyncSource>,
+    pub shared_access_available: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Microsoft365SyncPreviewRequest {
+    pub direction: String,
+    pub base: String,
+    pub contacts: bool,
+    pub calendars: bool,
+    pub shared_calendars: bool,
+    pub backup: crate::BackupData,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Microsoft365SyncChange {
+    pub kind: String,
+    pub action: String,
+    pub title: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Microsoft365SyncPreview {
+    pub local_contacts: usize,
+    pub remote_contacts: usize,
+    pub local_events: usize,
+    pub remote_events: usize,
+    pub create_in_m365: usize,
+    pub import_to_app: usize,
+    pub conflicts: usize,
+    pub shared_sources_skipped: usize,
+    pub changes: Vec<Microsoft365SyncChange>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -297,6 +351,326 @@ async fn graph_profile(access_token: &str) -> Result<GraphProfile, String> {
         .json::<GraphProfile>()
         .await
         .map_err(|_| "Microsoft Graph hat ein ungültiges Kontoprofil geliefert.".to_string())
+}
+
+async fn refreshed_access_token(app: &AppHandle) -> Result<String, String> {
+    let client_id = client_id().ok_or_else(|| {
+        "Die EDV muss zuerst die Microsoft-Anwendungs-ID für diesen Build hinterlegen.".to_string()
+    })?;
+    let stored = read_token(app)?;
+    let token = request_token(&[
+        ("grant_type", "refresh_token"),
+        ("client_id", client_id),
+        ("refresh_token", &stored.refresh_token),
+        ("scope", LOGIN_SCOPES),
+    ])
+    .await
+    .map_err(|error| oauth_error_message(&error))?;
+    let refresh_token = token.refresh_token.unwrap_or(stored.refresh_token);
+    let account = read_account(app)?.ok_or_else(|| {
+        "Microsoft-365-Kontoprofil fehlt. Verbinden Sie das Konto erneut.".to_string()
+    })?;
+    save_connection(
+        app,
+        &account,
+        &StoredTokenBundle {
+            refresh_token,
+            scope: token.scope,
+        },
+    )?;
+    Ok(token.access_token)
+}
+
+async fn graph_json(access_token: &str, url: &str) -> Result<Value, String> {
+    let response = reqwest::Client::new()
+        .get(url)
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .map_err(|_| "Microsoft Graph ist derzeit nicht erreichbar. Internetverbindung prüfen.".to_string())?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Microsoft Graph konnte die Synchronisierungsquellen nicht lesen (HTTP {}).",
+            response.status().as_u16()
+        ));
+    }
+    response.json::<Value>().await.map_err(|_| {
+        "Microsoft Graph hat eine ungültige Antwort für die Synchronisierungsquellen geliefert."
+            .to_string()
+    })
+}
+
+async fn graph_collection(
+    access_token: &str,
+    url: &str,
+) -> Result<Vec<Value>, String> {
+    let mut next_url = Some(url.to_string());
+    let mut values = Vec::new();
+    while let Some(current_url) = next_url.take() {
+        let page = graph_json(access_token, &current_url).await?;
+        if let Some(items) = page.get("value").and_then(Value::as_array) {
+            values.extend(items.iter().cloned());
+        }
+        next_url = page
+            .get("@odata.nextLink")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+    }
+    Ok(values)
+}
+
+fn sync_source(value: &Value, kind: &str, shared: bool) -> Option<Microsoft365SyncSource> {
+    let id = value.get("id")?.as_str()?.trim();
+    if id.is_empty() {
+        return None;
+    }
+    let name = value
+        .get("displayName")
+        .or_else(|| value.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or("Ohne Namen")
+        .trim()
+        .to_string();
+    Some(Microsoft365SyncSource {
+        id: id.to_string(),
+        name,
+        kind: kind.to_string(),
+        editable: value.get("canEdit").and_then(Value::as_bool).unwrap_or(true),
+        shared,
+    })
+}
+
+#[tauri::command]
+pub async fn list_m365_sync_sources(app: AppHandle) -> Result<Microsoft365SyncSources, String> {
+    let access_token = refreshed_access_token(&app).await?;
+    let contact_folders = graph_collection(
+        &access_token,
+        "https://graph.microsoft.com/v1.0/me/contactFolders?$select=id,displayName,parentFolderId&$top=100",
+    )
+    .await?;
+    let calendars = graph_collection(
+        &access_token,
+        "https://graph.microsoft.com/v1.0/me/calendars?$select=id,name,canEdit,owner&$top=100",
+    )
+    .await?;
+    let calendar_groups = graph_collection(
+        &access_token,
+        "https://graph.microsoft.com/v1.0/me/calendarGroups?$select=id,name&$top=100",
+    )
+    .await
+    .unwrap_or_default();
+
+    let mut calendar_sources: Vec<Microsoft365SyncSource> = calendars
+        .iter()
+        .filter_map(|value| sync_source(value, "calendar", false))
+        .collect();
+    for group in calendar_groups {
+        let Some(group_id) = group.get("id").and_then(Value::as_str) else { continue };
+        let group_name = group.get("name").and_then(Value::as_str).unwrap_or("Freigegeben");
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/me/calendarGroups/{group_id}/calendars?$select=id,name,canEdit,owner&$top=100"
+        );
+        if let Ok(shared_calendars) = graph_collection(&access_token, &url).await {
+            calendar_sources.extend(shared_calendars.iter().filter_map(|value| {
+                let mut source = sync_source(value, "calendar", true)?;
+                source.name = format!("{group_name} · {}", source.name);
+                Some(source)
+            }));
+        }
+    }
+
+    Ok(Microsoft365SyncSources {
+        contacts: contact_folders
+            .iter()
+            .filter_map(|value| sync_source(value, "contactFolder", false))
+            .collect(),
+        calendars: calendar_sources,
+        shared_access_available: true,
+    })
+}
+
+fn normalized_contact_key(value: &Value) -> String {
+    let email = value
+        .get("emailAddresses")
+        .and_then(Value::as_array)
+        .and_then(|addresses| addresses.first())
+        .and_then(|address| address.get("address"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
+    if !email.is_empty() {
+        return format!("email:{email}");
+    }
+    let name = value
+        .get("displayName")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
+    format!("name:{name}")
+}
+
+fn local_contact_key(contact: &crate::Contact) -> String {
+    if !contact.email.trim().is_empty() {
+        return format!("email:{}", contact.email.trim().to_lowercase());
+    }
+    format!(
+        "name:{}",
+        if contact.display_name.trim().is_empty() {
+            format!("{} {}", contact.first_name, contact.last_name)
+        } else {
+            contact.display_name.clone()
+        }
+        .trim()
+        .to_lowercase()
+    )
+}
+
+fn local_calendar_events(backup: &crate::BackupData) -> Vec<crate::CalendarEvent> {
+    backup
+        .browser_storage
+        .get("agendakontakte.calendarEvents")
+        .and_then(|raw| serde_json::from_str::<Vec<crate::CalendarEvent>>(raw).ok())
+        .unwrap_or_default()
+}
+
+fn remote_event_key(value: &Value) -> String {
+    let subject = value
+        .get("subject")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
+    let start = value
+        .get("start")
+        .and_then(|start| start.get("dateTime"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    format!("{subject}|{start}")
+}
+
+fn local_event_key(event: &crate::CalendarEvent) -> String {
+    format!("{}|{}", event.title.trim().to_lowercase(), event.starts_at.trim())
+}
+
+fn add_preview_change(
+    changes: &mut Vec<Microsoft365SyncChange>,
+    kind: &str,
+    action: &str,
+    title: impl Into<String>,
+    detail: impl Into<String>,
+) {
+    if changes.len() >= 200 {
+        return;
+    }
+    changes.push(Microsoft365SyncChange {
+        kind: kind.to_string(),
+        action: action.to_string(),
+        title: title.into(),
+        detail: detail.into(),
+    });
+}
+
+#[tauri::command]
+pub async fn preview_m365_sync(
+    app: AppHandle,
+    request: Microsoft365SyncPreviewRequest,
+) -> Result<Microsoft365SyncPreview, String> {
+    let access_token = refreshed_access_token(&app).await?;
+    let sources = list_m365_sync_sources(app.clone()).await?;
+    let mut changes = Vec::new();
+    let mut create_in_m365 = 0usize;
+    let mut import_to_app = 0usize;
+    let mut conflicts = 0usize;
+    let mut remote_contacts = 0usize;
+    let mut remote_events = 0usize;
+
+    if request.contacts {
+        let mut remote_contact_values = graph_collection(
+            &access_token,
+            "https://graph.microsoft.com/v1.0/me/contacts?$select=id,displayName,emailAddresses,lastModifiedDateTime&$top=100",
+        )
+        .await?;
+        for folder in &sources.contacts {
+            let url = format!(
+                "https://graph.microsoft.com/v1.0/me/contactFolders/{}/contacts?$select=id,displayName,emailAddresses,lastModifiedDateTime&$top=100",
+                folder.id
+            );
+            if let Ok(values) = graph_collection(&access_token, &url).await {
+                remote_contact_values.extend(values);
+            }
+        }
+        let remote_keys: HashSet<String> = remote_contact_values.iter().map(normalized_contact_key).collect();
+        let local_keys: HashSet<String> = request.backup.contacts.iter().filter(|contact| contact.deleted_at.is_none()).map(local_contact_key).collect();
+        remote_contacts = remote_keys.len();
+        for contact in request.backup.contacts.iter().filter(|contact| contact.deleted_at.is_none()) {
+            if !remote_keys.contains(&local_contact_key(contact)) {
+                if request.direction != "import" {
+                    create_in_m365 += 1;
+                    add_preview_change(&mut changes, "Kontakt", "export", contact.display_name.clone(), "Wird in Microsoft 365 angelegt.");
+                }
+            }
+        }
+        for value in &remote_contact_values {
+            if !local_keys.contains(&normalized_contact_key(value)) && request.direction != "export" {
+                import_to_app += 1;
+                add_preview_change(&mut changes, "Kontakt", "import", value.get("displayName").and_then(Value::as_str).unwrap_or("Ohne Namen"), "Wird in der App angelegt.");
+            }
+        }
+    }
+
+    if request.calendars {
+        let local_events = local_calendar_events(&request.backup);
+        let local_keys: HashSet<String> = local_events.iter().filter(|event| event.deleted_at.is_none()).map(local_event_key).collect();
+        for calendar in &sources.calendars {
+            if calendar.shared {
+                if request.shared_calendars {
+                    // Shared calendar IDs need their owning calendar group path; they are
+                    // listed above and are intentionally reported as pending for the next
+                    // preview pass instead of being silently written to the wrong calendar.
+                }
+                continue;
+            }
+            let url = format!(
+                "https://graph.microsoft.com/v1.0/me/calendars/{}/events?$select=id,subject,start,end,lastModifiedDateTime,location,categories,attendees,onlineMeeting,recurrence&$top=100",
+                calendar.id
+            );
+            let values = graph_collection(&access_token, &url).await?;
+            remote_events += values.len();
+            let remote_keys: HashSet<String> = values.iter().map(remote_event_key).collect();
+            for event in &local_events {
+                if event.deleted_at.is_none() && !remote_keys.contains(&local_event_key(event)) && request.direction != "import" {
+                    create_in_m365 += 1;
+                    add_preview_change(&mut changes, "Kalender", "export", event.title.clone(), "Wird in Microsoft 365 angelegt.");
+                }
+            }
+            for value in &values {
+                if !local_keys.contains(&remote_event_key(value)) && request.direction != "export" {
+                    import_to_app += 1;
+                    add_preview_change(&mut changes, "Kalender", "import", value.get("subject").and_then(Value::as_str).unwrap_or("Ohne Titel"), format!("Wird aus {} in die App übernommen.", calendar.name));
+                }
+            }
+        }
+    }
+
+    if request.base == "m365" && request.direction == "bidirectional" {
+        conflicts = changes.len();
+    }
+
+    Ok(Microsoft365SyncPreview {
+        local_contacts: request.backup.contacts.iter().filter(|contact| contact.deleted_at.is_none()).count(),
+        remote_contacts,
+        local_events: local_calendar_events(&request.backup).iter().filter(|event| event.deleted_at.is_none()).count(),
+        remote_events,
+        create_in_m365,
+        import_to_app,
+        conflicts,
+        shared_sources_skipped: sources.calendars.iter().filter(|source| source.shared).count(),
+        changes,
+    })
 }
 
 fn account_from_profile(profile: GraphProfile) -> Microsoft365Account {
@@ -670,7 +1044,7 @@ mod tests {
     fn form_values_are_encoded_without_losing_scopes() {
         assert_eq!(
             form_body(&[("scope", LOGIN_SCOPES)]),
-            "scope=openid+profile+offline_access+User.Read"
+            "scope=openid+profile+offline_access+User.Read+Contacts.ReadWrite+Calendars.ReadWrite+Calendars.Read.Shared"
         );
     }
 

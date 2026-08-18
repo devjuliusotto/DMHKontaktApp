@@ -47,7 +47,7 @@ type ReviewFilter = "differences" | "all" | "new" | "duplicates" | "without-emai
 
 const pageSize = 50;
 const csvSourceId = "new-outlook-csv";
-const csvGroupName = "Outlook · Neues Outlook";
+const csvGroupName = "Neues Outlook";
 
 export function OutlookContactImportDialog({ open: isOpen, onClose, onImported }: OutlookContactImportDialogProps) {
   const [source, setSource] = useState<ImportSource>("choose");
@@ -436,7 +436,7 @@ export function OutlookContactImportDialog({ open: isOpen, onClose, onImported }
                   <h4>{selectedContacts.length} Kontakte importieren</h4>
                   <label className="outlook-group-option">
                     <input type="checkbox" checked={createSourceGroups} onChange={(event) => setCreateSourceGroups(event.target.checked)} />
-                    Automatisch nach Outlook-Konto gruppieren
+                    Automatisch nach Outlook-Ordner gruppieren
                   </label>
                 </div>
               </div>

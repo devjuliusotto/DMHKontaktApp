@@ -1,8 +1,9 @@
 import { LoaderCircle, RefreshCw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AppLockScreen } from "./components/AppLockScreen";
 import { Sidebar, type Page } from "./components/Sidebar";
-import { SettingsSubtabs } from "./components/SettingsSubtabs";
+import { SettingsSubtabs, type SettingsSection } from "./components/SettingsSubtabs";
 import { AdvancedSubtabs } from "./components/AdvancedSubtabs";
 import { ContactsPage } from "./pages/ContactsPage";
 import { ExportPage } from "./pages/ExportPage";
@@ -16,8 +17,10 @@ import { SimpleImportPage } from "./pages/SimpleImportPage";
 import { PasswordsPage } from "./pages/PasswordsPage";
 import { BackupPage } from "./pages/BackupPage";
 import { Microsoft365Page } from "./pages/Microsoft365Page";
-import { getVaultStatus } from "./services/db";
+import { SynchronizationsPage } from "./pages/SynchronizationsPage";
+import { createAutomaticBackup, createAutomaticPasswordBackup, getBackupData, getVaultStatus } from "./services/db";
 import type { VaultStatus } from "./types/vault";
+import { addBrowserDataToBackup } from "./utils/backup";
 
 const browserPreviewStatus: VaultStatus = {
   protectionEnabled: false,
@@ -33,9 +36,48 @@ export default function App() {
   const isAdminTest = import.meta.env.VITE_APP_CHANNEL === "admin-test";
   const sourceCommit = import.meta.env.VITE_SOURCE_COMMIT?.slice(0, 8);
   const [page, setPage] = useState<Page>("contacts");
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [vaultStatus, setVaultStatus] = useState<VaultStatus | null>(null);
   const [startupError, setStartupError] = useState("");
-  const settingsAreaOpen = page === "settings" || page === "appearance" || page === "simple-import" || page === "import" || page === "export" || page === "m365" || page === "trash" || page === "backup";
+  const automaticBackupPromise = useRef<Promise<void> | null>(null);
+  const closing = useRef(false);
+  const settingsAreaOpen = page === "settings" || page === "appearance" || page === "simple-import" || page === "import" || page === "export" || page === "m365" || page === "trash" || page === "backup" || page === "synchronizations";
+
+  const navigate = (nextPage: Page, nextSection?: SettingsSection) => {
+    setPage(nextPage);
+    if (nextSection) {
+      setSettingsSection(nextSection);
+      return;
+    }
+    if (nextPage === "settings") setSettingsSection("general");
+    else if (nextPage === "appearance") setSettingsSection("appearance");
+    else if (nextPage === "simple-import") setSettingsSection("import");
+    else if (nextPage === "backup") setSettingsSection("backup");
+    else if (nextPage === "synchronizations") setSettingsSection("sync");
+    else if (nextPage === "trash") setSettingsSection("trash");
+    else if (nextPage === "import" || nextPage === "export" || nextPage === "m365") setSettingsSection("advanced");
+  };
+
+  const runAutomaticBackup = useCallback(async (snapshot = false): Promise<void> => {
+    const isTauri = "__TAURI_INTERNALS__" in window;
+    if (!isTauri) return;
+    if (automaticBackupPromise.current) {
+      await automaticBackupPromise.current;
+      if (!snapshot) return;
+    }
+
+    const promise = (async () => {
+      const backup = addBrowserDataToBackup(await getBackupData());
+      await createAutomaticBackup(backup, snapshot);
+      await createAutomaticPasswordBackup(snapshot);
+    })();
+    automaticBackupPromise.current = promise;
+    try {
+      await promise;
+    } finally {
+      if (automaticBackupPromise.current === promise) automaticBackupPromise.current = null;
+    }
+  }, []);
 
   const loadVaultStatus = () => {
     setStartupError("");
@@ -53,6 +95,44 @@ export default function App() {
   useEffect(() => {
     loadVaultStatus();
   }, []);
+
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+
+    const interval = window.setInterval(() => {
+      void runAutomaticBackup().catch(() => {
+        // Backup failures must not interrupt normal contact/calendar work.
+      });
+    }, 15_000);
+    void runAutomaticBackup().catch(() => {
+      // The next interval or the close handler will retry automatically.
+    });
+
+    const appWindow = getCurrentWindow();
+    const unlisten = appWindow.onCloseRequested(async (event) => {
+      if (closing.current) return;
+      event.preventDefault();
+      closing.current = true;
+      window.clearInterval(interval);
+      try {
+        await runAutomaticBackup(true);
+      } catch {
+        closing.current = false;
+        window.alert("Die automatische Sicherung konnte nicht abgeschlossen werden. Das App-Fenster bleibt geöffnet.");
+        return;
+      }
+      try {
+        await appWindow.close();
+      } catch {
+        closing.current = false;
+      }
+    });
+
+    return () => {
+      window.clearInterval(interval);
+      void unlisten.then((dispose) => dispose());
+    };
+  }, [runAutomaticBackup]);
 
   if (!vaultStatus) {
     return (
@@ -83,11 +163,11 @@ export default function App() {
           {sourceCommit && <span>Commit {sourceCommit}</span>}
         </div>
       )}
-      <div className="app-shell">
-        <Sidebar activePage={page} onNavigate={setPage} />
+      <div className={settingsAreaOpen ? "app-shell settings-app-shell" : "app-shell"}>
+        <Sidebar activePage={page} onNavigate={navigate} compact={settingsAreaOpen} />
+        {settingsAreaOpen && <SettingsSubtabs activePage={page} activeSection={settingsSection} onNavigate={navigate} />}
         <main className="content">
-          {settingsAreaOpen && <SettingsSubtabs activePage={page} onNavigate={setPage} />}
-          {(page === "import" || page === "export" || page === "m365") && <AdvancedSubtabs activePage={page} onNavigate={setPage} />}
+          {(page === "import" || page === "export" || page === "m365") && <AdvancedSubtabs activePage={page} onNavigate={navigate} />}
           {page === "contacts" && <ContactsPage />}
           {page === "calendar" && <CalendarPage />}
           {page === "passwords" && <PasswordsPage status={vaultStatus} onStatusChanged={setVaultStatus} />}
@@ -95,10 +175,11 @@ export default function App() {
           {page === "export" && <ExportPage />}
           {page === "m365" && <Microsoft365Page />}
           {page === "trash" && <TrashPage />}
-          {page === "settings" && <SettingsPage />}
+          {page === "settings" && <SettingsPage section={settingsSection} onNavigate={navigate} />}
           {page === "appearance" && <AppearancePage />}
           {page === "simple-import" && <SimpleImportPage />}
           {page === "backup" && <BackupPage />}
+          {page === "synchronizations" && <SynchronizationsPage onNavigate={navigate} />}
         </main>
         <UpdateNotifier />
       </div>

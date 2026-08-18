@@ -123,3 +123,8 @@ export interface BackupData {
   settings: Array<{ key: string; value: string }>;
   browserStorage?: Record<string, string>;
 }
+
+export interface AutomaticBackupRestoreResult {
+  browserStorage: Record<string, string>;
+  passwordsRestored: boolean;
+}

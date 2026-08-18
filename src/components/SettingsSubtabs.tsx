@@ -1,31 +1,36 @@
-import { ArchiveRestore, Download, Palette, Settings, SlidersHorizontal, Trash2 } from "lucide-react";
+import { ArchiveRestore, ArrowLeftRight, Download, Home, Mail, Palette, Settings, SlidersHorizontal, Trash2 } from "lucide-react";
 import type { Page } from "./Sidebar";
 
-const items: Array<{ page: Page; label: string; icon: typeof Settings; activePages?: Page[] }> = [
-  { page: "settings", label: "Allgemein", icon: Settings },
-  { page: "appearance", label: "Erscheinungsbild", icon: Palette },
-  { page: "simple-import", label: "Einfach importieren", icon: Download },
-  { page: "backup", label: "Sicherung", icon: ArchiveRestore },
-  { page: "import", label: "Advanced", icon: SlidersHorizontal, activePages: ["import", "export", "m365"] },
-  { page: "trash", label: "Papierkorb", icon: Trash2 }
+export type SettingsSection = "general" | "mail" | "appearance" | "import" | "backup" | "sync" | "advanced" | "trash";
+
+const items: Array<{ page: Page; section: SettingsSection; label: string; icon: typeof Settings; activePages?: Page[] }> = [
+  { page: "settings", section: "general", label: "Allgemein", icon: Settings },
+  { page: "settings", section: "mail", label: "E-Mail & Konten", icon: Mail },
+  { page: "appearance", section: "appearance", label: "Erscheinungsbild", icon: Palette },
+  { page: "simple-import", section: "import", label: "Import", icon: Download },
+  { page: "backup", section: "backup", label: "Sicherung", icon: ArchiveRestore },
+  { page: "synchronizations", section: "sync", label: "Synchronisierungen", icon: ArrowLeftRight },
+  { page: "import", section: "advanced", label: "Erweitert", icon: SlidersHorizontal, activePages: ["import", "export", "m365"] },
+  { page: "trash", section: "trash", label: "Papierkorb", icon: Trash2 }
 ];
 
 interface SettingsSubtabsProps {
   activePage: Page;
-  onNavigate: (page: Page) => void;
+  activeSection: SettingsSection;
+  onNavigate: (page: Page, section?: SettingsSection) => void;
 }
 
-export function SettingsSubtabs({ activePage, onNavigate }: SettingsSubtabsProps) {
+export function SettingsSubtabs({ activePage, activeSection, onNavigate }: SettingsSubtabsProps) {
   return (
     <nav className="settings-subtabs" aria-label="Unterseiten der Einstellungen">
       {items.map((item) => {
         const Icon = item.icon;
-        const active = item.activePages?.includes(activePage) ?? activePage === item.page;
+        const active = item.activePages?.includes(activePage) ?? (activePage === item.page && activeSection === item.section);
         return (
           <button
             className={active ? "settings-subtab active" : "settings-subtab"}
             key={item.page}
-            onClick={() => onNavigate(item.page)}
+            onClick={() => onNavigate(item.page, item.section)}
             type="button"
           >
             <Icon size={19} />
@@ -33,6 +38,10 @@ export function SettingsSubtabs({ activePage, onNavigate }: SettingsSubtabsProps
           </button>
         );
       })}
+      <button className="settings-subtab settings-subtab-home" onClick={() => onNavigate("contacts")} type="button">
+        <Home size={19} />
+        <span>Zur Startseite</span>
+      </button>
     </nav>
   );
 }

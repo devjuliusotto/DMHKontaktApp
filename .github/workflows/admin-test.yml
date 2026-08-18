@@ -1,6 +1,9 @@
 name: Admin-Test-Version veröffentlichen
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       source_ref:
@@ -16,7 +19,7 @@ on:
 
 concurrency:
   group: release-admin-test
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   release-admin-test:
@@ -31,7 +34,7 @@ jobs:
         id: validate_version
         shell: pwsh
         run: |
-          if ("${{ inputs.version }}" -notmatch '^\d+\.\d+\.\d+-(beta|rc)\.\d+$') {
+          if ("${{ github.event_name }}" -eq "workflow_dispatch" -and "${{ inputs.version }}" -notmatch '^\d+\.\d+\.\d+-(beta|rc)\.\d+$') {
             throw "Admin-Test-Version muss zum Beispiel 0.1.1-beta.1 oder 0.1.1-rc.1 heißen."
           }
 
@@ -43,6 +46,12 @@ jobs:
           SOURCE_REF: ${{ inputs.source_ref }}
         run: |
           $ErrorActionPreference = "Stop"
+          if ("${{ github.event_name }}" -eq "push") {
+            "sha=${{ github.sha }}" >> $env:GITHUB_OUTPUT
+            "Automatischer Admin-Test für den Push ${{ github.sha }}"
+            exit 0
+          }
+
           $sourceRef = $env:SOURCE_REF.Trim()
           if ([string]::IsNullOrWhiteSpace($sourceRef)) {
             throw "source_ref darf nicht leer sein."
@@ -113,6 +122,23 @@ jobs:
         run: |
           "sha=$(git rev-parse HEAD)" >> $env:GITHUB_OUTPUT
 
+      - name: Automatische Testversion bestimmen
+        id: build_parameters
+        shell: pwsh
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          $baseVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $version = $env:REQUESTED_VERSION.Trim()
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            $version = "$baseVersion-beta.${{ github.run_number }}"
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+-(beta|rc)\.\d+$') {
+            throw "Admin-Test-Version muss zum Beispiel 0.1.1-beta.1 oder 0.1.1-rc.1 heißen."
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "Admin-Test-Version: $version"
+
       - name: Node.js installieren
         uses: actions/setup-node@v5
         with:
@@ -143,7 +169,7 @@ jobs:
 
       - name: Testversion nur im Build setzen
         id: set_build_version
-        run: node scripts/set-version.mjs "${{ inputs.version }}"
+        run: node scripts/set-version.mjs "${{ steps.build_parameters.outputs.version }}"
 
       - name: Frontend bauen
         id: build_frontend
@@ -203,10 +229,10 @@ jobs:
         with:
           args: --config src-tauri/tauri.admin-test.conf.json
           tagName: admin-test
-          releaseName: DMH Admin Test ${{ inputs.version }}
+          releaseName: DMH Admin Test ${{ steps.build_parameters.outputs.version }}
           releaseBody: |
             Rollende, nicht öffentliche Testversion für die Administration.
-            Testversion: ${{ inputs.version }}
+            Testversion: ${{ steps.build_parameters.outputs.version }}
             Quellstand: ${{ steps.source.outputs.sha }}
             Der EDV-Produktionsendpunkt ist in diesem Build absichtlich deaktiviert.
           releaseDraft: false
@@ -218,8 +244,8 @@ jobs:
         id: diagnostics
         shell: pwsh
         env:
-          SOURCE_REF: ${{ inputs.source_ref }}
-          REQUESTED_VERSION: ${{ inputs.version }}
+          SOURCE_REF: ${{ inputs.source_ref || github.ref_name }}
+          REQUESTED_VERSION: ${{ steps.build_parameters.outputs.version }}
           RESOLVED_SHA: ${{ steps.resolve_source.outputs.sha }}
           VALIDATE_OUTCOME: ${{ steps.validate_version.outcome }}
           RESOLVE_OUTCOME: ${{ steps.resolve_source.outcome }}

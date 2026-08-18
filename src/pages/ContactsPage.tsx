@@ -729,12 +729,14 @@ export function ContactsPage() {
               onPointerEnter={() => pointerOverGroup("ungrouped")}
               onPointerLeave={() => setDragOverGroupKey((current) => current === "ungrouped" ? null : current)}
             >
-              <button type="button" className="group-filter" onClick={() => setGroupSelection("ungrouped")}>
+              <button type="button" className="group-filter" title={ungroupedGroupName} onClick={() => setGroupSelection("ungrouped")}>
                 {ungroupedGroupName}
               </button>
-              <button title="E-Mail an Gruppe" type="button" onClick={() => chooseGroupEmailApp("ungrouped")}>
-                <Mail size={18} />
-              </button>
+              <div className="group-actions">
+                <button title="E-Mail an Gruppe" type="button" onClick={() => chooseGroupEmailApp("ungrouped")}>
+                  <Mail size={18} />
+                </button>
+              </div>
             </div>
             {groups.map((group) => (
               <div
@@ -748,21 +750,23 @@ export function ContactsPage() {
                 onPointerEnter={() => group.id && pointerOverGroup(group.id)}
                 onPointerLeave={() => setDragOverGroupKey((current) => current === group.id ? null : current)}
               >
-                <button type="button" className="group-filter" onClick={() => setGroupSelection(group.id ?? "ungrouped")}>
+                <button type="button" className="group-filter" title={group.name} onClick={() => setGroupSelection(group.id ?? "ungrouped")}>
                   {group.name}
                 </button>
-                <button title="Gruppe umbenennen" aria-label={`${group.name} umbenennen`} type="button" onClick={() => startGroupRename(group)}>
-                  <Pencil size={18} />
-                </button>
-                <button title="Kontakte hinzufügen" type="button" onClick={() => openBulkAdd(group)}>
-                  <UserPlus size={18} />
-                </button>
-                <button title="E-Mail an Gruppe" type="button" onClick={() => chooseGroupEmailApp(group)}>
-                  <Mail size={18} />
-                </button>
-                <button title="Gruppe löschen" type="button" onClick={() => removeGroup(group)}>
-                  <Trash2 size={18} />
-                </button>
+                <div className="group-actions">
+                  <button title="Gruppe umbenennen" aria-label={`${group.name} umbenennen`} type="button" onClick={() => startGroupRename(group)}>
+                    <Pencil size={18} />
+                  </button>
+                  <button title="Kontakte hinzufügen" type="button" onClick={() => openBulkAdd(group)}>
+                    <UserPlus size={18} />
+                  </button>
+                  <button title="E-Mail an Gruppe" type="button" onClick={() => chooseGroupEmailApp(group)}>
+                    <Mail size={18} />
+                  </button>
+                  <button title="Gruppe löschen" type="button" onClick={() => removeGroup(group)}>
+                    <Trash2 size={18} />
+                  </button>
+                </div>
               </div>
             ))}
           </aside>

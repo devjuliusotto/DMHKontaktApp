@@ -24,3 +24,34 @@ export interface Microsoft365PollResult {
   account: Microsoft365Account | null;
   intervalSeconds: number;
 }
+
+export interface Microsoft365SyncSource {
+  id: string;
+  name: string;
+  kind: "contactFolder" | "calendar";
+  editable: boolean;
+  shared: boolean;
+}
+
+export interface Microsoft365SyncSources {
+  contacts: Microsoft365SyncSource[];
+  calendars: Microsoft365SyncSource[];
+  sharedAccessAvailable: boolean;
+}
+
+export interface Microsoft365SyncPreview {
+  localContacts: number;
+  remoteContacts: number;
+  localEvents: number;
+  remoteEvents: number;
+  createInM365: number;
+  importToApp: number;
+  conflicts: number;
+  sharedSourcesSkipped: number;
+  changes: Array<{
+    kind: string;
+    action: string;
+    title: string;
+    detail: string;
+  }>;
+}

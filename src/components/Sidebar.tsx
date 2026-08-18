@@ -1,7 +1,7 @@
 import { CalendarDays, KeyRound, Settings, UserRound } from "lucide-react";
 import { t } from "../i18n";
 
-export type Page = "contacts" | "calendar" | "passwords" | "import" | "export" | "m365" | "trash" | "settings" | "appearance" | "simple-import" | "backup";
+export type Page = "contacts" | "calendar" | "passwords" | "import" | "export" | "m365" | "trash" | "settings" | "appearance" | "simple-import" | "backup" | "synchronizations";
 
 const items: Array<{ page: Page; label: string; icon: typeof UserRound }> = [
   { page: "contacts", label: t.contacts, icon: UserRound },
@@ -9,22 +9,23 @@ const items: Array<{ page: Page; label: string; icon: typeof UserRound }> = [
   { page: "passwords", label: "Passwörter", icon: KeyRound }
 ];
 
-const settingsPages = new Set<Page>(["settings", "appearance", "simple-import", "import", "export", "m365", "trash", "backup"]);
+const settingsPages = new Set<Page>(["settings", "appearance", "simple-import", "import", "export", "m365", "trash", "backup", "synchronizations"]);
 
 interface SidebarProps {
   activePage: Page;
   onNavigate: (page: Page) => void;
+  compact?: boolean;
 }
 
-export function Sidebar({ activePage, onNavigate }: SidebarProps) {
+export function Sidebar({ activePage, onNavigate, compact = false }: SidebarProps) {
   return (
-    <aside className="sidebar">
+    <aside className={compact ? "sidebar compact" : "sidebar"}>
       <div className="brand">
         <img className="brand-logo" src="/dmh-kontakte-kalender.png" alt="Logo von DMH Kontakte und Kalender" />
-        <div>
+        {!compact && <div>
           <h1>{t.appName}</h1>
           <p>Kontakte und Termine lokal</p>
-        </div>
+        </div>}
       </div>
       <nav className="nav-list" aria-label="Hauptmenü">
         {items.map((item) => {
@@ -34,10 +35,11 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
               className={activePage === item.page ? "nav-button active" : "nav-button"}
               key={item.page}
               onClick={() => onNavigate(item.page)}
+              title={compact ? item.label : undefined}
               type="button"
             >
               <Icon size={24} />
-              <span>{item.label}</span>
+              {!compact && <span>{item.label}</span>}
             </button>
           );
         })}
@@ -46,10 +48,11 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
         <button
           className={settingsPages.has(activePage) ? "nav-button active" : "nav-button"}
           onClick={() => onNavigate("settings")}
+          title={compact ? t.settings : undefined}
           type="button"
         >
           <Settings size={24} />
-          <span>{t.settings}</span>
+          {!compact && <span>{t.settings}</span>}
         </button>
       </div>
     </aside>

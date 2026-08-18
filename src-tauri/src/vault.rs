@@ -10,6 +10,8 @@ use argon2::{
     },
     Argon2,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use chrono::Utc;
 use rand::{rngs::OsRng, Rng, RngCore};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -132,6 +134,42 @@ impl Drop for VaultEntrySecret {
     fn drop(&mut self) {
         self.password.zeroize();
     }
+}
+
+const AUTOMATIC_PASSWORD_BACKUP_LATEST: &str = "DMH-Kennwörter-Auto-Backup.enc.json";
+const AUTOMATIC_PASSWORD_BACKUP_VERSION: &str = "1.0.0";
+const DELETED_ELEMENT_MARKER: &str = "Gelöschtes Element";
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AutomaticPasswordBackup {
+    version: String,
+    exported_at: String,
+    vault: Option<AutomaticVaultConfig>,
+    entries: Vec<AutomaticPasswordEntry>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AutomaticVaultConfig {
+    protected_key: String,
+    username: String,
+    recovery_email: String,
+    password_hash: Option<String>,
+    protection_enabled: bool,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AutomaticPasswordEntry {
+    entry_uuid: String,
+    nonce: String,
+    ciphertext: String,
+    created_at: String,
+    updated_at: String,
+    deleted_at: Option<String>,
 }
 
 fn load_config(app: &AppHandle) -> Result<Option<VaultConfigRow>, String> {
@@ -317,6 +355,327 @@ fn decrypt_entry(
     );
     serde_json::from_slice(&plaintext)
         .map_err(|_| "Ein entschlüsselter Kennwort-Eintrag ist beschädigt.".to_string())
+}
+
+fn automatic_password_backup_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(crate::automatic_backup_dir(app)?.join(AUTOMATIC_PASSWORD_BACKUP_LATEST))
+}
+
+fn automatic_password_backup_app_data_path(
+    app: &AppHandle,
+) -> Result<std::path::PathBuf, String> {
+    Ok(crate::automatic_backup_app_data_dir(app)?.join(AUTOMATIC_PASSWORD_BACKUP_LATEST))
+}
+
+fn read_automatic_password_backup(
+    app: &AppHandle,
+) -> Result<Option<AutomaticPasswordBackup>, String> {
+    let path = automatic_password_backup_path(app)?;
+    let app_data_path = automatic_password_backup_app_data_path(app)?;
+    let path = if path.is_file() { path } else { app_data_path };
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let content = std::fs::read_to_string(path).map_err(|error| {
+        format!("Automatische Kennwort-Sicherung konnte nicht gelesen werden: {error}")
+    })?;
+    let backup = serde_json::from_str(&content).map_err(|error| {
+        format!("Automatische Kennwort-Sicherung ist beschädigt oder unbekannt: {error}")
+    })?;
+    Ok(Some(backup))
+}
+
+fn decode_automatic_password_entry(
+    entry: &AutomaticPasswordEntry,
+) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let nonce = BASE64_STANDARD.decode(&entry.nonce).map_err(|_| {
+        "Eine automatische Kennwort-Sicherung enthält eine ungültige Nonce.".to_string()
+    })?;
+    let ciphertext = BASE64_STANDARD.decode(&entry.ciphertext).map_err(|_| {
+        "Eine automatische Kennwort-Sicherung enthält verschlüsselte beschädigte Daten.".to_string()
+    })?;
+    if nonce.len() != VAULT_NONCE_LENGTH || ciphertext.is_empty() || entry.entry_uuid.is_empty() {
+        return Err(
+            "Eine automatische Kennwort-Sicherung enthält einen ungültigen Eintrag.".to_string(),
+        );
+    }
+    Ok((nonce, ciphertext))
+}
+
+fn automatic_backup_key(
+    backup: &AutomaticPasswordBackup,
+) -> Result<Zeroizing<[u8; VAULT_KEY_LENGTH]>, String> {
+    let vault = backup.vault.as_ref().ok_or_else(|| {
+        "Die automatische Kennwort-Sicherung enthält keinen Schlüsselschutz.".to_string()
+    })?;
+    let protected_key = BASE64_STANDARD
+        .decode(&vault.protected_key)
+        .map_err(|_| "Der geschützte Kennwort-Schlüssel ist beschädigt.".to_string())?;
+    unprotect_key(&protected_key)
+}
+
+fn append_deleted_marker(value: &str) -> String {
+    if value.contains(DELETED_ELEMENT_MARKER) {
+        return value.to_string();
+    }
+    if value.trim().is_empty() {
+        DELETED_ELEMENT_MARKER.to_string()
+    } else {
+        format!("{value}\n{DELETED_ELEMENT_MARKER}")
+    }
+}
+
+fn mark_automatic_password_entry_deleted(
+    entry: &mut AutomaticPasswordEntry,
+    key: &[u8; VAULT_KEY_LENGTH],
+) -> Result<(), String> {
+    let (nonce, ciphertext) = decode_automatic_password_entry(entry)?;
+    let mut secret = decrypt_entry(key, &entry.entry_uuid, &nonce, &ciphertext)?;
+    secret.description = append_deleted_marker(&secret.description);
+    let (next_nonce, next_ciphertext) = encrypt_entry(key, &entry.entry_uuid, &secret)?;
+    entry.nonce = BASE64_STANDARD.encode(next_nonce);
+    entry.ciphertext = BASE64_STANDARD.encode(next_ciphertext);
+    entry.deleted_at = Some(entry.deleted_at.clone().unwrap_or_else(now));
+    entry.updated_at = now();
+    Ok(())
+}
+
+fn load_current_automatic_password_backup(
+    conn: &rusqlite::Connection,
+) -> Result<AutomaticPasswordBackup, String> {
+    let vault = conn
+        .query_row(
+            "SELECT protected_key, username, recovery_email, password_hash, protection_enabled, created_at, updated_at
+             FROM vault_config WHERE id = 1",
+            [],
+            |row| {
+                let protected_key: Vec<u8> = row.get(0)?;
+                Ok(AutomaticVaultConfig {
+                    protected_key: BASE64_STANDARD.encode(protected_key),
+                    username: row.get(1)?,
+                    recovery_email: row.get(2)?,
+                    password_hash: row.get(3)?,
+                    protection_enabled: row.get::<_, i64>(4)? != 0,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+
+    let mut statement = conn
+        .prepare(
+            "SELECT entry_uuid, nonce, ciphertext, created_at, updated_at, deleted_at
+             FROM vault_entries ORDER BY updated_at DESC",
+        )
+        .map_err(|error| error.to_string())?;
+    let entries = statement
+        .query_map([], |row| {
+            let nonce: Vec<u8> = row.get(1)?;
+            let ciphertext: Vec<u8> = row.get(2)?;
+            Ok(AutomaticPasswordEntry {
+                entry_uuid: row.get(0)?,
+                nonce: BASE64_STANDARD.encode(nonce),
+                ciphertext: BASE64_STANDARD.encode(ciphertext),
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+                deleted_at: row.get(5)?,
+            })
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+
+    Ok(AutomaticPasswordBackup {
+        version: AUTOMATIC_PASSWORD_BACKUP_VERSION.to_string(),
+        exported_at: now(),
+        vault,
+        entries,
+    })
+}
+
+fn merge_automatic_password_backup(
+    previous: Option<AutomaticPasswordBackup>,
+    mut current: AutomaticPasswordBackup,
+) -> Result<AutomaticPasswordBackup, String> {
+    let previous = previous;
+    if current.vault.is_none() {
+        current.vault = previous.as_ref().and_then(|backup| backup.vault.clone());
+    }
+
+    let key_source = if current.vault.is_some() {
+        Some(&current)
+    } else {
+        previous.as_ref()
+    };
+    let key = if current.entries.is_empty()
+        && previous
+            .as_ref()
+            .is_none_or(|backup| backup.entries.is_empty())
+    {
+        None
+    } else {
+        Some(automatic_backup_key(key_source.ok_or_else(|| {
+            "Kennwort-Sicherungsschlüssel fehlt.".to_string()
+        })?)?)
+    };
+
+    for entry in &mut current.entries {
+        if entry.deleted_at.is_some() {
+            mark_automatic_password_entry_deleted(entry, key.as_deref().ok_or_else(|| {
+                "Gelöschter Kennwort-Eintrag kann ohne Sicherungsschlüssel nicht markiert werden."
+                    .to_string()
+            })?)?;
+        }
+    }
+
+    if let Some(previous) = previous {
+        let current_ids: std::collections::HashSet<String> = current
+            .entries
+            .iter()
+            .map(|entry| entry.entry_uuid.clone())
+            .collect();
+        for mut entry in previous.entries {
+            if !current_ids.contains(&entry.entry_uuid) {
+                mark_automatic_password_entry_deleted(
+                    &mut entry,
+                    key.as_deref().ok_or_else(|| {
+                        "Gelöschter Kennwort-Eintrag kann ohne Sicherungsschlüssel nicht markiert werden."
+                            .to_string()
+                    })?,
+                )?;
+                current.entries.push(entry);
+            }
+        }
+    }
+
+    current
+        .entries
+        .sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    Ok(current)
+}
+
+fn validate_automatic_password_backup_data(backup: &AutomaticPasswordBackup) -> Result<(), String> {
+    if backup.version != AUTOMATIC_PASSWORD_BACKUP_VERSION {
+        return Err(
+            "Version der automatischen Kennwort-Sicherung wird nicht unterstützt.".to_string(),
+        );
+    }
+    if backup.entries.is_empty() && backup.vault.is_none() {
+        return Ok(());
+    }
+    let _key = automatic_backup_key(backup)?;
+    for entry in &backup.entries {
+        let (nonce, ciphertext) = decode_automatic_password_entry(entry)?;
+        decrypt_entry(&_key, &entry.entry_uuid, &nonce, &ciphertext)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_automatic_password_backup(app: &AppHandle) -> Result<bool, String> {
+    let Some(backup) = read_automatic_password_backup(app)? else {
+        return Ok(false);
+    };
+    validate_automatic_password_backup_data(&backup)?;
+    Ok(true)
+}
+
+pub(crate) fn write_automatic_password_backup(
+    app: &AppHandle,
+    snapshot: bool,
+) -> Result<(), String> {
+    let directory = crate::automatic_backup_dir(&app)?;
+    let app_data_directory = crate::automatic_backup_app_data_dir(&app)?;
+    let latest_path = automatic_password_backup_path(&app)?;
+    let previous = read_automatic_password_backup(&app)?;
+    let conn = open_db(&app)?;
+    let current = load_current_automatic_password_backup(&conn)?;
+    let merged = merge_automatic_password_backup(previous, current)?;
+    let json = serde_json::to_string_pretty(&merged).map_err(|error| error.to_string())?;
+    crate::replace_json_file(&latest_path, &json)?;
+    crate::replace_json_file(
+        &automatic_password_backup_app_data_path(&app)?,
+        &json,
+    )?;
+
+    if snapshot {
+        let snapshots = directory.join("Snapshots");
+        std::fs::create_dir_all(&snapshots).map_err(|error| error.to_string())?;
+        let stamp = Utc::now().format("%Y%m%d-%H%M%S-%f");
+        let path = snapshots.join(format!("auto-password-backup-{stamp}.json"));
+        std::fs::write(&path, &json).map_err(|error| error.to_string())?;
+        let app_data_snapshots = app_data_directory.join("Snapshots");
+        std::fs::create_dir_all(&app_data_snapshots).map_err(|error| error.to_string())?;
+        std::fs::write(
+            app_data_snapshots.join(format!("auto-password-backup-{stamp}.json")),
+            json,
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn create_automatic_password_backup(
+    app: AppHandle,
+    snapshot: Option<bool>,
+) -> Result<(), String> {
+    write_automatic_password_backup(&app, snapshot.unwrap_or(false))
+}
+
+pub(crate) fn restore_automatic_password_backup(app: &AppHandle) -> Result<bool, String> {
+    let Some(backup) = read_automatic_password_backup(app)? else {
+        return Ok(false);
+    };
+    validate_automatic_password_backup_data(&backup)?;
+    let mut conn = open_db(app)?;
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    tx.execute("DELETE FROM vault_entries", [])
+        .map_err(|error| error.to_string())?;
+    tx.execute("DELETE FROM vault_config", [])
+        .map_err(|error| error.to_string())?;
+
+    if let Some(vault) = backup.vault {
+        let protected_key = BASE64_STANDARD
+            .decode(vault.protected_key)
+            .map_err(|_| "Der geschützte Kennwort-Schlüssel ist beschädigt.".to_string())?;
+        tx.execute(
+            "INSERT INTO vault_config (id, protected_key, username, recovery_email, password_hash, protection_enabled, created_at, updated_at)
+             VALUES (1, ?, ?, ?, ?, ?, ?, ?)",
+            rusqlite::params![
+                protected_key,
+                vault.username,
+                vault.recovery_email,
+                vault.password_hash,
+                if vault.protection_enabled { 1 } else { 0 },
+                vault.created_at,
+                vault.updated_at
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+
+    for entry in backup.entries {
+        let (nonce, ciphertext) = decode_automatic_password_entry(&entry)?;
+        tx.execute(
+            "INSERT INTO vault_entries (entry_uuid, nonce, ciphertext, created_at, updated_at, deleted_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
+            rusqlite::params![
+                entry.entry_uuid,
+                nonce,
+                ciphertext,
+                entry.created_at,
+                entry.updated_at,
+                entry.deleted_at
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+
+    tx.commit().map_err(|error| error.to_string())?;
+    clear_runtime(app)?;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -906,6 +1265,35 @@ mod tests {
         assert_eq!(decoded.platform, "Beispiel");
         assert_eq!(decoded.password, "geheim");
         source.password.zeroize();
+    }
+
+    #[test]
+    fn automatic_password_backup_marks_deleted_description_without_plaintext_archive() {
+        let key = [5u8; VAULT_KEY_LENGTH];
+        let secret = VaultEntrySecret {
+            platform: "Beispiel".to_string(),
+            username: "benutzer".to_string(),
+            password: "geheim".to_string(),
+            url: "https://example.invalid".to_string(),
+            description: "Vorherige Notiz".to_string(),
+        };
+        let (nonce, ciphertext) = encrypt_entry(&key, "entry-restore-1", &secret).unwrap();
+        let mut entry = AutomaticPasswordEntry {
+            entry_uuid: "entry-restore-1".to_string(),
+            nonce: BASE64_STANDARD.encode(nonce),
+            ciphertext: BASE64_STANDARD.encode(ciphertext),
+            created_at: "2026-08-18T10:00:00Z".to_string(),
+            updated_at: "2026-08-18T10:00:00Z".to_string(),
+            deleted_at: None,
+        };
+
+        mark_automatic_password_entry_deleted(&mut entry, &key).unwrap();
+        let (nonce, ciphertext) = decode_automatic_password_entry(&entry).unwrap();
+        let restored = decrypt_entry(&key, &entry.entry_uuid, &nonce, &ciphertext).unwrap();
+
+        assert_eq!(restored.description, "Vorherige Notiz\nGelöschtes Element");
+        assert!(entry.deleted_at.is_some());
+        assert_eq!(restored.password, "geheim");
     }
 
     #[test]

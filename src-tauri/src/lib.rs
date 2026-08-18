@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -141,7 +141,7 @@ pub struct ImportResult {
     pub batch_id: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupData {
     pub version: String,
@@ -153,7 +153,7 @@ pub struct BackupData {
     pub browser_storage: HashMap<String, String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSetting {
     pub key: String,
@@ -197,7 +197,7 @@ where
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct CalendarEvent {
     pub id: String,
@@ -215,6 +215,12 @@ pub struct CalendarEvent {
     pub recurrence: Option<CalendarRecurrence>,
     #[serde(default)]
     pub excluded_dates: Vec<String>,
+    #[serde(default)]
+    pub deleted_at: Option<String>,
+    #[serde(default)]
+    pub recurrence_master_id: Option<String>,
+    #[serde(default)]
+    pub recurrence_id: Option<String>,
 }
 
 fn default_calendar_color() -> String {
@@ -654,7 +660,8 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
     )
     .map_err(|err| err.to_string())?;
 
-    create_auto_backup(&conn, &app_dir)?;
+    create_auto_backup(app, &conn)?;
+    vault::write_automatic_password_backup(app, false)?;
     Ok(())
 }
 
@@ -682,14 +689,279 @@ fn ensure_column(
     Ok(())
 }
 
-fn create_auto_backup(conn: &Connection, app_dir: &PathBuf) -> Result<(), String> {
-    let backup_dir = app_dir.join("backups");
-    fs::create_dir_all(&backup_dir).map_err(|err| err.to_string())?;
-    let stamp = Utc::now().format("%Y%m%d-%H%M%S");
-    let path = backup_dir.join(format!("auto-backup-{stamp}.json"));
+const AUTOMATIC_BACKUP_FOLDER: &str = "DMH Kontakte und Kalender\\Automatische Sicherung";
+const AUTOMATIC_BACKUP_LATEST: &str = "DMH-Kontakte-Kalender-Auto-Backup.json";
+const DELETED_ELEMENT_MARKER: &str = "Gelöschtes Element";
+
+pub(crate) fn automatic_backup_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let documents = app
+        .path()
+        .document_dir()
+        .map_err(|error| format!("Dokumente-Ordner konnte nicht ermittelt werden: {error}"))?;
+    let directory = documents.join(AUTOMATIC_BACKUP_FOLDER);
+    fs::create_dir_all(&directory).map_err(|error| {
+        format!("Automatischer Backup-Ordner konnte nicht erstellt werden: {error}")
+    })?;
+    Ok(directory)
+}
+
+pub(crate) fn automatic_backup_app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("AppData-Ordner konnte nicht ermittelt werden: {error}"))?;
+    let directory = app_data.join("backups");
+    fs::create_dir_all(&directory).map_err(|error| {
+        format!("AppData-Backup-Ordner konnte nicht erstellt werden: {error}")
+    })?;
+    Ok(directory)
+}
+
+fn append_deleted_element_marker(value: &str) -> String {
+    if value.contains(DELETED_ELEMENT_MARKER) {
+        return value.to_string();
+    }
+    if value.trim().is_empty() {
+        DELETED_ELEMENT_MARKER.to_string()
+    } else {
+        format!("{value}\n{DELETED_ELEMENT_MARKER}")
+    }
+}
+
+fn mark_calendar_event_deleted_for_backup(event: &mut CalendarEvent) {
+    event.description = append_deleted_element_marker(&event.description);
+    if event.deleted_at.is_none() {
+        event.deleted_at = Some(now());
+    }
+}
+
+fn mark_contact_deleted_for_backup(contact: &mut Contact) {
+    contact.notes = append_deleted_element_marker(&contact.notes);
+    if contact.deleted_at.is_none() {
+        contact.deleted_at = Some(now());
+    }
+}
+
+fn mark_group_deleted_for_backup(group: &mut Group) {
+    group.description = append_deleted_element_marker(&group.description);
+    if group.deleted_at.is_none() {
+        group.deleted_at = Some(now());
+    }
+}
+
+fn parse_calendar_events(storage: &HashMap<String, String>, key: &str) -> Vec<CalendarEvent> {
+    storage
+        .get(key)
+        .and_then(|value| serde_json::from_str(value).ok())
+        .unwrap_or_default()
+}
+
+fn merge_calendar_backup_storage(
+    previous: &HashMap<String, String>,
+    current: &mut HashMap<String, String>,
+) -> Result<(), String> {
+    const ACTIVE_KEY: &str = "agendakontakte.calendarEvents";
+    const DELETED_KEY: &str = "agendakontakte.deletedCalendarEvents";
+
+    let previous_active = parse_calendar_events(previous, ACTIVE_KEY);
+    let previous_deleted = parse_calendar_events(previous, DELETED_KEY);
+    let current_has_active = current.contains_key(ACTIVE_KEY);
+    let current_has_deleted = current.contains_key(DELETED_KEY);
+    let current_active = parse_calendar_events(current, ACTIVE_KEY);
+    let current_deleted = parse_calendar_events(current, DELETED_KEY);
+
+    let mut merged: HashMap<String, (CalendarEvent, bool)> = HashMap::new();
+    for event in &previous_active {
+        merged.insert(event.id.clone(), (event.clone(), false));
+    }
+    for event in &previous_deleted {
+        let mut deleted = event.clone();
+        mark_calendar_event_deleted_for_backup(&mut deleted);
+        merged.insert(deleted.id.clone(), (deleted, true));
+    }
+
+    if current_has_active || current_has_deleted {
+        let current_active_ids: HashSet<String> = current_active
+            .iter()
+            .map(|event| event.id.clone())
+            .collect();
+        let current_deleted_ids: HashSet<String> = current_deleted
+            .iter()
+            .map(|event| event.id.clone())
+            .collect();
+
+        for event in previous_active {
+            if !current_active_ids.contains(&event.id) && !current_deleted_ids.contains(&event.id) {
+                let mut deleted = event;
+                mark_calendar_event_deleted_for_backup(&mut deleted);
+                merged.insert(deleted.id.clone(), (deleted, true));
+            }
+        }
+    }
+
+    if current_has_active {
+        for event in current_active {
+            merged.insert(event.id.clone(), (event, false));
+        }
+    }
+    if current_has_deleted {
+        for event in current_deleted {
+            let mut deleted = event;
+            mark_calendar_event_deleted_for_backup(&mut deleted);
+            merged.insert(deleted.id.clone(), (deleted, true));
+        }
+    }
+
+    let mut active = Vec::new();
+    let mut deleted = Vec::new();
+    for (event, is_deleted) in merged.into_values() {
+        if is_deleted {
+            deleted.push(event);
+        } else {
+            active.push(event);
+        }
+    }
+    active.sort_by(|left, right| left.starts_at.cmp(&right.starts_at));
+    deleted.sort_by(|left, right| left.starts_at.cmp(&right.starts_at));
+    current.insert(
+        ACTIVE_KEY.to_string(),
+        serde_json::to_string(&active).map_err(|error| error.to_string())?,
+    );
+    current.insert(
+        DELETED_KEY.to_string(),
+        serde_json::to_string(&deleted).map_err(|error| error.to_string())?,
+    );
+    Ok(())
+}
+
+fn merge_automatic_backup(
+    previous: Option<BackupData>,
+    mut current: BackupData,
+) -> Result<BackupData, String> {
+    let Some(previous) = previous else {
+        for contact in &mut current.contacts {
+            if contact.deleted_at.is_some() {
+                mark_contact_deleted_for_backup(contact);
+            }
+        }
+        for group in &mut current.groups {
+            if group.deleted_at.is_some() {
+                mark_group_deleted_for_backup(group);
+            }
+        }
+        merge_calendar_backup_storage(&HashMap::new(), &mut current.browser_storage)?;
+        return Ok(current);
+    };
+
+    let current_contact_ids: HashSet<i64> = current
+        .contacts
+        .iter()
+        .filter_map(|contact| contact.id)
+        .collect();
+    for mut contact in previous.contacts {
+        if contact
+            .id
+            .is_some_and(|id| !current_contact_ids.contains(&id))
+        {
+            mark_contact_deleted_for_backup(&mut contact);
+            current.contacts.push(contact);
+        }
+    }
+    for contact in &mut current.contacts {
+        if contact.deleted_at.is_some() {
+            mark_contact_deleted_for_backup(contact);
+        }
+    }
+
+    let current_group_ids: HashSet<i64> =
+        current.groups.iter().filter_map(|group| group.id).collect();
+    for mut group in previous.groups {
+        if group.id.is_some_and(|id| !current_group_ids.contains(&id)) {
+            mark_group_deleted_for_backup(&mut group);
+            current.groups.push(group);
+        }
+    }
+    for group in &mut current.groups {
+        if group.deleted_at.is_some() {
+            mark_group_deleted_for_backup(group);
+        }
+    }
+
+    let mut settings_by_key: HashMap<String, String> = previous
+        .settings
+        .into_iter()
+        .map(|setting| (setting.key, setting.value))
+        .collect();
+    for setting in current.settings.drain(..) {
+        settings_by_key.insert(setting.key, setting.value);
+    }
+    current.settings = settings_by_key
+        .into_iter()
+        .map(|(key, value)| AppSetting { key, value })
+        .collect();
+    current
+        .settings
+        .sort_by(|left, right| left.key.cmp(&right.key));
+
+    merge_calendar_backup_storage(&previous.browser_storage, &mut current.browser_storage)?;
+    Ok(current)
+}
+
+pub(crate) fn replace_json_file(path: &Path, json: &str) -> Result<(), String> {
+    let temporary = path.with_extension("json.tmp");
+    fs::write(&temporary, json).map_err(|error| error.to_string())?;
+    if path.exists() {
+        fs::remove_file(path).map_err(|error| error.to_string())?;
+    }
+    fs::rename(temporary, path).map_err(|error| error.to_string())
+}
+
+fn write_automatic_backup(
+    app: &AppHandle,
+    current: BackupData,
+    snapshot: bool,
+) -> Result<(), String> {
+    let directory = automatic_backup_dir(app)?;
+    let app_data_directory = automatic_backup_app_data_dir(app)?;
+    let latest_path = directory.join(AUTOMATIC_BACKUP_LATEST);
+    let previous = if latest_path.is_file() {
+        let content = fs::read_to_string(&latest_path).map_err(|error| error.to_string())?;
+        Some(
+            serde_json::from_str::<BackupData>(&content).map_err(|error| {
+                format!("Automatischer Backup konnte nicht gelesen werden: {error}")
+            })?,
+        )
+    } else {
+        None
+    };
+    let merged = merge_automatic_backup(previous, current)?;
+    let json = serde_json::to_string_pretty(&merged).map_err(|error| error.to_string())?;
+    replace_json_file(&latest_path, &json)?;
+    replace_json_file(
+        &app_data_directory.join(AUTOMATIC_BACKUP_LATEST),
+        &json,
+    )?;
+
+    if snapshot {
+        let snapshots = directory.join("Snapshots");
+        fs::create_dir_all(&snapshots).map_err(|error| error.to_string())?;
+        let stamp = Utc::now().format("%Y%m%d-%H%M%S-%f");
+        let path = snapshots.join(format!("auto-backup-{stamp}.json"));
+        fs::write(&path, &json).map_err(|error| error.to_string())?;
+        let app_data_snapshots = app_data_directory.join("Snapshots");
+        fs::create_dir_all(&app_data_snapshots).map_err(|error| error.to_string())?;
+        fs::write(
+            app_data_snapshots.join(format!("auto-backup-{stamp}.json")),
+            json,
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn create_auto_backup(app: &AppHandle, conn: &Connection) -> Result<(), String> {
     let data = load_backup_data(conn)?;
-    let json = serde_json::to_string_pretty(&data).map_err(|err| err.to_string())?;
-    fs::write(path, json).map_err(|err| err.to_string())
+    write_automatic_backup(app, data, false)
 }
 
 fn read_groups_for_contact(conn: &Connection, contact_id: i64) -> Result<Vec<Group>, String> {
@@ -1323,6 +1595,66 @@ fn get_backup_data(app: AppHandle) -> Result<BackupData, String> {
     load_backup_data(&conn)
 }
 
+#[tauri::command]
+fn create_automatic_backup(
+    app: AppHandle,
+    backup: BackupData,
+    snapshot: Option<bool>,
+) -> Result<(), String> {
+    write_automatic_backup(&app, backup, snapshot.unwrap_or(false))
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomaticBackupRestoreResult {
+    pub browser_storage: HashMap<String, String>,
+    pub passwords_restored: bool,
+}
+
+#[tauri::command]
+fn restore_automatic_backup(
+    app: AppHandle,
+    authorization: String,
+) -> Result<AutomaticBackupRestoreResult, String> {
+    let authorization = authorization.trim();
+    if authorization.len() < 8 || !authorization.to_ascii_uppercase().starts_with("EDV-") {
+        return Err(
+            "Für diese Wiederherstellung ist der Freigabecode der EDV erforderlich (Format EDV-...)."
+                .to_string(),
+        );
+    }
+
+    let directory = automatic_backup_dir(&app)?;
+    let app_data_directory = automatic_backup_app_data_dir(&app)?;
+    let latest_path = directory.join(AUTOMATIC_BACKUP_LATEST);
+    let app_data_latest_path = app_data_directory.join(AUTOMATIC_BACKUP_LATEST);
+    let content = fs::read_to_string(&latest_path)
+        .or_else(|_| fs::read_to_string(&app_data_latest_path))
+        .map_err(|error| {
+        format!("Die automatische Sicherung konnte nicht gelesen werden: {error}")
+        })?;
+    let backup = serde_json::from_str::<BackupData>(&content).map_err(|error| {
+        format!(
+            "Die automatische Sicherung ist beschädigt oder stammt aus einer unbekannten Version: {error}"
+        )
+    })?;
+
+    // Validate the encrypted password archive before replacing contacts and
+    // calendar data, so a damaged password archive cannot cause a partial
+    // recovery.
+    let passwords_restored = vault::validate_automatic_password_backup(&app)?;
+    let browser_storage = backup.browser_storage.clone();
+    restore_backup(app.clone(), backup)?;
+    if passwords_restored {
+        vault::restore_automatic_password_backup(&app)?;
+    }
+
+    Ok(AutomaticBackupRestoreResult {
+        browser_storage,
+        passwords_restored,
+    })
+}
+
 fn is_backup_safe_setting_key(key: &str) -> bool {
     !key.starts_with("migration_capture_") && !key.starts_with("m365_")
 }
@@ -1483,10 +1815,15 @@ fn reset_local_app_data(app: AppHandle) -> Result<(), String> {
         .path()
         .app_data_dir()
         .map_err(|error| format!("App-Datenverzeichnis konnte nicht ermittelt werden: {error}"))?;
-    remove_known_app_subdirectory(&app_dir, "backups")?;
     mail_accounts::clear_migration_diagnostics(&app)?;
 
     let mut conn = open_db(&app)?;
+    // Preserve the state immediately before a destructive reset in the
+    // external archive. The archive intentionally lives outside app_data_dir
+    // and is therefore not removed by this reset operation.
+    write_automatic_backup(&app, load_backup_data(&conn)?, true)?;
+    vault::write_automatic_password_backup(&app, true)?;
+    remove_known_app_subdirectory(&app_dir, "backups")?;
     clear_local_database(&mut conn)?;
     drop(conn);
 
@@ -1887,20 +2224,22 @@ fn outlook_store_name(record: &OutlookContactRecord) -> String {
     }
 }
 
-fn suggested_outlook_group_name(store_name: &str) -> String {
-    let trimmed = store_name.trim();
-    let lower = trimmed.to_lowercase();
-    let label = if lower.contains("dmh") || lower.contains("aidlingen") {
-        "DMH".to_string()
-    } else if lower.contains("privat") || lower.contains("private") || lower.contains("persönlich")
-    {
-        "Privat".to_string()
-    } else if trimmed.is_empty() {
-        "Outlook".to_string()
+fn original_outlook_folder_name(folder_path: &str) -> String {
+    let trimmed = folder_path.trim().trim_end_matches(['\\', '/']);
+    let folder_name = trimmed
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(trimmed)
+        .trim();
+    if folder_name.is_empty() {
+        "Kontakte".to_string()
     } else {
-        trimmed.chars().take(80).collect()
-    };
-    format!("Outlook · {label}")
+        folder_name.chars().take(80).collect()
+    }
+}
+
+fn suggested_outlook_group_name(folder_path: &str) -> String {
+    original_outlook_folder_name(folder_path)
 }
 
 fn normalize_phone_for_match(value: &str) -> String {
@@ -2104,7 +2443,7 @@ fn preview_outlook_classic_contacts_blocking(
                 } else {
                     record.folder_path.trim().to_string()
                 },
-                suggested_group_name: suggested_outlook_group_name(&store_name),
+                suggested_group_name: suggested_outlook_group_name(&record.folder_path),
                 total: 0,
                 new_contacts: 0,
                 exact_duplicates: 0,
@@ -2256,7 +2595,7 @@ fn import_selected_outlook_classic_contacts_blocking(
 
         if request.create_source_groups {
             let store_name = outlook_store_name(record);
-            let group_name = suggested_outlook_group_name(&store_name);
+            let group_name = suggested_outlook_group_name(&record.folder_path);
             let group_id = if let Some(group_id) = group_ids.get(&group_name) {
                 *group_id
             } else {
@@ -3439,6 +3778,9 @@ fn import_outlook_classic_appointments_once() -> Result<OutlookOneTimeCalendarIm
             source,
             recurrence: record.recurrence,
             excluded_dates: record.excluded_dates,
+            deleted_at: None,
+            recurrence_master_id: None,
+            recurrence_id: None,
         });
     }
 
@@ -3633,6 +3975,8 @@ pub fn run() {
             undo_last_import,
             undo_last_outlook_contact_import,
             get_backup_data,
+            create_automatic_backup,
+            restore_automatic_backup,
             restore_backup,
             write_export_file,
             reset_local_app_data,
@@ -3654,6 +3998,8 @@ pub fn run() {
             m365::open_m365_sign_in,
             m365::test_m365_connection,
             m365::disconnect_m365_account,
+            m365::list_m365_sync_sources,
+            m365::preview_m365_sync,
             import_outlook_store,
             preview_outlook_classic_contacts,
             import_selected_outlook_classic_contacts,
@@ -3671,6 +4017,7 @@ pub fn run() {
             mail_accounts::submit_migration_credentials,
             mail_accounts::remove_mail_account,
             vault::get_vault_status,
+            vault::create_automatic_password_backup,
             vault::list_vault_entries,
             vault::list_deleted_vault_entries,
             vault::save_vault_entry,
@@ -3972,5 +4319,97 @@ mod tests {
             .unwrap()
             .days_of_week
             .is_empty());
+    }
+
+    #[test]
+    fn automatic_backup_keeps_deleted_contact_and_calendar_event() {
+        let previous_contact = Contact {
+            id: Some(7),
+            first_name: "Erika".to_string(),
+            last_name: "Mustermann".to_string(),
+            display_name: "Erika Mustermann".to_string(),
+            email: "erika@example.org".to_string(),
+            phone: String::new(),
+            mobile_phone: String::new(),
+            street: String::new(),
+            postal_code: String::new(),
+            city: String::new(),
+            country: String::new(),
+            short_info: String::new(),
+            notes: "Vorherige Notiz".to_string(),
+            groups: Vec::new(),
+            created_at: "2026-08-18T10:00:00Z".to_string(),
+            updated_at: "2026-08-18T10:00:00Z".to_string(),
+            deleted_at: None,
+        };
+        let previous_event = CalendarEvent {
+            id: "event-7".to_string(),
+            title: "Besprechung".to_string(),
+            starts_at: "2026-08-18T10:00:00".to_string(),
+            ends_at: "2026-08-18T11:00:00".to_string(),
+            location: String::new(),
+            description: "Vorherige Beschreibung".to_string(),
+            color: "blue".to_string(),
+            category: String::new(),
+            source: "test".to_string(),
+            recurrence: None,
+            excluded_dates: Vec::new(),
+            deleted_at: None,
+            recurrence_master_id: None,
+            recurrence_id: None,
+        };
+        let mut previous_storage = HashMap::new();
+        previous_storage.insert(
+            "agendakontakte.calendarEvents".to_string(),
+            serde_json::to_string(&vec![previous_event]).expect("previous event"),
+        );
+        let previous = BackupData {
+            version: "2.0.0".to_string(),
+            exported_at: "2026-08-18T10:00:00Z".to_string(),
+            contacts: vec![previous_contact],
+            groups: Vec::new(),
+            settings: Vec::new(),
+            browser_storage: previous_storage,
+        };
+
+        let mut current_storage = HashMap::new();
+        current_storage.insert(
+            "agendakontakte.calendarEvents".to_string(),
+            "[]".to_string(),
+        );
+        current_storage.insert(
+            "agendakontakte.deletedCalendarEvents".to_string(),
+            "[]".to_string(),
+        );
+        let merged = merge_automatic_backup(
+            Some(previous),
+            BackupData {
+                version: "2.0.0".to_string(),
+                exported_at: "2026-08-18T10:01:00Z".to_string(),
+                contacts: Vec::new(),
+                groups: Vec::new(),
+                settings: Vec::new(),
+                browser_storage: current_storage,
+            },
+        )
+        .expect("merge automatic backup");
+
+        assert_eq!(merged.contacts.len(), 1);
+        assert_eq!(
+            merged.contacts[0].notes,
+            "Vorherige Notiz\nGelöschtes Element"
+        );
+        let deleted_events: Vec<CalendarEvent> = serde_json::from_str(
+            merged
+                .browser_storage
+                .get("agendakontakte.deletedCalendarEvents")
+                .expect("deleted calendar events"),
+        )
+        .expect("parse deleted events");
+        assert_eq!(deleted_events.len(), 1);
+        assert_eq!(
+            deleted_events[0].description,
+            "Vorherige Beschreibung\nGelöschtes Element"
+        );
     }
 }
