@@ -3,7 +3,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -372,7 +372,24 @@ struct OutlookAppointmentRecord {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct OutlookCalendarRecord {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    store_id: String,
+    #[serde(default)]
+    store_name: String,
+    #[serde(default)]
+    folder_path: String,
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct OutlookCalendarReadData {
+    #[serde(default, deserialize_with = "deserialize_vec_flexible")]
+    calendars: Vec<OutlookCalendarRecord>,
     #[serde(default, deserialize_with = "deserialize_vec_flexible")]
     events: Vec<OutlookAppointmentRecord>,
     #[serde(default)]
@@ -464,6 +481,36 @@ pub struct OutlookOneTimeCalendarImportResult {
     pub found: usize,
     pub skipped_invalid: usize,
     pub events: Vec<CalendarEvent>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutlookCalendarPreviewCalendar {
+    pub id: String,
+    pub name: String,
+    pub store_name: String,
+    pub folder_path: String,
+    pub event_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutlookCalendarDuplicateGroup {
+    pub title: String,
+    pub starts_at: String,
+    pub ends_at: String,
+    pub location: String,
+    pub occurrence_count: usize,
+    pub calendars: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutlookCalendarPreview {
+    pub calendars: Vec<OutlookCalendarPreviewCalendar>,
+    pub total_events: usize,
+    pub skipped_invalid: usize,
+    pub duplicate_groups: Vec<OutlookCalendarDuplicateGroup>,
 }
 
 #[derive(Debug, Serialize)]
@@ -3494,6 +3541,7 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $outlook = New-Object -ComObject Outlook.Application
 $namespace = $outlook.Session
+$calendars = New-Object System.Collections.Generic.List[object]
 $events = New-Object System.Collections.Generic.List[object]
 $skipped = 0
 
@@ -3635,6 +3683,14 @@ function Add-Calendar-Record($item, $folder, $storeId, $storeName, $allowRecurre
 
 function Read-Calendar-Folder($folder, $storeId, $storeName) {
   try {
+    $folderPath = [string]$folder.FolderPath
+    $calendars.Add([pscustomobject]@{
+      id = "$storeId|$folderPath"
+      storeId = $storeId
+      storeName = $storeName
+      folderPath = $folderPath
+      name = [string]$folder.Name
+    }) | Out-Null
     $items = $folder.Items
     for ($index = 1; $index -le $items.Count; $index++) {
       try {
@@ -3667,7 +3723,7 @@ for ($storeIndex = 1; $storeIndex -le $namespace.Stores.Count; $storeIndex++) {
   } catch { $script:skipped++ }
 }
 
-[pscustomobject]@{ events = $events.ToArray(); skipped = $skipped } | ConvertTo-Json -Depth 6 -Compress
+[pscustomobject]@{ calendars = $calendars.ToArray(); events = $events.ToArray(); skipped = $skipped } | ConvertTo-Json -Depth 6 -Compress
 "#;
 
     let output = hidden_command("powershell")
@@ -3691,6 +3747,154 @@ for ($storeIndex = 1; $storeIndex -le $namespace.Stores.Count; $storeIndex++) {
     let stdout = String::from_utf8_lossy(&output.stdout);
     serde_json::from_str::<OutlookCalendarReadData>(stdout.trim())
         .map_err(|err| format!("Outlook-Termine konnten nicht ausgewertet werden: {err}"))
+}
+
+fn outlook_calendar_key(store_id: &str, folder_path: &str) -> String {
+    format!("{}\n{}", store_id.trim(), folder_path.trim())
+}
+
+fn outlook_calendar_name(store_name: &str, folder_path: &str, fallback: &str) -> String {
+    let folder_name = folder_path
+        .trim()
+        .trim_end_matches(['\\', '/'])
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or("")
+        .trim();
+    if !store_name.trim().is_empty() && !folder_name.is_empty() {
+        format!("{} · {}", store_name.trim(), folder_name)
+    } else if !fallback.trim().is_empty() {
+        fallback.trim().to_string()
+    } else if !folder_name.is_empty() {
+        folder_name.to_string()
+    } else {
+        "Unbenannter Kalender".to_string()
+    }
+}
+
+fn outlook_duplicate_key(record: &OutlookAppointmentRecord) -> Option<String> {
+    let starts_at = record.starts_at.trim();
+    if starts_at.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{}\n{}\n{}\n{}",
+        record.title.trim().to_lowercase(),
+        starts_at,
+        record.ends_at.trim(),
+        record.location.trim().to_lowercase()
+    ))
+}
+
+fn build_outlook_calendar_preview(read_result: &OutlookCalendarReadData) -> OutlookCalendarPreview {
+    let mut calendars: BTreeMap<String, OutlookCalendarPreviewCalendar> = read_result
+        .calendars
+        .iter()
+        .map(|calendar| {
+            (
+                outlook_calendar_key(&calendar.store_id, &calendar.folder_path),
+                OutlookCalendarPreviewCalendar {
+                    id: if calendar.id.trim().is_empty() {
+                        outlook_calendar_key(&calendar.store_id, &calendar.folder_path)
+                    } else {
+                        calendar.id.clone()
+                    },
+                    name: outlook_calendar_name(
+                        &calendar.store_name,
+                        &calendar.folder_path,
+                        &calendar.name,
+                    ),
+                    store_name: calendar.store_name.clone(),
+                    folder_path: calendar.folder_path.clone(),
+                    event_count: 0,
+                },
+            )
+        })
+        .collect();
+    let mut duplicate_groups: BTreeMap<
+        String,
+        (
+            String,
+            String,
+            String,
+            String,
+            BTreeMap<String, String>,
+            usize,
+        ),
+    > = BTreeMap::new();
+    let mut skipped_invalid = read_result.skipped;
+
+    for record in &read_result.events {
+        if record.starts_at.trim().is_empty() {
+            skipped_invalid += 1;
+            continue;
+        }
+        let calendar_key = outlook_calendar_key(&record.store_id, &record.folder_path);
+        let calendar_name =
+            outlook_calendar_name(&record.store_name, &record.folder_path, &record.folder_path);
+        let calendar = calendars.entry(calendar_key.clone()).or_insert_with(|| {
+            OutlookCalendarPreviewCalendar {
+                id: calendar_key.clone(),
+                name: calendar_name.clone(),
+                store_name: record.store_name.clone(),
+                folder_path: record.folder_path.clone(),
+                event_count: 0,
+            }
+        });
+        calendar.event_count += 1;
+
+        if let Some(key) = outlook_duplicate_key(record) {
+            let duplicate = duplicate_groups.entry(key).or_insert_with(|| {
+                (
+                    if record.title.trim().is_empty() {
+                        "Ohne Titel".to_string()
+                    } else {
+                        record.title.trim().to_string()
+                    },
+                    record.starts_at.trim().to_string(),
+                    record.ends_at.trim().to_string(),
+                    record.location.trim().to_string(),
+                    BTreeMap::new(),
+                    0,
+                )
+            });
+            duplicate.4.insert(calendar_key, calendar_name);
+            duplicate.5 += 1;
+        }
+    }
+
+    let duplicate_groups = duplicate_groups
+        .into_values()
+        .filter_map(
+            |(title, starts_at, ends_at, location, calendars, occurrence_count)| {
+                (calendars.len() > 1).then(|| OutlookCalendarDuplicateGroup {
+                    title,
+                    starts_at,
+                    ends_at,
+                    location,
+                    occurrence_count,
+                    calendars: calendars.into_values().collect(),
+                })
+            },
+        )
+        .collect();
+
+    let total_events = calendars
+        .values()
+        .map(|calendar| calendar.event_count)
+        .sum();
+    OutlookCalendarPreview {
+        calendars: calendars.into_values().collect(),
+        total_events,
+        skipped_invalid,
+        duplicate_groups,
+    }
+}
+
+#[tauri::command]
+fn preview_outlook_classic_appointments() -> Result<OutlookCalendarPreview, String> {
+    let read_result = read_outlook_classic_appointments()?;
+    Ok(build_outlook_calendar_preview(&read_result))
 }
 
 fn outlook_calendar_event_id(record: &OutlookAppointmentRecord, index: usize) -> String {
@@ -3995,6 +4199,7 @@ pub fn run() {
             import_outlook_store,
             preview_outlook_classic_contacts,
             import_selected_outlook_classic_contacts,
+            preview_outlook_classic_appointments,
             import_outlook_classic_appointments_once,
             thunderbird::import_thunderbird_contacts_once,
             thunderbird::import_thunderbird_calendars_once,
@@ -4311,6 +4516,58 @@ mod tests {
             .unwrap()
             .days_of_week
             .is_empty());
+    }
+
+    #[test]
+    fn outlook_preview_separates_calendars_and_detects_cross_calendar_duplicates() {
+        let event = |store_id: &str, folder_path: &str, entry_id: &str, title: &str| {
+            OutlookAppointmentRecord {
+                entry_id: entry_id.to_string(),
+                store_id: store_id.to_string(),
+                store_name: store_id.to_string(),
+                folder_path: folder_path.to_string(),
+                global_appointment_id: String::new(),
+                title: title.to_string(),
+                starts_at: "2026-08-20T09:00:00".to_string(),
+                ends_at: "2026-08-20T10:00:00".to_string(),
+                location: "Büro".to_string(),
+                description: String::new(),
+                category: String::new(),
+                color: "blue".to_string(),
+                recurrence: None,
+                excluded_dates: Vec::new(),
+            }
+        };
+        let preview = build_outlook_calendar_preview(&OutlookCalendarReadData {
+            calendars: vec![
+                OutlookCalendarRecord {
+                    id: "store-a|\\Kalender".to_string(),
+                    store_id: "store-a".to_string(),
+                    store_name: "Outlook A".to_string(),
+                    folder_path: "\\Kalender".to_string(),
+                    name: "Kalender".to_string(),
+                },
+                OutlookCalendarRecord {
+                    id: "store-b|\\Kalender".to_string(),
+                    store_id: "store-b".to_string(),
+                    store_name: "Outlook B".to_string(),
+                    folder_path: "\\Kalender".to_string(),
+                    name: "Kalender".to_string(),
+                },
+            ],
+            events: vec![
+                event("store-a", "\\Kalender", "a-1", "Gemeinsamer Termin"),
+                event("store-b", "\\Kalender", "b-1", "Gemeinsamer Termin"),
+                event("store-a", "\\Kalender", "a-2", "Nur in A"),
+            ],
+            skipped: 0,
+        });
+
+        assert_eq!(preview.calendars.len(), 2);
+        assert_eq!(preview.total_events, 3);
+        assert_eq!(preview.duplicate_groups.len(), 1);
+        assert_eq!(preview.duplicate_groups[0].occurrence_count, 2);
+        assert_eq!(preview.duplicate_groups[0].calendars.len(), 2);
     }
 
     #[test]

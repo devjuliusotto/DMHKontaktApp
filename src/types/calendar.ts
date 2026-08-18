@@ -34,6 +34,30 @@ export interface OutlookOneTimeCalendarImportResult {
   events: CalendarEvent[];
 }
 
+export interface OutlookCalendarPreviewCalendar {
+  id: string;
+  name: string;
+  storeName: string;
+  folderPath: string;
+  eventCount: number;
+}
+
+export interface OutlookCalendarDuplicateGroup {
+  title: string;
+  startsAt: string;
+  endsAt: string;
+  location: string;
+  occurrenceCount: number;
+  calendars: string[];
+}
+
+export interface OutlookCalendarPreview {
+  calendars: OutlookCalendarPreviewCalendar[];
+  totalEvents: number;
+  skippedInvalid: number;
+  duplicateGroups: OutlookCalendarDuplicateGroup[];
+}
+
 export interface ThunderbirdCalendarImportResult {
   found: number;
   skippedInvalid: number;

@@ -1,9 +1,9 @@
-import { Bird, CalendarDays, CalendarRange, Download, LoaderCircle, Undo2, UsersRound } from "lucide-react";
+import { AlertTriangle, Bird, CalendarDays, CalendarRange, Download, LoaderCircle, Undo2, UsersRound } from "lucide-react";
 import { useState } from "react";
 import { OutlookContactImportDialog } from "../components/OutlookContactImportDialog";
 import { StatusMessage } from "../components/StatusMessage";
-import { importOutlookClassicAppointmentsOnce, importThunderbirdCalendarsOnce, importThunderbirdContactsOnce, undoLastOutlookContactImport } from "../services/db";
-import type { CalendarEvent } from "../types/calendar";
+import { importOutlookClassicAppointmentsOnce, importThunderbirdCalendarsOnce, importThunderbirdContactsOnce, previewOutlookClassicAppointments, undoLastOutlookContactImport } from "../services/db";
+import type { CalendarEvent, OutlookCalendarPreview } from "../types/calendar";
 import type { OutlookContactImportResult } from "../types/contact";
 import { calendarColorFromCategory, calendarStorageKey } from "../utils/calendar";
 import { mergeCalendarEventsExactly } from "../utils/calendarDuplicates";
@@ -16,11 +16,19 @@ function storedCalendarEvents(): CalendarEvent[] {
   return value as CalendarEvent[];
 }
 
+function formatPreviewDate(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? value
+    : new Intl.DateTimeFormat("de-DE", { dateStyle: "short", timeStyle: "short" }).format(date);
+}
+
 export function SimpleImportPage() {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState<"success" | "error" | "info">("info");
   const [contactImportDialogOpen, setContactImportDialogOpen] = useState(false);
+  const [outlookCalendarPreview, setOutlookCalendarPreview] = useState<OutlookCalendarPreview | null>(null);
 
   const contactsImported = (result: OutlookContactImportResult, source: "classic" | "csv") => {
     setMessageType("success");
@@ -52,15 +60,42 @@ export function SimpleImportPage() {
     }
   };
 
+  const previewAppointments = async () => {
+    setBusyAction("preview-outlook-appointments");
+    setMessageType("info");
+    setMessage("Die Outlook-Kalender werden analysiert. Dies kann einige Minuten dauern …");
+    try {
+      const preview = await previewOutlookClassicAppointments();
+      setOutlookCalendarPreview(preview);
+      setMessageType("success");
+      setMessage(
+        `${preview.calendars.length} Outlook-Kalender mit insgesamt ${preview.totalEvents} Terminen gefunden. `
+        + (preview.duplicateGroups.length > 0
+          ? `${preview.duplicateGroups.length} mögliche kalenderübergreifende Duplikatgruppen müssen geprüft werden.`
+          : "Es wurden keine kalenderübergreifenden Duplikate erkannt.")
+      );
+    } catch (error) {
+      setMessageType("error");
+      setMessage(`Outlook-Kalender konnten nicht analysiert werden: ${error}`);
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
   const importAppointmentsOnce = async () => {
+    if (!outlookCalendarPreview) return;
     const confirmed = window.confirm(
-      "Alle Termine aus allen erreichbaren Kalenderordnern des aktuellen Outlook-Classic-Profils einmalig in DMH Kontakte und Kalender kopieren?\n\nOutlook wird nicht verändert und es wird keine automatische Synchronisierung eingerichtet. Bereits importierte Termine werden ausgelassen."
+      `Die Vorschau zeigt ${outlookCalendarPreview.calendars.length} getrennte Outlook-Kalender mit insgesamt ${outlookCalendarPreview.totalEvents} Terminen. Diese Kalender werden getrennt als Quellen übernommen.\n\n`
+      + (outlookCalendarPreview.duplicateGroups.length > 0
+        ? `Es wurden ${outlookCalendarPreview.duplicateGroups.length} mögliche kalenderübergreifende Duplikatgruppen gefunden. Sie bleiben erhalten und werden nicht automatisch zusammengelegt.\n\n`
+        : "Es wurden keine kalenderübergreifenden Duplikate erkannt.\n\n")
+      + "Jetzt einmalig importieren? Outlook wird nicht verändert."
     );
     if (!confirmed) return;
 
     setBusyAction("import-outlook-appointments-once");
     setMessageType("info");
-    setMessage("Alle erreichbaren Outlook-Kalender werden gelesen. Dies kann einige Minuten dauern …");
+    setMessage("Die angezeigten Outlook-Kalender werden importiert. Dies kann einige Minuten dauern …");
     try {
       const result = await importOutlookClassicAppointmentsOnce();
       const existing = storedCalendarEvents();
@@ -189,11 +224,55 @@ export function SimpleImportPage() {
               <div>
                 <h4>Kalender</h4>
                 <p>Termine aus allen erreichbaren Outlook-Kalendern übernehmen.</p>
-                <small>Einmalige Kopie aus Outlook Classic; Outlook bleibt unverändert.</small>
+                <small>Vorher getrennt analysieren; Outlook bleibt unverändert.</small>
               </div>
-              <button className="settings-action-button" type="button" onClick={importAppointmentsOnce} disabled={busyAction !== null}>
-                {busyAction === "import-outlook-appointments-once" ? "Kalender werden gelesen …" : "Outlook-Kalender importieren"}
+              <button className="settings-action-button" type="button" onClick={previewAppointments} disabled={busyAction !== null}>
+                {busyAction === "preview-outlook-appointments"
+                  ? "Kalender werden analysiert …"
+                  : outlookCalendarPreview
+                    ? "Kalender erneut analysieren"
+                    : "Outlook-Kalender analysieren"}
               </button>
+              {outlookCalendarPreview && (
+                <div className="simple-import-calendar-preview">
+                  <div className="simple-import-preview-summary">
+                    <strong>Vorschau vor dem Import</strong>
+                    <span>{outlookCalendarPreview.calendars.length} Kalender · {outlookCalendarPreview.totalEvents} Termine</span>
+                  </div>
+                  <ul className="simple-import-calendar-list">
+                    {outlookCalendarPreview.calendars.map((calendar) => (
+                      <li key={calendar.id}>
+                        <strong>{calendar.name}</strong>
+                        <span>{calendar.eventCount} {calendar.eventCount === 1 ? "Termin" : "Termine"}</span>
+                        <small>{calendar.folderPath || calendar.storeName}</small>
+                      </li>
+                    ))}
+                  </ul>
+                  {outlookCalendarPreview.duplicateGroups.length > 0 ? (
+                    <div className="simple-import-duplicate-warning" role="alert">
+                      <div className="simple-import-preview-summary">
+                        <AlertTriangle size={18} aria-hidden="true" />
+                        <strong>{outlookCalendarPreview.duplicateGroups.length} mögliche Duplikatgruppen</strong>
+                      </div>
+                      <p>Diese Termine wurden in mehreren Outlook-Kalendern gefunden. Sie werden nicht automatisch zusammengelegt.</p>
+                      <ul className="simple-import-duplicate-list">
+                        {outlookCalendarPreview.duplicateGroups.map((duplicate, index) => (
+                          <li key={`${duplicate.startsAt}-${duplicate.title}-${index}`}>
+                            <strong>{duplicate.title}</strong>
+                            <span>{formatPreviewDate(duplicate.startsAt)} · {duplicate.occurrenceCount} Vorkommen</span>
+                            <small>{duplicate.calendars.join(" · ")}</small>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : (
+                    <p className="simple-import-no-duplicates">Keine möglichen Duplikate zwischen verschiedenen Outlook-Kalendern erkannt.</p>
+                  )}
+                  <button className="settings-action-button simple-import-confirm-button" type="button" onClick={importAppointmentsOnce} disabled={busyAction !== null}>
+                    {busyAction === "import-outlook-appointments-once" ? "Kalender werden importiert …" : "Vorschau bestätigen und importieren"}
+                  </button>
+                </div>
+              )}
             </article>
           </div>
           <div className="simple-import-undo">

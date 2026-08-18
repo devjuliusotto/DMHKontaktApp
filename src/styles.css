@@ -2893,6 +2893,90 @@ td small {
   margin: 0.85rem 0 0;
 }
 
+.simple-import-calendar-preview {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 0.65rem;
+  grid-column: 1 / -1;
+  margin-top: 0.15rem;
+  padding: 0.75rem;
+}
+
+.simple-import-preview-summary {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.7rem;
+}
+
+.simple-import-preview-summary span,
+.simple-import-calendar-list span,
+.simple-import-calendar-list small,
+.simple-import-duplicate-warning p,
+.simple-import-duplicate-list span,
+.simple-import-duplicate-list small,
+.simple-import-no-duplicates {
+  color: var(--accent);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.simple-import-calendar-list,
+.simple-import-duplicate-list {
+  display: grid;
+  gap: 0.45rem;
+  list-style: none;
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: 0;
+}
+
+.simple-import-calendar-list li,
+.simple-import-duplicate-list li {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: grid;
+  gap: 0.1rem;
+  padding: 0.5rem 0.6rem;
+}
+
+.simple-import-calendar-list small,
+.simple-import-duplicate-list small {
+  overflow-wrap: anywhere;
+}
+
+.simple-import-duplicate-warning {
+  background: var(--warning-surface, #fff6dc);
+  border: 1px solid var(--warning-border, #d6a62a);
+  border-radius: 7px;
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.65rem;
+}
+
+.simple-import-duplicate-warning .simple-import-preview-summary {
+  color: var(--warning-text, #7b5a00);
+}
+
+.simple-import-duplicate-warning p,
+.simple-import-no-duplicates {
+  margin: 0;
+}
+
+.simple-import-duplicate-list {
+  max-height: 180px;
+}
+
+.simple-import-confirm-button {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--on-primary, #ffffff);
+}
+
 .outlook-import-backdrop {
   padding: clamp(0.7rem, 3vw, 2rem);
 }
