@@ -10,6 +10,10 @@ export interface VaultStatus {
 
 export interface VaultEntry {
   id: number;
+  kind: "password" | "totp";
+  totpAlgorithm?: "SHA1" | "SHA256" | "SHA512";
+  totpDigits?: number;
+  totpPeriod?: number;
   platform: string;
   username: string;
   password: string;
@@ -22,6 +26,10 @@ export interface VaultEntry {
 
 export interface VaultEntryInput {
   id?: number;
+  kind: "password" | "totp";
+  totpAlgorithm?: "SHA1" | "SHA256" | "SHA512";
+  totpDigits?: number;
+  totpPeriod?: number;
   platform: string;
   username: string;
   password: string;

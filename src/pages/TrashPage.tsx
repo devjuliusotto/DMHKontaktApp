@@ -146,7 +146,7 @@ export function TrashPage() {
 
   const restoreDeletedPassword = async (entry: VaultEntry) => {
     await restoreVaultEntry(entry.id);
-    setMessage("Passwort wurde wiederhergestellt.");
+    setMessage(entry.kind === "totp" ? "2FA-Eintrag wurde wiederhergestellt." : "Passwort wurde wiederhergestellt.");
     await refresh();
   };
 
@@ -155,7 +155,7 @@ export function TrashPage() {
       <header className="page-header">
         <div>
           <h2>Papierkorb</h2>
-          <p>Gelöschte Termine, Kontakte und Passwörter bleiben erhalten und können wiederhergestellt werden.</p>
+          <p>Gelöschte Termine, Kontakte, Passwörter und 2FA-Einträge bleiben erhalten und können wiederhergestellt werden.</p>
         </div>
       </header>
       <StatusMessage message={message} />
@@ -229,11 +229,11 @@ export function TrashPage() {
           </section>
 
           <section className="trash-section">
-            <div className="trash-section-title"><KeyRound size={21} /><h3>Gelöschte Passwörter</h3></div>
-            {deletedVaultEntries.length === 0 && <p>Keine gelöschten Passwörter.</p>}
+            <div className="trash-section-title"><KeyRound size={21} /><h3>Gelöschte Passwörter und 2FA-Codes</h3></div>
+            {deletedVaultEntries.length === 0 && <p>Keine gelöschten Passwörter oder 2FA-Codes.</p>}
             {deletedVaultEntries.map((entry) => (
               <div className="trash-row" key={entry.id}>
-                <span><strong>{entry.platform}</strong><small>{entry.username || "Kein Benutzer"}</small></span>
+                <span><strong>{entry.platform}</strong><small>{entry.kind === "totp" ? "2FA-Authenticator" : entry.username || "Kein Benutzer"}</small></span>
                 <button type="button" onClick={() => restoreDeletedPassword(entry)}>
                   <RotateCcw size={18} /> Wiederherstellen
                 </button>

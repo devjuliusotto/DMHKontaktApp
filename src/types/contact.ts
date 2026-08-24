@@ -61,6 +61,7 @@ export type OutlookContactPreviewStatus = "new" | "different" | "duplicate_exact
 
 export interface OutlookContactSourcePreview {
   id: string;
+  kind: "contacts" | "autocomplete";
   storeName: string;
   folderPath: string;
   suggestedGroupName: string;
@@ -87,6 +88,7 @@ export interface OutlookContactPreviewItem {
 export interface OutlookContactImportPreview {
   found: number;
   skippedInvalid: number;
+  warnings: string[];
   sources: OutlookContactSourcePreview[];
   contacts: OutlookContactPreviewItem[];
 }

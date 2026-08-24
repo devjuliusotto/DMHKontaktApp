@@ -87,6 +87,10 @@ pub struct VaultRecoveryDelivery {
 #[serde(rename_all = "camelCase")]
 pub struct VaultEntry {
     id: i64,
+    kind: String,
+    totp_algorithm: Option<String>,
+    totp_digits: Option<u32>,
+    totp_period: Option<u32>,
     platform: String,
     username: String,
     password: String,
@@ -107,6 +111,14 @@ impl Drop for VaultEntry {
 #[serde(rename_all = "camelCase")]
 pub struct VaultEntryInput {
     id: Option<i64>,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    totp_algorithm: Option<String>,
+    #[serde(default)]
+    totp_digits: Option<u32>,
+    #[serde(default)]
+    totp_period: Option<u32>,
     platform: String,
     username: String,
     password: String,
@@ -123,6 +135,14 @@ impl Drop for VaultEntryInput {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct VaultEntrySecret {
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    totp_algorithm: Option<String>,
+    #[serde(default)]
+    totp_digits: Option<u32>,
+    #[serde(default)]
+    totp_period: Option<u32>,
     platform: String,
     username: String,
     password: String,
@@ -281,6 +301,29 @@ fn password_matches(password: &str, encoded_hash: &str) -> bool {
 }
 
 fn validate_entry(entry: &VaultEntryInput) -> Result<(), String> {
+    if !entry.kind.trim().is_empty()
+        && entry.kind.trim() != "password"
+        && entry.kind.trim() != "totp"
+    {
+        return Err("Unbekannter Tresor-Eintragstyp.".to_string());
+    }
+    if entry.kind.trim() == "totp" {
+        if let Some(algorithm) = &entry.totp_algorithm {
+            if !["SHA1", "SHA256", "SHA512"].contains(&algorithm.as_str()) {
+                return Err("Unbekannter TOTP-Algorithmus.".to_string());
+            }
+        }
+        if let Some(digits) = entry.totp_digits {
+            if digits != 6 && digits != 8 {
+                return Err("Die Anzahl der TOTP-Ziffern ist ungültig.".to_string());
+            }
+        }
+        if let Some(period) = entry.totp_period {
+            if !(10..=120).contains(&period) {
+                return Err("Das TOTP-Zeitfenster ist ungültig.".to_string());
+            }
+        }
+    }
     if entry.platform.trim().is_empty() {
         return Err("Bitte geben Sie eine Plattform ein.".to_string());
     }
@@ -755,6 +798,14 @@ fn list_vault_entries_by_state(app: AppHandle, deleted: bool) -> Result<Vec<Vaul
                 let mut secret = decrypt_entry(&key, &entry_uuid, &nonce, &ciphertext)?;
                 Ok(VaultEntry {
                     id,
+                    kind: if secret.kind.is_empty() {
+                        "password".to_string()
+                    } else {
+                        std::mem::take(&mut secret.kind)
+                    },
+                    totp_algorithm: secret.totp_algorithm.take(),
+                    totp_digits: secret.totp_digits.take(),
+                    totp_period: secret.totp_period.take(),
                     platform: std::mem::take(&mut secret.platform),
                     username: std::mem::take(&mut secret.username),
                     password: std::mem::take(&mut secret.password),
@@ -775,6 +826,14 @@ pub fn save_vault_entry(app: AppHandle, mut entry: VaultEntryInput) -> Result<i6
     let key = ensure_vault_key(&app)?;
     let id = entry.id;
     let mut secret = VaultEntrySecret {
+        kind: if entry.kind.trim().is_empty() {
+            "password".to_string()
+        } else {
+            entry.kind.trim().to_string()
+        },
+        totp_algorithm: entry.totp_algorithm.take(),
+        totp_digits: entry.totp_digits.take(),
+        totp_period: entry.totp_period.take(),
         platform: std::mem::take(&mut entry.platform).trim().to_string(),
         username: std::mem::take(&mut entry.username).trim().to_string(),
         password: std::mem::take(&mut entry.password),
@@ -836,16 +895,44 @@ pub fn delete_vault_entry(app: AppHandle, id: i64) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn delete_all_vault_entries(app: AppHandle) -> Result<usize, String> {
+pub fn delete_all_vault_entries(app: AppHandle, kind: Option<String>) -> Result<usize, String> {
     ensure_vault_key(&app)?;
+    let ids = match kind.as_deref() {
+        Some("password") | Some("totp") => list_vault_entries_by_state(app.clone(), false)?
+            .into_iter()
+            .filter(|entry| entry.kind == kind.as_deref().unwrap_or("password"))
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>(),
+        Some(_) => return Err("Unbekannter Tresor-Eintragstyp.".to_string()),
+        None => {
+            let conn = open_db(&app)?;
+            let mut statement = conn
+                .prepare("SELECT id FROM vault_entries WHERE deleted_at IS NULL")
+                .map_err(|error| error.to_string())?;
+            let ids = statement
+                .query_map([], |row| row.get::<_, i64>(0))
+                .map_err(|error| error.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?;
+            ids
+        }
+    };
     let timestamp = now();
-    open_db(&app)?
-        .execute(
+    let mut conn = open_db(&app)?;
+    let tx = conn
+        .transaction()
+        .map_err(|error| format!("Die Kennwort-Einträge konnten nicht gelöscht werden: {error}"))?;
+    for id in &ids {
+        tx.execute(
             "UPDATE vault_entries SET deleted_at = ?1, updated_at = ?1
-             WHERE deleted_at IS NULL",
-            params![timestamp],
+             WHERE id = ?2 AND deleted_at IS NULL",
+            params![timestamp, id],
         )
-        .map_err(|error| format!("Die Kennwort-Einträge konnten nicht gelöscht werden: {error}"))
+        .map_err(|error| format!("Die Kennwort-Einträge konnten nicht gelöscht werden: {error}"))?;
+    }
+    tx.commit()
+        .map_err(|error| format!("Die Kennwort-Einträge konnten nicht gelöscht werden: {error}"))?;
+    Ok(ids.len())
 }
 
 #[tauri::command]
@@ -1249,6 +1336,10 @@ mod tests {
     fn encrypted_entry_round_trips() {
         let key = [7u8; 32];
         let mut source = VaultEntrySecret {
+            kind: "password".to_string(),
+            totp_algorithm: None,
+            totp_digits: None,
+            totp_period: None,
             platform: "Beispiel".to_string(),
             username: "benutzer".to_string(),
             password: "geheim".to_string(),
@@ -1266,6 +1357,10 @@ mod tests {
     fn automatic_password_backup_marks_deleted_description_without_plaintext_archive() {
         let key = [5u8; VAULT_KEY_LENGTH];
         let secret = VaultEntrySecret {
+            kind: "password".to_string(),
+            totp_algorithm: None,
+            totp_digits: None,
+            totp_period: None,
             platform: "Beispiel".to_string(),
             username: "benutzer".to_string(),
             password: "geheim".to_string(),

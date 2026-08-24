@@ -12,8 +12,10 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
+mod documents;
 mod m365;
 mod mail_accounts;
+mod outlook_autocomplete;
 mod thunderbird;
 mod vault;
 
@@ -287,6 +289,8 @@ struct ExistingContactRow {
 #[serde(rename_all = "camelCase")]
 struct OutlookContactRecord {
     #[serde(default)]
+    source_kind: String,
+    #[serde(default)]
     entry_id: String,
     #[serde(default)]
     store_id: String,
@@ -409,6 +413,7 @@ pub struct OutlookOneTimeContactImportResult {
 #[serde(rename_all = "camelCase")]
 pub struct OutlookContactSourcePreview {
     pub id: String,
+    pub kind: String,
     pub store_name: String,
     pub folder_path: String,
     pub suggested_group_name: String,
@@ -439,6 +444,7 @@ pub struct OutlookContactPreviewItem {
 pub struct OutlookContactImportPreview {
     pub found: usize,
     pub skipped_invalid: usize,
+    pub warnings: Vec<String>,
     pub sources: Vec<OutlookContactSourcePreview>,
     pub contacts: Vec<OutlookContactPreviewItem>,
 }
@@ -2191,6 +2197,47 @@ for ($storeIndex = 1; $storeIndex -le $namespace.Stores.Count; $storeIndex++) {
         .map_err(|err| format!("Outlook-Kontakte konnten nicht ausgewertet werden: {err}"))
 }
 
+fn read_outlook_classic_contacts_for_import() -> Result<(OutlookReadData, Vec<String>), String> {
+    let mut data = read_outlook_classic_contacts()?;
+    let autocomplete = outlook_autocomplete::read_outlook_autocomplete();
+    let mut warnings = autocomplete.warnings;
+    if autocomplete.files_read > 0 {
+        warnings.push(
+            "Die Outlook-Autovervollständigung wird aus dem zuletzt gespeicherten lokalen Cache gelesen. Sehr neue Empfänger erscheinen möglicherweise erst, nachdem Outlook Classic vollständig beendet wurde."
+                .to_string(),
+        );
+    }
+    data.contacts
+        .extend(autocomplete.entries.into_iter().map(|entry| {
+            let display_name = if entry.display_name.trim().is_empty() {
+                entry.email.clone()
+            } else {
+                entry.display_name
+            };
+            OutlookContactRecord {
+                source_kind: "autocomplete".to_string(),
+                entry_id: format!("autocomplete:{}", outlook_hash(&entry.email)),
+                store_id: "outlook-autocomplete".to_string(),
+                store_name: "Outlook Classic".to_string(),
+                folder_id: "outlook-autocomplete".to_string(),
+                folder_path: "Outlook-Autovervollständigung".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
+                display_name,
+                email: entry.email,
+                phone: String::new(),
+                mobile_phone: String::new(),
+                street: String::new(),
+                postal_code: String::new(),
+                city: String::new(),
+                country: String::new(),
+                short_info: String::new(),
+                notes: String::new(),
+            }
+        }));
+    Ok((data, warnings))
+}
+
 fn cache_outlook_contacts(app: &AppHandle, data: OutlookReadData) {
     if let Ok(mut cache) = app.state::<AppState>().outlook_contact_cache.lock() {
         *cache = Some(CachedOutlookContacts {
@@ -2235,6 +2282,9 @@ fn outlook_hash(value: &str) -> String {
 }
 
 fn outlook_source_id(record: &OutlookContactRecord) -> String {
+    if record.source_kind == "autocomplete" {
+        return "outlook-autocomplete-cache".to_string();
+    }
     let folder_key = if record.folder_id.trim().is_empty() {
         record.folder_path.trim()
     } else {
@@ -2256,6 +2306,10 @@ fn outlook_contact_id(record: &OutlookContactRecord) -> String {
         record.entry_id.trim().to_string()
     };
     outlook_hash(&format!("{}|{}", outlook_source_id(record), entry_key))
+}
+
+fn is_outlook_autocomplete_record(record: &OutlookContactRecord) -> bool {
+    record.source_kind == "autocomplete"
 }
 
 fn outlook_store_name(record: &OutlookContactRecord) -> String {
@@ -2419,6 +2473,26 @@ fn classify_outlook_contact(
     ("new".to_string(), "Neuer Kontakt".to_string(), None)
 }
 
+fn classify_outlook_import_record(
+    fingerprints: &ContactFingerprintIndex,
+    record: &OutlookContactRecord,
+    contact: &ContactInput,
+    display_name: &str,
+    email: &str,
+) -> (String, String, Option<String>) {
+    if is_outlook_autocomplete_record(record) && !email.is_empty() {
+        if let Some(existing_name) = fingerprints.emails.get(email) {
+            return (
+                "duplicate_exact".to_string(),
+                "Diese E-Mail-Adresse ist bereits als Kontakt oder Autovervollständigungseintrag vorhanden."
+                    .to_string(),
+                Some(existing_name.clone()),
+            );
+        }
+    }
+    classify_outlook_contact(fingerprints, contact, display_name, email)
+}
+
 fn add_fingerprint(
     fingerprints: &mut ContactFingerprintIndex,
     contact: &ContactInput,
@@ -2451,7 +2525,7 @@ fn add_fingerprint(
 fn preview_outlook_classic_contacts_blocking(
     app: AppHandle,
 ) -> Result<OutlookContactImportPreview, String> {
-    let read_result = read_outlook_classic_contacts()?;
+    let (read_result, warnings) = read_outlook_classic_contacts_for_import()?;
     let conn = open_db(&app)?;
     let mut fingerprints = load_contact_fingerprints(&conn)?;
     let mut sources: Vec<OutlookContactSourcePreview> = Vec::new();
@@ -2476,6 +2550,11 @@ fn preview_outlook_classic_contacts_blocking(
             let index = sources.len();
             sources.push(OutlookContactSourcePreview {
                 id: source_id.clone(),
+                kind: if is_outlook_autocomplete_record(record) {
+                    "autocomplete".to_string()
+                } else {
+                    "contacts".to_string()
+                },
                 store_name: store_name.clone(),
                 folder_path: if record.folder_path.trim().is_empty() {
                     "Kontakte".to_string()
@@ -2494,7 +2573,7 @@ fn preview_outlook_classic_contacts_blocking(
         };
 
         let (status, reason, existing_name) =
-            classify_outlook_contact(&fingerprints, &contact, &display_name, &email);
+            classify_outlook_import_record(&fingerprints, record, &contact, &display_name, &email);
         let source = &mut sources[source_index];
         source.total += 1;
         if email.is_empty() {
@@ -2539,6 +2618,7 @@ fn preview_outlook_classic_contacts_blocking(
     let preview = OutlookContactImportPreview {
         found: read_result.contacts.len(),
         skipped_invalid,
+        warnings,
         sources,
         contacts,
     };
@@ -2565,7 +2645,7 @@ fn import_selected_outlook_classic_contacts_blocking(
     }
     let read_result = match take_cached_outlook_contacts(&app) {
         Some(cached) => cached,
-        None => read_outlook_classic_contacts()?,
+        None => read_outlook_classic_contacts_for_import()?.0,
     };
     let mut conn = open_db(&app)?;
     let mut fingerprints = load_contact_fingerprints(&conn)?;
@@ -2594,7 +2674,7 @@ fn import_selected_outlook_classic_contacts_blocking(
         }
 
         let (status, _, _) =
-            classify_outlook_contact(&fingerprints, &contact, &display_name, &email);
+            classify_outlook_import_record(&fingerprints, record, &contact, &display_name, &email);
         if status == "duplicate_exact" {
             skipped_exact_duplicates += 1;
             continue;
@@ -2647,7 +2727,12 @@ fn import_selected_outlook_classic_contacts_blocking(
                        deleted_at = NULL",
                     params![
                         group_name,
-                        format!("Einmaliger Kontaktimport aus Outlook Classic: {store_name}"),
+                        if is_outlook_autocomplete_record(record) {
+                            "Frühere Empfänger aus der Outlook-Classic-Autovervollständigung"
+                                .to_string()
+                        } else {
+                            format!("Einmaliger Kontaktimport aus Outlook Classic: {store_name}")
+                        },
                         timestamp,
                         timestamp
                     ],
@@ -4196,6 +4281,16 @@ pub fn run() {
             m365::disconnect_m365_account,
             m365::list_m365_sync_sources,
             m365::preview_m365_sync,
+            m365::apply_m365_sync,
+            documents::list_document_sources,
+            documents::list_document_items,
+            documents::create_document_folder,
+            documents::rename_document_item,
+            documents::delete_document_item,
+            documents::download_document_item,
+            documents::upload_document_file,
+            documents::upload_document_revision,
+            documents::get_documents_local_root,
             import_outlook_store,
             preview_outlook_classic_contacts,
             import_selected_outlook_classic_contacts,
@@ -4441,6 +4536,35 @@ mod tests {
             "erika@example.org",
         );
         assert_eq!(status, "duplicate_exact");
+    }
+
+    #[test]
+    fn autocomplete_recipient_is_skipped_when_its_email_already_exists() {
+        let existing = sample_contact("Erika Muster", "erika@example.org", "07034 1234");
+        let mut fingerprints = ContactFingerprintIndex::default();
+        add_fingerprint(
+            &mut fingerprints,
+            &existing,
+            "Erika Muster",
+            "erika@example.org",
+        );
+        let autocomplete: OutlookContactRecord = serde_json::from_value(serde_json::json!({
+            "sourceKind": "autocomplete",
+            "displayName": "Anderer Anzeigename",
+            "email": "erika@example.org"
+        }))
+        .unwrap();
+        let candidate = outlook_record_to_contact(&autocomplete);
+        let (status, _, existing_name) = classify_outlook_import_record(
+            &fingerprints,
+            &autocomplete,
+            &candidate,
+            "Anderer Anzeigename",
+            "erika@example.org",
+        );
+
+        assert_eq!(status, "duplicate_exact");
+        assert_eq!(existing_name.as_deref(), Some("Erika Muster"));
     }
 
     #[test]

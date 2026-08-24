@@ -31,11 +31,23 @@ export interface Microsoft365SyncSource {
   kind: "contactFolder" | "calendar";
   editable: boolean;
   shared: boolean;
+  resourcePath: string;
+  mailbox: string | null;
+}
+
+export interface Microsoft365SharedMailbox {
+  address: string;
+  displayName: string;
+  available: boolean;
+  contactFolderCount: number;
+  calendarCount: number;
+  error: string | null;
 }
 
 export interface Microsoft365SyncSources {
   contacts: Microsoft365SyncSource[];
   calendars: Microsoft365SyncSource[];
+  sharedMailboxes: Microsoft365SharedMailbox[];
   sharedAccessAvailable: boolean;
 }
 
@@ -49,9 +61,32 @@ export interface Microsoft365SyncPreview {
   conflicts: number;
   sharedSourcesSkipped: number;
   changes: Array<{
+    id: string;
     kind: string;
-    action: string;
+    action: "createRemote" | "createLocal" | "updateRemote" | "updateLocal" | "conflict";
+    sourceId: string;
+    sourceName: string;
     title: string;
     detail: string;
+    localSummary: string | null;
+    remoteSummary: string | null;
   }>;
+}
+
+export type Microsoft365ConflictDecision = "keepApp" | "keepM365" | "merge" | "ignore";
+
+export interface Microsoft365SyncResult {
+  startedAt: string;
+  finishedAt: string;
+  created: number;
+  updated: number;
+  ignored: number;
+  conflicts: number;
+  errors: number;
+  errorMessages: string[];
+  calendarUpserts: import("./calendar").CalendarEvent[];
+}
+
+export interface Microsoft365SyncHistoryEntry extends Omit<Microsoft365SyncResult, "calendarUpserts"> {
+  id: string;
 }

@@ -7,6 +7,7 @@ import type { SettingsSection } from "../components/SettingsSubtabs";
 import type { Page } from "../components/Sidebar";
 import {
   getMigrationDiagnosticLog,
+  getAppSetting,
   createAutomaticBackup,
   getBackupData,
   importOutlookAccount,
@@ -19,11 +20,13 @@ import {
   resetMigrationCaptureStatus,
   restartApp,
   scanOutlookAccounts,
+  setAppSetting,
   testMailConnection,
   writeExportFile
 } from "../services/db";
 import type { MailAccount, MigrationCaptureResult, MigrationCaptureStatus, OutlookAccountCandidate } from "../types/mail";
 import { addBrowserDataToBackup, restoreBrowserDataFromBackup } from "../utils/backup";
+import { deletionConfirmationSettingKey } from "../utils/settings";
 
 interface SettingsPageProps {
   section?: SettingsSection;
@@ -63,6 +66,7 @@ export function SettingsPage({ section = "general", onNavigate = () => undefined
   const [hiddenRestoreClicks, setHiddenRestoreClicks] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchIndex, setSearchIndex] = useState(0);
+  const [confirmDeletions, setConfirmDeletions] = useState(true);
   const [revealedPassword, setRevealedPassword] = useState<{
     accountId: number;
     accountLabel: string;
@@ -106,7 +110,27 @@ export function SettingsPage({ section = "general", onNavigate = () => undefined
       .catch(() => {
         setMigrationStatus({ configured: false, completed: false, completedAt: null });
       });
+    getAppSetting(deletionConfirmationSettingKey)
+      .then((value) => setConfirmDeletions(value !== "false"))
+      .catch(() => setConfirmDeletions(true));
   }, []);
+
+  const updateDeletionConfirmation = async (enabled: boolean) => {
+    const previous = confirmDeletions;
+    setConfirmDeletions(enabled);
+    setBusyAction("confirm-deletions");
+    try {
+      await setAppSetting(deletionConfirmationSettingKey, enabled ? "true" : "false");
+      setMessageType("success");
+      setMessage(enabled ? "Löschbestätigungen wurden aktiviert." : "Löschbestätigungen wurden deaktiviert.");
+    } catch (error) {
+      setConfirmDeletions(previous);
+      setMessageType("error");
+      setMessage(`Einstellung konnte nicht gespeichert werden: ${error}`);
+    } finally {
+      setBusyAction(null);
+    }
+  };
 
   const migrationCompleted = (result: MigrationCaptureResult) => {
     setMigrationStatus({ configured: true, completed: true, completedAt: result.completedAt });
@@ -512,6 +536,26 @@ export function SettingsPage({ section = "general", onNavigate = () => undefined
                 <p>Lokale Daten sichern und wiederherstellen</p>
               </div>
               <button type="button" onClick={() => onNavigate("backup", "backup")}>Öffnen</button>
+            </article>
+          </section>
+
+          <section className="settings-overview-section">
+            <h3>Bedienung</h3>
+            <article className="settings-overview-card settings-preference-card">
+              <span className="settings-overview-icon"><AlertTriangle size={27} aria-hidden="true" /></span>
+              <div>
+                <h3>Löschbestätigungen</h3>
+                <p>Vor dem Löschen von Kontakten, Gruppen und Passwörtern nachfragen.</p>
+              </div>
+              <label className="settings-toggle" title="Löschbestätigungen ein- oder ausschalten">
+                <input
+                  type="checkbox"
+                  checked={confirmDeletions}
+                  disabled={busyAction === "confirm-deletions"}
+                  onChange={(event) => void updateDeletionConfirmation(event.target.checked)}
+                />
+                <span>{confirmDeletions ? "Ein" : "Aus"}</span>
+              </label>
             </article>
           </section>
 

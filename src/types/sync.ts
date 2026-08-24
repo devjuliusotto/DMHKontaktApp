@@ -8,8 +8,9 @@ export interface SyncProviders {
 }
 
 export interface SyncConfig {
-  version: 1;
+  version: 3;
   enabled: boolean;
+  paused: boolean;
   providers: SyncProviders;
   direction: SyncDirection;
   base: SyncBase;
@@ -21,13 +22,19 @@ export interface SyncConfig {
   categoriesAndColors: boolean;
   sharedCalendars: boolean;
   sharedMailboxes: boolean;
+  sharedMailboxAddresses: string[];
+  sourceSelectionInitialized: boolean;
+  selectedContactSourceIds: string[];
+  selectedCalendarSourceIds: string[];
+  sourceDirections: Record<string, SyncDirection>;
   runOnOpen: boolean;
   runOnClose: boolean;
 }
 
 export const defaultSyncConfig: SyncConfig = {
-  version: 1,
+  version: 3,
   enabled: false,
+  paused: false,
   providers: {
     m365: true,
     outlookClassic: true,
@@ -43,6 +50,11 @@ export const defaultSyncConfig: SyncConfig = {
   categoriesAndColors: true,
   sharedCalendars: true,
   sharedMailboxes: true,
+  sharedMailboxAddresses: [],
+  sourceSelectionInitialized: false,
+  selectedContactSourceIds: [],
+  selectedCalendarSourceIds: [],
+  sourceDirections: {},
   runOnOpen: true,
   runOnClose: true
 };
@@ -54,8 +66,9 @@ export function parseSyncConfig(raw: string | null): SyncConfig {
     return {
       ...defaultSyncConfig,
       ...parsed,
-      version: 1,
+      version: 3,
       enabled: Boolean(parsed.enabled),
+      paused: Boolean(parsed.paused),
       providers: {
         ...defaultSyncConfig.providers,
         ...(parsed.providers ?? {})
@@ -68,6 +81,19 @@ export function parseSyncConfig(raw: string | null): SyncConfig {
       categoriesAndColors: parsed.categoriesAndColors !== false,
       sharedCalendars: parsed.sharedCalendars !== false,
       sharedMailboxes: parsed.sharedMailboxes !== false,
+      sharedMailboxAddresses: Array.isArray(parsed.sharedMailboxAddresses)
+        ? parsed.sharedMailboxAddresses.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        : [],
+      sourceSelectionInitialized: Boolean(parsed.sourceSelectionInitialized),
+      selectedContactSourceIds: Array.isArray(parsed.selectedContactSourceIds)
+        ? parsed.selectedContactSourceIds.filter((value): value is string => typeof value === "string")
+        : [],
+      selectedCalendarSourceIds: Array.isArray(parsed.selectedCalendarSourceIds)
+        ? parsed.selectedCalendarSourceIds.filter((value): value is string => typeof value === "string")
+        : [],
+      sourceDirections: parsed.sourceDirections && typeof parsed.sourceDirections === "object"
+        ? parsed.sourceDirections as Record<string, SyncDirection>
+        : {},
       runOnOpen: parsed.runOnOpen !== false,
       runOnClose: parsed.runOnClose !== false
     };

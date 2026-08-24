@@ -6,6 +6,7 @@ import {
   ContactRound,
   Copy,
   ExternalLink,
+  Files,
   KeyRound,
   LoaderCircle,
   LogOut,
@@ -75,7 +76,7 @@ export function Microsoft365Page() {
           setBusyAction(null);
           setStatus({ configured: true, connected: true, account: result.account });
           setMessageType("success");
-          setMessage("Microsoft-365-Konto wurde sicher verbunden. Es werden noch keine Kontakte oder Termine synchronisiert.");
+          setMessage("Microsoft-365-Konto wurde sicher verbunden. Änderungen werden erst in der jeweiligen Funktion nach Ihrer Bestätigung ausgeführt.");
           return;
         }
         timeout = window.setTimeout(
@@ -190,7 +191,7 @@ export function Microsoft365Page() {
       <header className="page-header">
         <div>
           <h2>Microsoft 365</h2>
-          <p>Geschäftskonto sicher verbinden und die spätere Synchronisierung vorbereiten.</p>
+          <p>Geschäftskonto für Kontakte, Kalender, OneDrive und SharePoint sicher verbinden.</p>
         </div>
       </header>
 
@@ -217,16 +218,16 @@ export function Microsoft365Page() {
             <div>
               <h3>Mit Microsoft 365 verbinden</h3>
               <p>
-                Melden Sie sich mit Ihrem dienstlichen Microsoft-Konto an. In diesem Schritt
-                wird nur Ihre Identität bestätigt.
+                Melden Sie sich mit Ihrem dienstlichen Microsoft-Konto an. Microsoft zeigt vor
+                der Freigabe genau, auf welche Daten die App zugreifen darf.
               </p>
             </div>
           </div>
           <div className="m365-privacy-note">
             <ShieldCheck size={21} />
             <p>
-              Die App erhält noch keinen Zugriff auf Kontakte oder Kalender. Ihr
-              Microsoft-Kennwort wird niemals von dieser App gelesen oder gespeichert.
+              Die App verwendet Kontakte, Kalender und Dokumente nur im Rahmen Ihrer bestehenden
+              Berechtigungen. Ihr Microsoft-Kennwort wird niemals gelesen oder gespeichert.
             </p>
           </div>
           <button className="primary large m365-connect-button" type="button" onClick={connect} disabled={busyAction !== null}>
@@ -286,18 +287,23 @@ export function Microsoft365Page() {
           </section>
 
           <section className="form-panel m365-roadmap-card">
-            <h3>Synchronisierung wird schrittweise freigeschaltet</h3>
-            <p>Die Verbindung allein verändert aktuell keine lokalen oder Microsoft-365-Daten.</p>
+            <h3>Verfügbare Microsoft-365-Funktionen</h3>
+            <p>Änderungen werden erst ausgeführt, wenn Sie in der jeweiligen Funktion eine Aktion bestätigen.</p>
             <div className="m365-capabilities">
               <article>
                 <ContactRound size={24} />
                 <div><strong>Kontakte</strong><span>Private Exchange-Kontakte</span></div>
-                <small>Geplant</small>
+                <small>Verfügbar</small>
               </article>
               <article>
                 <CalendarDays size={24} />
                 <div><strong>Kalender & Teams</strong><span>Termine und Onlinebesprechungen</span></div>
-                <small>Geplant</small>
+                <small>Verfügbar</small>
+              </article>
+              <article>
+                <Files size={24} />
+                <div><strong>Dokumente</strong><span>OneDrive und freigegebene SharePoint-Bibliotheken</span></div>
+                <small>Verfügbar</small>
               </article>
               <article>
                 <KeyRound size={24} />
@@ -305,6 +311,10 @@ export function Microsoft365Page() {
                 <small>Lokal</small>
               </article>
             </div>
+            <p className="m365-permission-hint">
+              Falls das Konto bereits vor Einführung der Dokumente verbunden war, trennen Sie es
+              einmal und verbinden Sie es erneut, damit Microsoft die neuen Berechtigungen abfragt.
+            </p>
           </section>
         </>
       )}

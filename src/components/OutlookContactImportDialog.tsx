@@ -3,6 +3,7 @@ import { readFile } from "@tauri-apps/plugin-fs";
 import {
   AlertTriangle,
   ArrowLeft,
+  AtSign,
   Check,
   CheckCircle2,
   ChevronLeft,
@@ -293,7 +294,7 @@ export function OutlookContactImportDialog({ open: isOpen, onClose, onImported }
               <Laptop size={32} />
               <span>
                 <strong>Outlook Classic</strong>
-                <small>Konten und Kontaktordner direkt prüfen</small>
+                <small>Kontaktordner und frühere Empfänger prüfen</small>
               </span>
             </button>
             <button type="button" onClick={chooseNewOutlookCsv}>
@@ -321,19 +322,19 @@ export function OutlookContactImportDialog({ open: isOpen, onClose, onImported }
               {busy === "import"
                 ? "Kontakte werden sicher importiert …"
                 : source === "classic"
-                  ? "Outlook-Kontaktordner werden eingelesen …"
+                  ? "Outlook-Kontakte und frühere Empfänger werden eingelesen …"
                   : "CSV-Kontakte werden geprüft …"}
             </strong>
             <span>
               {source === "classic"
-                ? "Bei sehr großen Beständen mit etwa 10.000 Kontakten kann dieser Vorgang bis zu 5 Minuten dauern."
+                ? "Kontaktordner und die lokal gespeicherte Outlook-Autovervollständigung werden gemeinsam geprüft."
                 : "Die Kontakte werden vollständig geprüft. Das kann je nach Dateigröße etwas dauern."}
             </span>
             <div className="outlook-import-indeterminate" aria-hidden="true"><i /></div>
             <small className="outlook-import-elapsed">
               <Timer size={16} /> Laufzeit: {formatElapsedTime(busyElapsedSeconds)}
             </small>
-            <small>Die App arbeitet weiter. Bitte Outlook und dieses Fenster geöffnet lassen.</small>
+            <small>Die App arbeitet weiter. Bitte dieses Fenster geöffnet lassen.</small>
           </div>
         )}
 
@@ -352,22 +353,28 @@ export function OutlookContactImportDialog({ open: isOpen, onClose, onImported }
               <span><strong>{preview.contacts.filter((item) => item.status === "different").length}</strong> abweichend</span>
             </div>
 
+            {preview.warnings.map((warning) => (
+              <div className="outlook-import-warning" role="status" key={warning}>
+                <AlertTriangle size={19} /> <span>{warning}</span>
+              </div>
+            ))}
+
             <section className="outlook-import-section">
               <div className="outlook-import-section-heading">
                 <div>
                   <span className="step-number">1</span>
-                  <div><h4>Quellen auswählen</h4><p>Nur markierte Konten und Ordner werden berücksichtigt.</p></div>
+                  <div><h4>Quellen auswählen</h4><p>Kontaktordner und frühere Empfänger bleiben klar getrennt.</p></div>
                 </div>
                 <button type="button" onClick={() => setSelectedSourceIds(new Set(preview.sources.map((item) => item.id)))}>Alle auswählen</button>
               </div>
               <div className="outlook-source-list">
                 {preview.sources.map((item) => (
-                  <label className={selectedSourceIds.has(item.id) ? "outlook-source-card selected" : "outlook-source-card"} key={item.id}>
+                  <label className={`${selectedSourceIds.has(item.id) ? "outlook-source-card selected" : "outlook-source-card"}${item.kind === "autocomplete" ? " autocomplete-source" : ""}`} key={item.id}>
                     <input type="checkbox" checked={selectedSourceIds.has(item.id)} onChange={() => toggleSource(item.id)} />
-                    <FolderOpen size={21} />
+                    {item.kind === "autocomplete" ? <AtSign size={21} /> : <FolderOpen size={21} />}
                     <span className="outlook-source-name">
-                      <strong>{item.storeName}</strong>
-                      <small>{item.folderPath}</small>
+                      <strong>{item.kind === "autocomplete" ? "Outlook-Autovervollständigung" : item.storeName}</strong>
+                      <small>{item.kind === "autocomplete" ? "Frühere Empfänger, die nicht als Kontakt gespeichert sein müssen" : item.folderPath}</small>
                     </span>
                     <span className="outlook-source-counts">
                       <strong>{item.total}</strong>
@@ -382,7 +389,7 @@ export function OutlookContactImportDialog({ open: isOpen, onClose, onImported }
               <div className="outlook-import-section-heading">
                 <div>
                   <span className="step-number">2</span>
-                  <div><h4>Exakte Duplikate prüfen</h4><p>Nur in allen Kontaktfeldern zu 100 % identische Einträge werden ausgelassen. Jede Abweichung bleibt erhalten.</p></div>
+                  <div><h4>Duplikate prüfen</h4><p>Bei früheren Empfängern genügt dieselbe E-Mail-Adresse zum Auslassen. Kontaktordner werden weiterhin vollständig verglichen.</p></div>
                 </div>
               </div>
               <div className="outlook-review-toolbar">
@@ -591,6 +598,7 @@ function createCsvPreview(
       skippedInvalid,
       sources: [{
         id: csvSourceId,
+        kind: "contacts",
         storeName: "Neues Outlook",
         folderPath: fileName,
         suggestedGroupName: csvGroupName,
@@ -600,6 +608,7 @@ function createCsvPreview(
         conflicts,
         withoutEmail
       }],
+      warnings: [],
       contacts
     },
     contactMap

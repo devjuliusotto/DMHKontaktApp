@@ -1,8 +1,9 @@
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { Ellipsis, Mail, Minus, Pencil, Plus, Search, Trash2, UserPlus, X } from "lucide-react";
+import { Ellipsis, Inbox, Mail, Minus, Pencil, Plus, Search, Settings2, Trash2, UserPlus, UsersRound, X } from "lucide-react";
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { ContactForm } from "../components/ContactForm";
 import { ContactTable } from "../components/ContactTable";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { StatusMessage } from "../components/StatusMessage";
 import { t } from "../i18n";
 import {
@@ -25,6 +26,7 @@ import {
 } from "../services/db";
 import type { Contact, ContactInput, Group } from "../types/contact";
 import { displayName, emptyContact, toContactInput } from "../utils/contact";
+import { deletionConfirmationSettingKey } from "../utils/settings";
 
 type ContactsTab = "all" | "groups";
 type GroupSelection = "ungrouped" | number;
@@ -40,6 +42,11 @@ type DragPreview = {
   x: number;
   y: number;
 };
+type DeleteRequest =
+  | { kind: "contact"; contact: Contact }
+  | { kind: "group"; group: Group }
+  | { kind: "all-contacts" }
+  | { kind: "selected-contacts"; contactIds: number[] };
 
 const blankGroup: Group = { name: "", description: "", createdAt: "", updatedAt: "" };
 const emailAppSettingKey = "default_email_app";
@@ -75,6 +82,8 @@ export function ContactsPage() {
   const [tab, setTab] = useState<ContactsTab>("all");
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
+  const [groupContactCounts, setGroupContactCounts] = useState<Record<number, number>>({});
+  const [ungroupedContactCount, setUngroupedContactCount] = useState(0);
   const [allSearch, setAllSearch] = useState("");
   const [groupSearch, setGroupSearch] = useState("");
   const [groupSelection, setGroupSelection] = useState<GroupSelection>("ungrouped");
@@ -85,6 +94,9 @@ export function ContactsPage() {
   const [testMenuOpen, setTestMenuOpen] = useState(false);
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState<"success" | "error" | "info">("info");
+  const [confirmDeletions, setConfirmDeletions] = useState(true);
+  const [deleteRequest, setDeleteRequest] = useState<DeleteRequest | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
   const [emailDraft, setEmailDraft] = useState<EmailDraft | null>(null);
   const [selectedEmailApp, setSelectedEmailApp] = useState<EmailApp>("outlook-classic");
   const [rememberEmailApp, setRememberEmailApp] = useState(false);
@@ -129,9 +141,20 @@ export function ContactsPage() {
   };
 
   const refresh = async () => {
-    const groupRows = await listGroups();
+    const [groupRows, allContactRows] = await Promise.all([listGroups(), listContacts("")]);
     setGroups(groupRows);
     groupsRef.current = groupRows;
+
+    const counts: Record<number, number> = {};
+    let ungroupedCount = 0;
+    for (const contact of allContactRows) {
+      if (contact.groups.length === 0) ungroupedCount += 1;
+      for (const group of contact.groups) {
+        if (group.id) counts[group.id] = (counts[group.id] ?? 0) + 1;
+      }
+    }
+    setGroupContactCounts(counts);
+    setUngroupedContactCount(ungroupedCount);
 
     if (tab === "all") {
       setContacts(await listContacts(allSearch));
@@ -163,6 +186,12 @@ export function ContactsPage() {
         }
       })
       .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    getAppSetting(deletionConfirmationSettingKey)
+      .then((value) => setConfirmDeletions(value !== "false"))
+      .catch(() => setConfirmDeletions(true));
   }, []);
 
   useEffect(() => {
@@ -238,9 +267,8 @@ export function ContactsPage() {
     }
   };
 
-  const remove = async (contact: Contact) => {
+  const deleteContactNow = async (contact: Contact) => {
     if (!contact.id) return;
-    if (!window.confirm(`Kontakt "${displayName(contact)}" wirklich löschen?`)) return;
     try {
       await deleteContact(contact.id);
       setMessage("Kontakt wurde lokal in den Papierkorb verschoben.");
@@ -252,42 +280,51 @@ export function ContactsPage() {
     }
   };
 
-  const removeGroup = async (group: Group) => {
-    if (!group.id || !window.confirm(`Gruppe "${group.name}" wirklich in den Papierkorb verschieben?`)) return;
-    await deleteGroup(group.id);
-    if (groupSelection === group.id) setGroupSelection("ungrouped");
-    setMessage("Gruppe wurde in den Papierkorb verschoben.");
-    setMessageType("success");
-    await refresh();
+  const remove = (contact: Contact) => {
+    if (!contact.id) return;
+    if (confirmDeletions) setDeleteRequest({ kind: "contact", contact });
+    else void deleteContactNow(contact);
   };
 
-  const removeAllContacts = async () => {
-    const firstConfirmation = window.confirm("Alle Kontakte wirklich in den Papierkorb verschieben?");
-    if (!firstConfirmation) return;
-
-    const secondConfirmation = window.confirm(
-      "Sind Sie wirklich sicher, dass Sie alle Kontakte löschen möchten? Alle Kontakte werden in den Papierkorb verschoben."
-    );
-    if (!secondConfirmation) return;
-
-    const count = await deleteAllContacts();
-    setTestMenuOpen(false);
-    setMessage(`${count} Kontakte wurden lokal in den Papierkorb verschoben.`);
-    setMessageType("success");
-    await refresh();
+  const deleteGroupNow = async (group: Group) => {
+    if (!group.id) return;
+    try {
+      await deleteGroup(group.id);
+      if (groupSelection === group.id) setGroupSelection("ungrouped");
+      setMessage("Gruppe wurde in den Papierkorb verschoben.");
+      setMessageType("success");
+      await refresh();
+    } catch (error) {
+      setMessage(`Gruppe konnte nicht gelöscht werden: ${error}`);
+      setMessageType("error");
+    }
   };
 
-  const removeSelectedContacts = async () => {
-    const contactIds = selectedVisibleContactIds;
-    if (contactIds.length === 0) return;
+  const removeGroup = (group: Group) => {
+    if (!group.id) return;
+    if (confirmDeletions) setDeleteRequest({ kind: "group", group });
+    else void deleteGroupNow(group);
+  };
 
-    const confirmed = window.confirm(
-      contactIds.length === 1
-        ? "Den ausgewählten Kontakt wirklich in den Papierkorb verschieben?"
-        : `${contactIds.length} ausgewählte Kontakte wirklich in den Papierkorb verschieben?`
-    );
-    if (!confirmed) return;
+  const deleteAllContactsNow = async () => {
+    try {
+      const count = await deleteAllContacts();
+      setTestMenuOpen(false);
+      setMessage(`${count} Kontakte wurden lokal in den Papierkorb verschoben.`);
+      setMessageType("success");
+      await refresh();
+    } catch (error) {
+      setMessage(`Kontakte konnten nicht gelöscht werden: ${error}`);
+      setMessageType("error");
+    }
+  };
 
+  const removeAllContacts = () => {
+    if (confirmDeletions) setDeleteRequest({ kind: "all-contacts" });
+    else void deleteAllContactsNow();
+  };
+
+  const deleteSelectedContactsNow = async (contactIds: number[]) => {
     setBulkDeleting(true);
     try {
       const deleted = await deleteContacts(contactIds);
@@ -305,6 +342,27 @@ export function ContactsPage() {
       setMessageType("error");
     } finally {
       setBulkDeleting(false);
+    }
+  };
+
+  const removeSelectedContacts = () => {
+    const contactIds = selectedVisibleContactIds;
+    if (contactIds.length === 0) return;
+    if (confirmDeletions) setDeleteRequest({ kind: "selected-contacts", contactIds });
+    else void deleteSelectedContactsNow(contactIds);
+  };
+
+  const confirmDeleteRequest = async () => {
+    if (!deleteRequest) return;
+    setDeleteBusy(true);
+    try {
+      if (deleteRequest.kind === "contact") await deleteContactNow(deleteRequest.contact);
+      if (deleteRequest.kind === "group") await deleteGroupNow(deleteRequest.group);
+      if (deleteRequest.kind === "all-contacts") await deleteAllContactsNow();
+      if (deleteRequest.kind === "selected-contacts") await deleteSelectedContactsNow(deleteRequest.contactIds);
+    } finally {
+      setDeleteBusy(false);
+      setDeleteRequest(null);
     }
   };
 
@@ -712,63 +770,77 @@ export function ContactsPage() {
       ) : (
         <section className="contacts-workspace">
           <aside className="groups-panel">
-            <h3>Gruppen</h3>
-            <div className="group-create">
-              <input value={groupForm.name} onChange={(event) => setGroupForm({ ...groupForm, name: event.target.value })} placeholder="Neue Gruppe" />
-              <button className="primary" type="button" onClick={submitGroup}>
-                <Plus size={20} /> Erstellen
-              </button>
+            <div className="groups-panel-heading">
+              <div>
+                <span className="groups-panel-kicker">Kontaktorganisation</span>
+                <h3>Gruppen</h3>
+                <p>Wählen Sie eine Gruppe aus, um ihre Kontakte zu sehen.</p>
+              </div>
+              <span className="group-summary" aria-label={`${groups.length + 1} Gruppen`}><strong>{groups.length + 1}</strong><small>Gruppen</small></span>
             </div>
-            <div
-              className={[
-                "group-drop",
-                groupSelection === "ungrouped" ? "active" : "",
-                dragOverGroupKey === "ungrouped" ? "drag-over" : ""
-              ].filter(Boolean).join(" ")}
-              data-group-key="ungrouped"
-              onPointerEnter={() => pointerOverGroup("ungrouped")}
-              onPointerLeave={() => setDragOverGroupKey((current) => current === "ungrouped" ? null : current)}
-            >
-              <button type="button" className="group-filter" title={ungroupedGroupName} onClick={() => setGroupSelection("ungrouped")}>
-                {ungroupedGroupName}
-              </button>
-              <div className="group-actions">
-                <button title="E-Mail an Gruppe" type="button" onClick={() => chooseGroupEmailApp("ungrouped")}>
-                  <Mail size={18} />
+            <div className="group-create">
+              <label htmlFor="new-group-name">Neue Gruppe anlegen</label>
+              <div className="group-create-row">
+                <input id="new-group-name" value={groupForm.name} onChange={(event) => setGroupForm({ ...groupForm, name: event.target.value })} placeholder="Name der Gruppe" />
+                <button className="primary" type="button" onClick={submitGroup}>
+                  <Plus size={20} /> Erstellen
                 </button>
               </div>
             </div>
-            {groups.map((group) => (
+            <div className="group-list" aria-label="Kontaktgruppen">
               <div
-                className={[
-                  "group-drop",
-                  groupSelection === group.id ? "active" : "",
-                  dragOverGroupKey === group.id ? "drag-over" : ""
-                ].filter(Boolean).join(" ")}
-                key={group.id}
-                data-group-key={group.id}
-                onPointerEnter={() => group.id && pointerOverGroup(group.id)}
-                onPointerLeave={() => setDragOverGroupKey((current) => current === group.id ? null : current)}
+                className={["group-drop", groupSelection === "ungrouped" ? "active" : "", dragOverGroupKey === "ungrouped" ? "drag-over" : ""].filter(Boolean).join(" ")}
+                data-group-key="ungrouped"
+                onPointerEnter={() => pointerOverGroup("ungrouped")}
+                onPointerLeave={() => setDragOverGroupKey((current) => current === "ungrouped" ? null : current)}
               >
-                <button type="button" className="group-filter" title={group.name} onClick={() => setGroupSelection(group.id ?? "ungrouped")}>
-                  {group.name}
-                </button>
-                <div className="group-actions">
-                  <button title="Gruppe umbenennen" aria-label={`${group.name} umbenennen`} type="button" onClick={() => startGroupRename(group)}>
-                    <Pencil size={18} />
+                <div className="group-card-top">
+                  <span className="group-card-icon"><Inbox size={25} aria-hidden="true" /></span>
+                  <button type="button" className="group-card-name" title={ungroupedGroupName} onClick={() => setGroupSelection("ungrouped")}>
+                    {ungroupedGroupName}
                   </button>
-                  <button title="Kontakte hinzufügen" type="button" onClick={() => openBulkAdd(group)}>
-                    <UserPlus size={18} />
-                  </button>
-                  <button title="E-Mail an Gruppe" type="button" onClick={() => chooseGroupEmailApp(group)}>
-                    <Mail size={18} />
-                  </button>
-                  <button title="Gruppe löschen" type="button" onClick={() => removeGroup(group)}>
-                    <Trash2 size={18} />
-                  </button>
+                  <span className="group-card-top-spacer" aria-hidden="true" />
+                </div>
+                <div className="group-card-bottom">
+                  <strong>{ungroupedContactCount} {ungroupedContactCount === 1 ? "Kontakt" : "Kontakte"}</strong>
+                  <div className="group-card-actions">
+                    <button type="button" title="Gruppe verwalten" aria-label="Gesammelte Adressen verwalten" onClick={() => setGroupSelection("ungrouped")}><Settings2 size={23} /></button>
+                    <button type="button" title="E-Mail an Gruppe" aria-label="E-Mail an Gesammelte Adressen" onClick={() => chooseGroupEmailApp("ungrouped")}><Mail size={23} /></button>
+                  </div>
                 </div>
               </div>
-            ))}
+              {groups.map((group) => {
+                const contactCount = group.id ? (groupContactCounts[group.id] ?? 0) : 0;
+                return (
+                  <div
+                    className={["group-drop", groupSelection === group.id ? "active" : "", dragOverGroupKey === group.id ? "drag-over" : ""].filter(Boolean).join(" ")}
+                    key={group.id}
+                    data-group-key={group.id}
+                    onPointerEnter={() => group.id && pointerOverGroup(group.id)}
+                    onPointerLeave={() => setDragOverGroupKey((current) => current === group.id ? null : current)}
+                  >
+                    <div className="group-card-top">
+                      <span className="group-card-icon"><UsersRound size={25} aria-hidden="true" /></span>
+                      <button type="button" className="group-card-name" title={group.name} onClick={() => setGroupSelection(group.id ?? "ungrouped")}>
+                        {group.name}
+                      </button>
+                      <button className="group-card-edit" type="button" title="Gruppennamen ändern" aria-label={`${group.name} umbenennen`} onClick={() => startGroupRename(group)}>
+                        <Pencil size={22} />
+                      </button>
+                    </div>
+                    <div className="group-card-bottom">
+                      <strong>{contactCount} {contactCount === 1 ? "Kontakt" : "Kontakte"}</strong>
+                      <div className="group-card-actions">
+                        <button type="button" title="Gruppe verwalten" aria-label={`${group.name} verwalten`} onClick={() => setGroupSelection(group.id ?? "ungrouped")}><Settings2 size={23} /></button>
+                        <button type="button" title="E-Mail an Gruppe" aria-label={`E-Mail an ${group.name}`} onClick={() => chooseGroupEmailApp(group)}><Mail size={23} /></button>
+                        <button className="group-card-delete" type="button" title="Gruppe löschen" aria-label={`${group.name} löschen`} onClick={() => removeGroup(group)}><Trash2 size={23} /></button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <p className="drop-hint">Tipp: Ziehen Sie einen Kontakt auf eine Gruppe, um ihn dorthin zu verschieben.</p>
           </aside>
 
           <div className="contacts-main">
@@ -788,6 +860,30 @@ export function ContactsPage() {
           </div>
         </section>
       )}
+
+      <ConfirmDialog
+        open={deleteRequest !== null}
+        title={deleteRequest?.kind === "group"
+          ? "Gruppe löschen"
+          : deleteRequest?.kind === "all-contacts"
+            ? "Alle Kontakte löschen"
+            : deleteRequest?.kind === "selected-contacts"
+              ? "Kontakte löschen"
+              : "Kontakt löschen"}
+        message={deleteRequest?.kind === "group"
+          ? `Möchten Sie die Gruppe „${deleteRequest.group.name}“ wirklich in den Papierkorb verschieben?`
+          : deleteRequest?.kind === "all-contacts"
+            ? "Alle Kontakte werden in den Papierkorb verschoben. Möchten Sie fortfahren?"
+            : deleteRequest?.kind === "selected-contacts"
+              ? `${deleteRequest.contactIds.length} ausgewählte Kontakte werden in den Papierkorb verschoben. Möchten Sie fortfahren?`
+              : deleteRequest?.kind === "contact"
+                ? `Möchten Sie den Kontakt „${displayName(deleteRequest.contact)}“ wirklich in den Papierkorb verschieben?`
+                : "Möchten Sie diesen Eintrag wirklich löschen?"}
+        confirmLabel="In Papierkorb verschieben"
+        busy={deleteBusy}
+        onCancel={() => setDeleteRequest(null)}
+        onConfirm={() => void confirmDeleteRequest()}
+      />
 
       <div className="contacts-font-control" role="group" aria-label="Schriftgröße der Kontakte">
         <button

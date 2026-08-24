@@ -1,12 +1,15 @@
-import { CalendarDays, KeyRound, Settings, UserRound } from "lucide-react";
+import { CalendarDays, Files, KeyRound, Settings, ShieldCheck, UserRound, Wrench } from "lucide-react";
 import { t } from "../i18n";
 
-export type Page = "contacts" | "calendar" | "passwords" | "import" | "export" | "m365" | "trash" | "settings" | "appearance" | "simple-import" | "backup" | "synchronizations";
+export type Page = "contacts" | "calendar" | "documents" | "passwords" | "authenticator" | "services" | "import" | "export" | "m365" | "trash" | "settings" | "appearance" | "simple-import" | "backup" | "synchronizations";
 
-const items: Array<{ page: Page; label: string; icon: typeof UserRound }> = [
-  { page: "contacts", label: t.contacts, icon: UserRound },
-  { page: "calendar", label: "Kalender", icon: CalendarDays },
-  { page: "passwords", label: "Passwörter", icon: KeyRound }
+const items: Array<{ page: Page; label: string; icon: typeof UserRound; group: "main" | "tools" }> = [
+  { page: "contacts", label: t.contacts, icon: UserRound, group: "main" },
+  { page: "calendar", label: "Kalender", icon: CalendarDays, group: "main" },
+  { page: "passwords", label: "Passwörter", icon: KeyRound, group: "main" },
+  { page: "authenticator", label: "2FA-Authenticator", icon: ShieldCheck, group: "tools" },
+  { page: "documents", label: "Dokumente", icon: Files, group: "tools" },
+  { page: "services", label: "Dienstleistungen", icon: Wrench, group: "tools" }
 ];
 
 const settingsPages = new Set<Page>(["settings", "appearance", "simple-import", "import", "export", "m365", "trash", "backup", "synchronizations"]);
@@ -28,11 +31,12 @@ export function Sidebar({ activePage, onNavigate, compact = false }: SidebarProp
         </div>}
       </div>
       <nav className="nav-list" aria-label="Hauptmenü">
-        {items.map((item) => {
+        {items.map((item, index) => {
           const Icon = item.icon;
+          const startsGroup = index > 0 && items[index - 1].group !== item.group;
           return (
             <button
-              className={activePage === item.page ? "nav-button active" : "nav-button"}
+              className={`${activePage === item.page ? "nav-button active" : "nav-button"}${startsGroup ? " nav-group-start" : ""}`}
               key={item.page}
               onClick={() => onNavigate(item.page)}
               title={compact ? item.label : undefined}

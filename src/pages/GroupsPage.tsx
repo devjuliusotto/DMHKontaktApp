@@ -1,9 +1,11 @@
 import { Plus, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { StatusMessage } from "../components/StatusMessage";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { t } from "../i18n";
-import { deleteGroup, listGroups, saveGroup } from "../services/db";
+import { deleteGroup, getAppSetting, listGroups, saveGroup } from "../services/db";
 import type { Group } from "../types/contact";
+import { deletionConfirmationSettingKey } from "../utils/settings";
 
 const blankGroup: Group = { name: "", description: "", createdAt: "", updatedAt: "" };
 
@@ -11,11 +13,16 @@ export function GroupsPage() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [form, setForm] = useState<Group>(blankGroup);
   const [message, setMessage] = useState("");
+  const [confirmDeletions, setConfirmDeletions] = useState(true);
+  const [pendingDelete, setPendingDelete] = useState<Group | null>(null);
 
   const refresh = async () => setGroups(await listGroups());
 
   useEffect(() => {
     refresh().catch((error) => setMessage(`Fehler beim Laden: ${error}`));
+    getAppSetting(deletionConfirmationSettingKey)
+      .then((value) => setConfirmDeletions(value !== "false"))
+      .catch(() => setConfirmDeletions(true));
   }, []);
 
   const submit = async () => {
@@ -29,11 +36,17 @@ export function GroupsPage() {
     await refresh();
   };
 
-  const remove = async (group: Group) => {
-    if (!group.id || !window.confirm(`Gruppe "${group.name}" wirklich löschen?`)) return;
+  const removeNow = async (group: Group) => {
+    if (!group.id) return;
     await deleteGroup(group.id);
     setMessage("Gruppe wurde gelöscht.");
     await refresh();
+  };
+
+  const remove = (group: Group) => {
+    if (!group.id) return;
+    if (confirmDeletions) setPendingDelete(group);
+    else void removeNow(group);
   };
 
   return (
@@ -76,6 +89,17 @@ export function GroupsPage() {
           </article>
         ))}
       </section>
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title="Gruppe löschen"
+        message={pendingDelete ? `Möchten Sie die Gruppe „${pendingDelete.name}“ wirklich löschen?` : "Möchten Sie diese Gruppe wirklich löschen?"}
+        confirmLabel="Gruppe löschen"
+        onCancel={() => setPendingDelete(null)}
+        onConfirm={() => {
+          if (pendingDelete) void removeNow(pendingDelete);
+          setPendingDelete(null);
+        }}
+      />
     </div>
   );
 }

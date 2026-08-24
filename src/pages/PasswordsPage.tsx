@@ -17,25 +17,31 @@ import {
 } from "lucide-react";
 import { FormEvent, MouseEvent, useEffect, useMemo, useState } from "react";
 import { StatusMessage } from "../components/StatusMessage";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import {
   configureVaultProtection,
   deleteAllVaultEntries,
   deleteVaultEntry,
   disableVaultProtection,
   getVaultStatus,
+  getAppSetting,
   listVaultEntries,
   lockVault,
   saveVaultEntry
 } from "../services/db";
 import type { VaultEntry, VaultEntryInput, VaultStatus } from "../types/vault";
+import { deletionConfirmationSettingKey } from "../utils/settings";
 
 const emptyEntry: VaultEntryInput = {
+  kind: "password",
   platform: "",
   username: "",
   password: "",
   url: "",
   description: ""
 };
+
+type PasswordDeleteRequest = { kind: "entry"; entry: VaultEntry } | { kind: "all"; count: number };
 
 interface PasswordsPageProps {
   status: VaultStatus;
@@ -58,6 +64,9 @@ export function PasswordsPage({ status, onStatusChanged }: PasswordsPageProps) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState<"success" | "error" | "info">("info");
+  const [confirmDeletions, setConfirmDeletions] = useState(true);
+  const [deleteRequest, setDeleteRequest] = useState<PasswordDeleteRequest | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   const selected = entries.find((entry) => entry.id === selectedId) ?? null;
   const visibleEntries = useMemo(() => {
@@ -71,8 +80,9 @@ export function PasswordsPage({ status, onStatusChanged }: PasswordsPageProps) {
 
   const refresh = async () => {
     const result = await listVaultEntries();
-    setEntries(result);
-    setSelectedId((current) => current && result.some((entry) => entry.id === current) ? current : null);
+    const passwordEntries = result.filter((entry) => entry.kind !== "totp");
+    setEntries(passwordEntries);
+    setSelectedId((current) => current && passwordEntries.some((entry) => entry.id === current) ? current : null);
   };
 
   useEffect(() => {
@@ -80,6 +90,12 @@ export function PasswordsPage({ status, onStatusChanged }: PasswordsPageProps) {
       setMessageType("error");
       setMessage(`Passwörter konnten nicht geladen werden: ${error}`);
     });
+  }, []);
+
+  useEffect(() => {
+    getAppSetting(deletionConfirmationSettingKey)
+      .then((value) => setConfirmDeletions(value !== "false"))
+      .catch(() => setConfirmDeletions(true));
   }, []);
 
   const openNewEntry = () => {
@@ -93,6 +109,7 @@ export function PasswordsPage({ status, onStatusChanged }: PasswordsPageProps) {
     setEntryPasswordVisible(false);
     setEntryForm({
       id: entry.id,
+      kind: "password",
       platform: entry.platform,
       username: entry.username,
       password: entry.password,
@@ -121,8 +138,7 @@ export function PasswordsPage({ status, onStatusChanged }: PasswordsPageProps) {
     }
   };
 
-  const removeEntry = async (entry: VaultEntry) => {
-    if (!window.confirm(`„${entry.platform}“ wirklich löschen?`)) return;
+  const removeEntryNow = async (entry: VaultEntry) => {
     setBusy(true);
     try {
       await deleteVaultEntry(entry.id);
@@ -139,11 +155,15 @@ export function PasswordsPage({ status, onStatusChanged }: PasswordsPageProps) {
     }
   };
 
-  const removeAllEntries = async () => {
-    if (entries.length === 0 || !window.confirm(`Alle ${entries.length} Passwort-Einträge in den Papierkorb verschieben?`)) return;
+  const removeEntry = (entry: VaultEntry) => {
+    if (confirmDeletions) setDeleteRequest({ kind: "entry", entry });
+    else void removeEntryNow(entry);
+  };
+
+  const removeAllEntriesNow = async () => {
     setBusy(true);
     try {
-      const removed = await deleteAllVaultEntries();
+      const removed = await deleteAllVaultEntries("password");
       setSelectedId(null);
       setEntryForm(null);
       setRevealed(new Set());
@@ -157,6 +177,24 @@ export function PasswordsPage({ status, onStatusChanged }: PasswordsPageProps) {
       setMessage(String(error));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const removeAllEntries = () => {
+    if (entries.length === 0) return;
+    if (confirmDeletions) setDeleteRequest({ kind: "all", count: entries.length });
+    else void removeAllEntriesNow();
+  };
+
+  const confirmDeleteRequest = async () => {
+    if (!deleteRequest) return;
+    setDeleteBusy(true);
+    try {
+      if (deleteRequest.kind === "entry") await removeEntryNow(deleteRequest.entry);
+      else await removeAllEntriesNow();
+    } finally {
+      setDeleteBusy(false);
+      setDeleteRequest(null);
     }
   };
 
@@ -434,6 +472,20 @@ export function PasswordsPage({ status, onStatusChanged }: PasswordsPageProps) {
           </form>
         </div>
       )}
+
+      <ConfirmDialog
+        open={deleteRequest !== null}
+        title={deleteRequest?.kind === "all" ? "Alle Passwörter löschen" : "Passwort löschen"}
+        message={deleteRequest?.kind === "all"
+          ? `${deleteRequest.count} Passwort-Einträge werden in den Papierkorb verschoben. Möchten Sie fortfahren?`
+          : deleteRequest?.kind === "entry"
+            ? `Möchten Sie „${deleteRequest.entry.platform}“ wirklich in den Papierkorb verschieben?`
+            : "Möchten Sie diesen Eintrag wirklich löschen?"}
+        confirmLabel="In Papierkorb verschieben"
+        busy={deleteBusy}
+        onCancel={() => setDeleteRequest(null)}
+        onConfirm={() => void confirmDeleteRequest()}
+      />
     </div>
   );
 }

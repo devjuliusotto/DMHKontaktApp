@@ -29,9 +29,12 @@ import type {
   Microsoft365ConnectionStatus,
   Microsoft365DeviceCode,
   Microsoft365PollResult,
+  Microsoft365ConflictDecision,
+  Microsoft365SyncResult,
   Microsoft365SyncPreview,
   Microsoft365SyncSources
 } from "../types/m365";
+import type { DocumentItem, DocumentMutationRequest, DocumentSource } from "../types/documents";
 
 export function listContacts(search = "", groupId?: number): Promise<Contact[]> {
   return invoke("list_contacts", { search, groupId });
@@ -177,8 +180,8 @@ export function disconnectMicrosoft365Account(): Promise<void> {
   return invoke("disconnect_m365_account");
 }
 
-export function listMicrosoft365SyncSources(): Promise<Microsoft365SyncSources> {
-  return invoke("list_m365_sync_sources");
+export function listMicrosoft365SyncSources(sharedMailboxAddresses: string[] = []): Promise<Microsoft365SyncSources> {
+  return invoke("list_m365_sync_sources", { sharedMailboxAddresses });
 }
 
 export function previewMicrosoft365Sync(request: {
@@ -187,9 +190,67 @@ export function previewMicrosoft365Sync(request: {
   contacts: boolean;
   calendars: boolean;
   sharedCalendars: boolean;
+  sharedMailboxes: boolean;
+  sharedMailboxAddresses: string[];
+  selectedContactSourceIds: string[];
+  selectedCalendarSourceIds: string[];
+  sourceDirections: Record<string, string>;
   backup: BackupData;
 }): Promise<Microsoft365SyncPreview> {
   return invoke("preview_m365_sync", { request });
+}
+
+export function applyMicrosoft365Sync(request: {
+  direction: string;
+  base: string;
+  contacts: boolean;
+  calendars: boolean;
+  sharedCalendars: boolean;
+  sharedMailboxes: boolean;
+  sharedMailboxAddresses: string[];
+  selectedContactSourceIds: string[];
+  selectedCalendarSourceIds: string[];
+  sourceDirections: Record<string, string>;
+  decisions: Record<string, Microsoft365ConflictDecision>;
+  backup: BackupData;
+}): Promise<Microsoft365SyncResult> {
+  return invoke("apply_m365_sync", { request });
+}
+
+export function listDocumentSources(): Promise<DocumentSource[]> {
+  return invoke("list_document_sources");
+}
+
+export function listDocumentItems(driveId: string, parentId?: string): Promise<DocumentItem[]> {
+  return invoke("list_document_items", { driveId, parentId });
+}
+
+export function createDocumentFolder(request: DocumentMutationRequest): Promise<DocumentItem> {
+  return invoke("create_document_folder", { request });
+}
+
+export function renameDocumentItem(request: DocumentMutationRequest): Promise<DocumentItem> {
+  return invoke("rename_document_item", { request });
+}
+
+export function deleteDocumentItem(driveId: string, itemId: string): Promise<void> {
+  return invoke("delete_document_item", { driveId, itemId });
+}
+
+export function downloadDocumentItem(driveId: string, itemId: string, name: string, relativePath?: string[], eTag?: string): Promise<string> {
+  return invoke("download_document_item", { driveId, itemId, name, relativePath, eTag });
+}
+
+export function uploadDocumentFile(driveId: string, parentId: string | undefined, filePath: string): Promise<DocumentItem> {
+  return invoke("upload_document_file", { driveId, parentId, filePath });
+}
+
+export function uploadDocumentRevision(driveId: string, itemId: string, filePath: string, expectedETag: string): Promise<DocumentItem> {
+  return invoke("upload_document_revision", { driveId, itemId, filePath, expectedETag });
+}
+
+export function getDocumentsLocalRoot(): Promise<string> {
+  return invoke("get_documents_local_root");
 }
 
 export function importOutlookStore(path: string): Promise<{ contacts: ContactInput[]; events: CalendarEvent[] }> {
@@ -292,8 +353,8 @@ export function deleteVaultEntry(id: number): Promise<void> {
   return invoke("delete_vault_entry", { id });
 }
 
-export function deleteAllVaultEntries(): Promise<number> {
-  return invoke("delete_all_vault_entries");
+export function deleteAllVaultEntries(kind: "password" | "totp" = "password"): Promise<number> {
+  return invoke("delete_all_vault_entries", { kind });
 }
 
 export function restoreVaultEntry(id: number): Promise<void> {

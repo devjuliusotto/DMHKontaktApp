@@ -15,9 +15,12 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { AppearancePage } from "./pages/AppearancePage";
 import { SimpleImportPage } from "./pages/SimpleImportPage";
 import { PasswordsPage } from "./pages/PasswordsPage";
+import { AuthenticatorPage } from "./pages/AuthenticatorPage";
 import { BackupPage } from "./pages/BackupPage";
 import { Microsoft365Page } from "./pages/Microsoft365Page";
 import { SynchronizationsPage } from "./pages/SynchronizationsPage";
+import { DocumentsPage } from "./pages/DocumentsPage";
+import { DienstleistungenPage } from "./pages/DienstleistungenPage";
 import { createAutomaticBackup, createAutomaticPasswordBackup, getBackupData, getVaultStatus } from "./services/db";
 import type { VaultStatus } from "./types/vault";
 import { addBrowserDataToBackup } from "./utils/backup";
@@ -170,7 +173,10 @@ export default function App() {
           {(page === "import" || page === "export" || page === "m365") && <AdvancedSubtabs activePage={page} onNavigate={navigate} />}
           {page === "contacts" && <ContactsPage />}
           {page === "calendar" && <CalendarPage />}
+          {page === "documents" && <DocumentsPage onNavigate={navigate} />}
+          {page === "services" && <DienstleistungenPage />}
           {page === "passwords" && <PasswordsPage status={vaultStatus} onStatusChanged={setVaultStatus} />}
+          {page === "authenticator" && <AuthenticatorPage />}
           {page === "import" && <ImportPage />}
           {page === "export" && <ExportPage />}
           {page === "m365" && <Microsoft365Page />}
