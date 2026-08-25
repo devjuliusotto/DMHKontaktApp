@@ -119,9 +119,12 @@ export default function App() {
       window.clearInterval(interval);
       try {
         await runAutomaticBackup(true);
-      } catch {
+      } catch (error) {
         closing.current = false;
-        window.alert("Die automatische Sicherung konnte nicht abgeschlossen werden. Das App-Fenster bleibt geöffnet.");
+        const details = String(error).trim();
+        window.alert(
+          `Die interne automatische Sicherung konnte nicht abgeschlossen werden. Das App-Fenster bleibt geöffnet.${details ? `\n\nDetails: ${details}` : ""}`
+        );
         return;
       }
       try {

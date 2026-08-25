@@ -6,11 +6,14 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
+use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
+use uuid::Uuid;
 
 mod documents;
 mod m365;
@@ -713,8 +716,12 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
     )
     .map_err(|err| err.to_string())?;
 
-    create_auto_backup(app, &conn)?;
-    vault::write_automatic_password_backup(app, false)?;
+    if let Err(error) = create_auto_backup(app, &conn) {
+        eprintln!("Automatische Sicherung beim Start fehlgeschlagen: {error}");
+    }
+    if let Err(error) = vault::write_automatic_password_backup(app, false) {
+        eprintln!("Automatische Kennwort-Sicherung beim Start fehlgeschlagen: {error}");
+    }
     Ok(())
 }
 
@@ -743,15 +750,26 @@ fn ensure_column(
 }
 
 const AUTOMATIC_BACKUP_FOLDER: &str = "DMH Kontakte und Kalender\\Automatische Sicherung";
+const AUTOMATIC_BACKUP_ADMIN_TEST_FOLDER: &str =
+    "DMH Kontakte und Kalender Admin Test\\Automatische Sicherung";
 const AUTOMATIC_BACKUP_LATEST: &str = "DMH-Kontakte-Kalender-Auto-Backup.json";
 const DELETED_ELEMENT_MARKER: &str = "Gelöschtes Element";
+const BACKUP_REPLACE_ATTEMPTS: usize = 5;
+
+fn automatic_backup_folder(release_channel: Option<&str>) -> &'static str {
+    if release_channel == Some("admin-test") {
+        AUTOMATIC_BACKUP_ADMIN_TEST_FOLDER
+    } else {
+        AUTOMATIC_BACKUP_FOLDER
+    }
+}
 
 pub(crate) fn automatic_backup_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let documents = app
         .path()
         .document_dir()
         .map_err(|error| format!("Dokumente-Ordner konnte nicht ermittelt werden: {error}"))?;
-    let directory = documents.join(AUTOMATIC_BACKUP_FOLDER);
+    let directory = documents.join(automatic_backup_folder(option_env!("DMH_RELEASE_CHANNEL")));
     fs::create_dir_all(&directory).map_err(|error| {
         format!("Automatischer Backup-Ordner konnte nicht erstellt werden: {error}")
     })?;
@@ -960,12 +978,56 @@ fn merge_automatic_backup(
 }
 
 pub(crate) fn replace_json_file(path: &Path, json: &str) -> Result<(), String> {
-    let temporary = path.with_extension("json.tmp");
-    fs::write(&temporary, json).map_err(|error| error.to_string())?;
-    if path.exists() {
-        fs::remove_file(path).map_err(|error| error.to_string())?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("backup.json");
+    let temporary = path.with_file_name(format!(".{file_name}.{}.tmp", Uuid::new_v4()));
+    let result = (|| -> Result<(), std::io::Error> {
+        let mut file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)?;
+        file.write_all(json.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+
+        let mut last_error = None;
+        for attempt in 0..BACKUP_REPLACE_ATTEMPTS {
+            if path.exists() {
+                if let Err(error) = fs::remove_file(path) {
+                    last_error = Some(error);
+                    if attempt + 1 < BACKUP_REPLACE_ATTEMPTS {
+                        thread::sleep(Duration::from_millis(80));
+                        continue;
+                    }
+                    break;
+                }
+            }
+            match fs::rename(&temporary, path) {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    last_error = Some(error);
+                    if attempt + 1 < BACKUP_REPLACE_ATTEMPTS {
+                        thread::sleep(Duration::from_millis(80));
+                    }
+                }
+            }
+        }
+        Err(last_error
+            .unwrap_or_else(|| std::io::Error::other("Backup-Datei konnte nicht ersetzt werden.")))
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
     }
-    fs::rename(temporary, path).map_err(|error| error.to_string())
+    result.map_err(|error| format!("{}: {error}", path.display()))
+}
+
+pub(crate) fn write_external_backup_best_effort(path: &Path, json: &str, label: &str) {
+    if let Err(error) = replace_json_file(path, json) {
+        eprintln!("{label} konnte nicht aktualisiert werden: {error}");
+    }
 }
 
 fn write_automatic_backup(
@@ -973,11 +1035,20 @@ fn write_automatic_backup(
     current: BackupData,
     snapshot: bool,
 ) -> Result<(), String> {
-    let directory = automatic_backup_dir(app)?;
     let app_data_directory = automatic_backup_app_data_dir(app)?;
-    let latest_path = directory.join(AUTOMATIC_BACKUP_LATEST);
-    let previous = if latest_path.is_file() {
-        let content = fs::read_to_string(&latest_path).map_err(|error| error.to_string())?;
+    let app_data_latest_path = app_data_directory.join(AUTOMATIC_BACKUP_LATEST);
+    let previous_path = if app_data_latest_path.is_file() {
+        Some(app_data_latest_path.clone())
+    } else {
+        automatic_backup_dir(app)
+            .ok()
+            .map(|directory| directory.join(AUTOMATIC_BACKUP_LATEST))
+            .filter(|path| path.is_file())
+    };
+    let previous = if let Some(previous_path) = previous_path {
+        let content = fs::read_to_string(&previous_path).map_err(|error| {
+            format!("Automatischer Backup konnte nicht gelesen werden: {error}")
+        })?;
         Some(
             serde_json::from_str::<BackupData>(&content).map_err(|error| {
                 format!("Automatischer Backup konnte nicht gelesen werden: {error}")
@@ -988,22 +1059,37 @@ fn write_automatic_backup(
     };
     let merged = merge_automatic_backup(previous, current)?;
     let json = serde_json::to_string_pretty(&merged).map_err(|error| error.to_string())?;
-    replace_json_file(&latest_path, &json)?;
-    replace_json_file(&app_data_directory.join(AUTOMATIC_BACKUP_LATEST), &json)?;
+    replace_json_file(&app_data_latest_path, &json)?;
 
     if snapshot {
-        let snapshots = directory.join("Snapshots");
-        fs::create_dir_all(&snapshots).map_err(|error| error.to_string())?;
         let stamp = Utc::now().format("%Y%m%d-%H%M%S-%f");
-        let path = snapshots.join(format!("auto-backup-{stamp}.json"));
-        fs::write(&path, &json).map_err(|error| error.to_string())?;
         let app_data_snapshots = app_data_directory.join("Snapshots");
         fs::create_dir_all(&app_data_snapshots).map_err(|error| error.to_string())?;
-        fs::write(
-            app_data_snapshots.join(format!("auto-backup-{stamp}.json")),
-            json,
-        )
-        .map_err(|error| error.to_string())?;
+        replace_json_file(
+            &app_data_snapshots.join(format!("auto-backup-{stamp}.json")),
+            &json,
+        )?;
+    }
+
+    if let Ok(directory) = automatic_backup_dir(app) {
+        write_external_backup_best_effort(
+            &directory.join(AUTOMATIC_BACKUP_LATEST),
+            &json,
+            "Externe automatische Sicherung",
+        );
+        if snapshot {
+            let snapshots = directory.join("Snapshots");
+            if let Err(error) = fs::create_dir_all(&snapshots) {
+                eprintln!("Externer Snapshot-Ordner konnte nicht erstellt werden: {error}");
+            } else {
+                let stamp = Utc::now().format("%Y%m%d-%H%M%S-%f");
+                write_external_backup_best_effort(
+                    &snapshots.join(format!("auto-backup-{stamp}.json")),
+                    &json,
+                    "Externer automatischer Snapshot",
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -4784,5 +4870,45 @@ mod tests {
             deleted_events[0].description,
             "Vorherige Beschreibung\nGelöschtes Element"
         );
+    }
+
+    #[test]
+    fn backup_folders_are_separated_by_release_channel() {
+        assert_eq!(
+            automatic_backup_folder(None),
+            "DMH Kontakte und Kalender\\Automatische Sicherung"
+        );
+        assert_eq!(
+            automatic_backup_folder(Some("stable")),
+            "DMH Kontakte und Kalender\\Automatische Sicherung"
+        );
+        assert_eq!(
+            automatic_backup_folder(Some("admin-test")),
+            "DMH Kontakte und Kalender Admin Test\\Automatische Sicherung"
+        );
+    }
+
+    #[test]
+    fn json_backup_replacement_uses_unique_temporary_files() {
+        let directory =
+            env::temp_dir().join(format!("agendakontakte-backup-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&directory).expect("create backup test directory");
+        let path = directory.join("backup.json");
+
+        replace_json_file(&path, "{\"version\":1}").expect("write first backup");
+        replace_json_file(&path, "{\"version\":2}").expect("replace backup");
+
+        assert_eq!(
+            fs::read_to_string(&path).expect("read replaced backup"),
+            "{\"version\":2}"
+        );
+        assert!(fs::read_dir(&directory)
+            .expect("read backup test directory")
+            .all(|entry| !entry
+                .expect("read backup test entry")
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")));
+        fs::remove_dir_all(directory).expect("remove backup test directory");
     }
 }

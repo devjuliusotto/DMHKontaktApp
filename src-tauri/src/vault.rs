@@ -411,12 +411,15 @@ fn automatic_password_backup_app_data_path(app: &AppHandle) -> Result<std::path:
 fn read_automatic_password_backup(
     app: &AppHandle,
 ) -> Result<Option<AutomaticPasswordBackup>, String> {
-    let path = automatic_password_backup_path(app)?;
     let app_data_path = automatic_password_backup_app_data_path(app)?;
-    let path = if path.is_file() { path } else { app_data_path };
-    if !path.is_file() {
-        return Ok(None);
-    }
+    let path = if app_data_path.is_file() {
+        Some(app_data_path)
+    } else {
+        automatic_password_backup_path(app)
+            .ok()
+            .filter(|path| path.is_file())
+    };
+    let Some(path) = path else { return Ok(None) };
     let content = std::fs::read_to_string(path).map_err(|error| {
         format!("Automatische Kennwort-Sicherung konnte nicht gelesen werden: {error}")
     })?;
@@ -540,7 +543,17 @@ fn merge_automatic_password_backup(
     previous: Option<AutomaticPasswordBackup>,
     mut current: AutomaticPasswordBackup,
 ) -> Result<AutomaticPasswordBackup, String> {
-    let previous = previous;
+    let previous = match (&current.vault, previous) {
+        (Some(current_vault), Some(previous))
+            if previous.vault.as_ref().is_some_and(|previous_vault| {
+                previous_vault.protected_key == current_vault.protected_key
+            }) =>
+        {
+            Some(previous)
+        }
+        (Some(_), Some(_)) => None,
+        (_, previous) => previous,
+    };
     if current.vault.is_none() {
         current.vault = previous.as_ref().and_then(|backup| backup.vault.clone());
     }
@@ -626,30 +639,46 @@ pub(crate) fn write_automatic_password_backup(
     app: &AppHandle,
     snapshot: bool,
 ) -> Result<(), String> {
-    let directory = crate::automatic_backup_dir(&app)?;
     let app_data_directory = crate::automatic_backup_app_data_dir(&app)?;
-    let latest_path = automatic_password_backup_path(&app)?;
+    let app_data_latest_path = automatic_password_backup_app_data_path(&app)?;
     let previous = read_automatic_password_backup(&app)?;
     let conn = open_db(&app)?;
     let current = load_current_automatic_password_backup(&conn)?;
     let merged = merge_automatic_password_backup(previous, current)?;
     let json = serde_json::to_string_pretty(&merged).map_err(|error| error.to_string())?;
-    crate::replace_json_file(&latest_path, &json)?;
-    crate::replace_json_file(&automatic_password_backup_app_data_path(&app)?, &json)?;
+    crate::replace_json_file(&app_data_latest_path, &json)?;
 
     if snapshot {
-        let snapshots = directory.join("Snapshots");
-        std::fs::create_dir_all(&snapshots).map_err(|error| error.to_string())?;
         let stamp = Utc::now().format("%Y%m%d-%H%M%S-%f");
-        let path = snapshots.join(format!("auto-password-backup-{stamp}.json"));
-        std::fs::write(&path, &json).map_err(|error| error.to_string())?;
         let app_data_snapshots = app_data_directory.join("Snapshots");
         std::fs::create_dir_all(&app_data_snapshots).map_err(|error| error.to_string())?;
-        std::fs::write(
-            app_data_snapshots.join(format!("auto-password-backup-{stamp}.json")),
-            json,
-        )
-        .map_err(|error| error.to_string())?;
+        crate::replace_json_file(
+            &app_data_snapshots.join(format!("auto-password-backup-{stamp}.json")),
+            &json,
+        )?;
+    }
+
+    if let Ok(directory) = crate::automatic_backup_dir(&app) {
+        crate::write_external_backup_best_effort(
+            &directory.join(AUTOMATIC_PASSWORD_BACKUP_LATEST),
+            &json,
+            "Externe automatische Kennwort-Sicherung",
+        );
+        if snapshot {
+            let snapshots = directory.join("Snapshots");
+            if let Err(error) = std::fs::create_dir_all(&snapshots) {
+                eprintln!(
+                    "Externer Kennwort-Snapshot-Ordner konnte nicht erstellt werden: {error}"
+                );
+            } else {
+                let stamp = Utc::now().format("%Y%m%d-%H%M%S-%f");
+                crate::write_external_backup_best_effort(
+                    &snapshots.join(format!("auto-password-backup-{stamp}.json")),
+                    &json,
+                    "Externer automatischer Kennwort-Snapshot",
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -1384,6 +1413,47 @@ mod tests {
         assert_eq!(restored.description, "Vorherige Notiz\nGelöschtes Element");
         assert!(entry.deleted_at.is_some());
         assert_eq!(restored.password, "geheim");
+    }
+
+    #[test]
+    fn automatic_password_backup_does_not_merge_a_different_vault() {
+        let vault = |protected_key: &str| AutomaticVaultConfig {
+            protected_key: protected_key.to_string(),
+            username: String::new(),
+            recovery_email: String::new(),
+            password_hash: None,
+            protection_enabled: false,
+            created_at: "2026-08-25T10:00:00Z".to_string(),
+            updated_at: "2026-08-25T10:00:00Z".to_string(),
+        };
+        let previous = AutomaticPasswordBackup {
+            version: AUTOMATIC_PASSWORD_BACKUP_VERSION.to_string(),
+            exported_at: "2026-08-25T10:00:00Z".to_string(),
+            vault: Some(vault("anderer-geschuetzter-schluessel")),
+            entries: vec![AutomaticPasswordEntry {
+                entry_uuid: "fremder-eintrag".to_string(),
+                nonce: "ungueltig".to_string(),
+                ciphertext: "ungueltig".to_string(),
+                created_at: "2026-08-25T10:00:00Z".to_string(),
+                updated_at: "2026-08-25T10:00:00Z".to_string(),
+                deleted_at: None,
+            }],
+        };
+        let current = AutomaticPasswordBackup {
+            version: AUTOMATIC_PASSWORD_BACKUP_VERSION.to_string(),
+            exported_at: "2026-08-25T10:01:00Z".to_string(),
+            vault: Some(vault("aktueller-geschuetzter-schluessel")),
+            entries: Vec::new(),
+        };
+
+        let merged = merge_automatic_password_backup(Some(previous), current)
+            .expect("different vault backup must be ignored");
+
+        assert!(merged.entries.is_empty());
+        assert_eq!(
+            merged.vault.expect("current vault").protected_key,
+            "aktueller-geschuetzter-schluessel"
+        );
     }
 
     #[test]
