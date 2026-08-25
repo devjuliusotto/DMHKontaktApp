@@ -7,7 +7,11 @@ const browserStorageKeys = [
   "agendakontakte.calendarExactDuplicateCleanupBackup.v1",
   "agendakontakte.theme.colorMode",
   "agendakontakte.theme.accent",
-  "dmh.contacts.fontSize"
+  "dmh.contacts.fontSize",
+  "dmh-dienstleistungen-bookings-v1",
+  "dmh-dienstleistungen-outdoor-bookings-v1",
+  "dmh-dienstleistungen-tickets-v1",
+  "dmh-dienstleistungen-checkins-v1"
 ] as const;
 
 const allowedStorageKeys = new Set<string>(browserStorageKeys);

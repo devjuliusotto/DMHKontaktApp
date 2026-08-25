@@ -1,9 +1,11 @@
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { Copy, Edit3, FileUp, KeyRound, Plus, QrCode, ScanLine, ShieldCheck, Smartphone, Trash2, X } from "lucide-react";
-import { FormEvent, useEffect, useState } from "react";
+import { Copy, Edit3, FileUp, KeyRound, Plus, QrCode, Search, Smartphone, Trash2, X } from "lucide-react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { StatusMessage } from "../components/StatusMessage";
-import { deleteVaultEntry, listVaultEntries, saveVaultEntry } from "../services/db";
+import { deleteVaultEntry, getAppSetting, listVaultEntries, saveVaultEntry } from "../services/db";
 import type { VaultEntry, VaultEntryInput } from "../types/vault";
+import { deletionConfirmationSettingKey } from "../utils/settings";
 import { generateTotpCode, parseAuthenticatorImport, parseTotpInput, type TotpConfig } from "../utils/totp";
 
 const emptyEntry: VaultEntryInput = {
@@ -20,15 +22,20 @@ interface LiveCode {
   remaining: number;
 }
 
+const authenticatorCollator = new Intl.Collator("de", { numeric: true, sensitivity: "base" });
+
 export function AuthenticatorPage() {
   const [entries, setEntries] = useState<VaultEntry[]>([]);
   const [codes, setCodes] = useState<Record<number, LiveCode>>({});
   const [entryForm, setEntryForm] = useState<VaultEntryInput | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState("");
+  const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState<"success" | "error" | "info">("info");
+  const [confirmDeletions, setConfirmDeletions] = useState(true);
+  const [pendingDelete, setPendingDelete] = useState<VaultEntry | null>(null);
 
   const refresh = async () => {
     const result = await listVaultEntries();
@@ -37,6 +44,9 @@ export function AuthenticatorPage() {
 
   useEffect(() => {
     refresh().catch((error) => showMessage(`2FA-Einträge konnten nicht geladen werden: ${error}`, "error"));
+    getAppSetting(deletionConfirmationSettingKey)
+      .then((value) => setConfirmDeletions(value !== "false"))
+      .catch(() => setConfirmDeletions(true));
   }, []);
 
   useEffect(() => {
@@ -170,8 +180,7 @@ export function AuthenticatorPage() {
     setImportText(await file.text());
   };
 
-  const removeEntry = async (entry: VaultEntry) => {
-    if (!window.confirm(`„${entry.platform}“ wirklich löschen?`)) return;
+  const removeEntryNow = async (entry: VaultEntry) => {
     setBusy(true);
     try {
       await deleteVaultEntry(entry.id);
@@ -182,6 +191,14 @@ export function AuthenticatorPage() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const removeEntry = (entry: VaultEntry) => {
+    if (confirmDeletions) {
+      setPendingDelete(entry);
+      return;
+    }
+    void removeEntryNow(entry);
   };
 
   const copyCode = async (code: string) => {
@@ -195,6 +212,15 @@ export function AuthenticatorPage() {
       }
     }, 30_000);
   };
+
+  const visibleEntries = useMemo(() => {
+    const query = search.trim().toLocaleLowerCase("de");
+    return entries
+      .filter((entry) => !query || [entry.platform, entry.username, entry.description]
+        .some((value) => value.toLocaleLowerCase("de").includes(query)))
+      .sort((left, right) => authenticatorCollator.compare(left.platform, right.platform)
+        || authenticatorCollator.compare(left.username, right.username));
+  }, [entries, search]);
 
   const countLabel = entries.length === 1 ? "1 Konto" : `${entries.length} Konten`;
 
@@ -218,51 +244,114 @@ export function AuthenticatorPage() {
 
       <StatusMessage message={message} type={messageType} />
 
-      <section className="authenticator-intro-card">
-        <span className="authenticator-intro-icon"><ShieldCheck size={28} /></span>
+      <section className="authenticator-mobile-scan-card" aria-label="QR-Code mit dem Smartphone lesen">
+        <QrCode size={24} aria-hidden="true" />
         <div>
-          <strong>Ihre Authentifizierungs-App im DMH-Kontakte-Programm</strong>
-          <p>Fügen Sie den geheimen Schlüssel aus der 2FA-Einrichtung ein. Der aktuelle 6-stellige Code wird alle 30 Sekunden automatisch erneuert.</p>
+          <strong>QR-Code mit dem Smartphone lesen</strong>
+          <p>Die Kamera-Funktion wird mit der zukünftigen mobilen App verfügbar und synchron mit dieser PC-Funktion sein.</p>
         </div>
-        <span className="authenticator-count">{countLabel}</span>
+        <button type="button" disabled title="Wird in der mobilen App verfügbar sein">
+          <Smartphone size={19} /> In mobiler App
+        </button>
       </section>
 
-      <section className="authenticator-scan-card">
-        <QrCode size={24} />
-        <div><strong>QR-Code mit dem Smartphone lesen</strong><p>Die Kamera-Funktion wird mit der zukünftigen mobilen App verfügbar und synchron mit dieser PC-Funktion sein.</p></div>
-        <button type="button" disabled title="Wird in der mobilen App verfügbar sein"><Smartphone size={19} /> In mobiler App</button>
-      </section>
+      <section className="table-panel authenticator-list-panel" aria-label="Gespeicherte 2FA-Konten">
+        <div className="authenticator-list-toolbar">
+          <label className="search-field authenticator-search">
+            <Search size={19} aria-hidden="true" />
+            <input
+              type="search"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Dienst, Konto oder Notiz suchen"
+              aria-label="2FA-Konten durchsuchen"
+            />
+          </label>
+          <span className="authenticator-count">
+            {search.trim() ? `${visibleEntries.length} von ${entries.length}` : countLabel}
+          </span>
+        </div>
 
-      {entries.length === 0 ? (
-        <section className="table-panel authenticator-empty">
-          <ScanLine size={42} />
-          <strong>Noch keine 2FA-Konten gespeichert</strong>
-          <span>Über „2FA-Code hinzufügen“ können Sie einen Base32-Schlüssel oder eine otpauth://-Adresse einfügen.</span>
-        </section>
-      ) : (
-        <section className="authenticator-grid" aria-label="Gespeicherte 2FA-Konten">
-          {entries.map((entry) => {
-            const liveCode = codes[entry.id];
-            return (
-              <article className="authenticator-card" key={entry.id}>
-                <header>
-                  <span className="authenticator-card-icon"><KeyRound size={20} /></span>
-                  <div><strong>{entry.platform}</strong><small>{entry.username || "Kein Konto angegeben"}</small></div>
-                  <span className="authenticator-remaining">{liveCode?.remaining ?? 30}s</span>
-                </header>
-                <div className="authenticator-code-line">
-                  <code>{liveCode?.value ?? "------"}</code>
-                  <button className="icon-only" type="button" title="Code kopieren" onClick={() => liveCode && copyCode(liveCode.value)} disabled={!liveCode || liveCode.value === "------"}><Copy size={20} /></button>
-                </div>
-                <footer>
-                  <button type="button" onClick={() => openEditEntry(entry)}><Edit3 size={18} /> Bearbeiten</button>
-                  <button className="danger-button" type="button" onClick={() => removeEntry(entry)} disabled={busy}><Trash2 size={18} /> Löschen</button>
-                </footer>
-              </article>
-            );
-          })}
-        </section>
-      )}
+        <div className="table-wrap">
+          <table className="authenticator-table">
+            <colgroup>
+              <col className="authenticator-service-column" />
+              <col className="authenticator-account-column" />
+              <col className="authenticator-code-column" />
+              <col className="authenticator-validity-column" />
+              <col className="authenticator-actions-column" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th>Dienst / Anbieter</th>
+                <th>Konto / E-Mail</th>
+                <th>Aktueller 2FA-Code</th>
+                <th>Gültig</th>
+                <th>Aktionen</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleEntries.map((entry) => {
+                const liveCode = codes[entry.id];
+                const code = liveCode?.value ?? "------";
+                return (
+                  <tr key={entry.id} onDoubleClick={() => openEditEntry(entry)}>
+                    <td>
+                      <div className="authenticator-service">
+                        <span className="authenticator-service-icon"><KeyRound size={18} aria-hidden="true" /></span>
+                        <span>
+                          <strong>{entry.platform}</strong>
+                          {entry.description && <small>{entry.description}</small>}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="authenticator-account" title={entry.username}>{entry.username || "–"}</td>
+                    <td>
+                      <div className="authenticator-code-cell">
+                        <code aria-label={`Aktueller Code ${code.split("").join(" ")}`}>{code}</code>
+                        <button
+                          className="icon-only"
+                          type="button"
+                          title={`Code für ${entry.platform} kopieren`}
+                          aria-label={`Code für ${entry.platform} kopieren`}
+                          onClick={() => liveCode && copyCode(liveCode.value)}
+                          disabled={!liveCode || liveCode.value === "------"}
+                        >
+                          <Copy size={17} />
+                        </button>
+                      </div>
+                    </td>
+                    <td>
+                      <span className="authenticator-remaining" aria-label={`${liveCode?.remaining ?? 30} Sekunden verbleibend`}>
+                        {liveCode?.remaining ?? 30}s
+                      </span>
+                    </td>
+                    <td>
+                      <div className="authenticator-row-actions">
+                        <button type="button" onClick={() => openEditEntry(entry)} title={`${entry.platform} bearbeiten`}>
+                          <Edit3 size={16} /> Bearbeiten
+                        </button>
+                        <button className="danger-button" type="button" onClick={() => removeEntry(entry)} disabled={busy} title={`${entry.platform} löschen`}>
+                          <Trash2 size={16} /> Löschen
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {visibleEntries.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="empty-row">
+                    {entries.length === 0
+                      ? "Noch keine 2FA-Konten gespeichert. Fügen Sie oben den ersten 2FA-Code hinzu."
+                      : "Keine passenden 2FA-Konten gefunden."}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
       {entryForm && (
         <div className="modal-backdrop" role="presentation">
@@ -301,6 +390,19 @@ export function AuthenticatorPage() {
           </form>
         </div>
       )}
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title="2FA-Eintrag löschen"
+        message={pendingDelete ? `Möchten Sie „${pendingDelete.platform}“ wirklich in den Papierkorb verschieben?` : "Möchten Sie diesen 2FA-Eintrag wirklich löschen?"}
+        confirmLabel="In Papierkorb verschieben"
+        busy={busy}
+        onCancel={() => setPendingDelete(null)}
+        onConfirm={() => {
+          if (!pendingDelete) return;
+          void removeEntryNow(pendingDelete).then(() => setPendingDelete(null));
+        }}
+      />
     </div>
   );
 }

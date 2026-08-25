@@ -12,6 +12,19 @@ interface DocumentsPageProps {
 
 interface Breadcrumb { id?: string; name: string; webUrl?: string }
 
+const documentSourceCacheTtl = 5 * 60 * 1000;
+let documentSourceCache: { accountId: string; sources: DocumentSource[]; cachedAt: number } | null = null;
+
+function sortDocumentSources(sources: DocumentSource[]) {
+  return [...sources].sort((left, right) => left.kind.localeCompare(right.kind)
+    || left.siteName.localeCompare(right.siteName, "de")
+    || left.name.localeCompare(right.name, "de"));
+}
+
+function cacheDocumentSources(accountId: string, sources: DocumentSource[]) {
+  documentSourceCache = { accountId, sources, cachedAt: Date.now() };
+}
+
 export function DocumentsPage({ onNavigate }: DocumentsPageProps) {
   const [sources, setSources] = useState<DocumentSource[]>([]);
   const [source, setSource] = useState<DocumentSource | null>(null);
@@ -19,6 +32,8 @@ export function DocumentsPage({ onNavigate }: DocumentsPageProps) {
   const [breadcrumbs, setBreadcrumbs] = useState<Breadcrumb[]>([]);
   const [connected, setConnected] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
+  const [sourcesLoading, setSourcesLoading] = useState(false);
+  const [sourcesError, setSourcesError] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [menuItemId, setMenuItemId] = useState<string | null>(null);
@@ -34,20 +49,6 @@ export function DocumentsPage({ onNavigate }: DocumentsPageProps) {
     return query ? items.filter((item) => item.name.toLocaleLowerCase("de-DE").includes(query)) : items;
   }, [items, search]);
 
-  const loadSources = async () => {
-    setBusy(true); setError(""); setMessage("");
-    try {
-      const status = await getMicrosoft365ConnectionStatus();
-      setConnected(status.connected);
-      if (!status.connected) return;
-      const next = await listDocumentSources();
-      setSources(next);
-      if (!source && next.length > 0) await selectSource(next[0]);
-    } catch (loadError) {
-      setError(String(loadError));
-    } finally { setBusy(false); }
-  };
-
   const loadItems = async (nextSource: DocumentSource, nextParentId?: string) => {
     setBusy(true); setError(""); setMenuItemId(null);
     try { setItems(await listDocumentItems(nextSource.id, nextParentId)); }
@@ -60,6 +61,62 @@ export function DocumentsPage({ onNavigate }: DocumentsPageProps) {
     setBreadcrumbs([{ name: next.siteName || next.name, webUrl: next.webUrl }]);
     setSearch("");
     await loadItems(next);
+  };
+
+  const loadSharePointSources = async (accountId: string, selectFirst: boolean) => {
+    setSourcesLoading(true);
+    setSourcesError("");
+    try {
+      const sharePointSources = await listDocumentSources("sharepoint");
+      setSources((current) => {
+        const next = sortDocumentSources([
+          ...current.filter((item) => item.kind !== "sharepoint"),
+          ...sharePointSources
+        ]);
+        cacheDocumentSources(accountId, next);
+        return next;
+      });
+      if (selectFirst && sharePointSources.length > 0) await selectSource(sharePointSources[0]);
+    } catch (loadError) {
+      setSourcesError(`SharePoint konnte nicht geladen werden: ${String(loadError)}`);
+    } finally {
+      setSourcesLoading(false);
+    }
+  };
+
+  const loadSources = async () => {
+    setBusy(true); setError(""); setMessage("");
+    try {
+      const status = await getMicrosoft365ConnectionStatus();
+      setConnected(status.connected);
+      if (!status.connected || !status.account) {
+        documentSourceCache = null;
+        return;
+      }
+      const accountId = status.account.id;
+
+      const cached = documentSourceCache
+        && documentSourceCache.accountId === accountId
+        && Date.now() - documentSourceCache.cachedAt < documentSourceCacheTtl
+        ? documentSourceCache.sources
+        : [];
+      if (cached.length > 0) {
+        setSources(cached);
+        const sharePointPromise = loadSharePointSources(accountId, false);
+        await selectSource(cached[0]);
+        void sharePointPromise;
+        return;
+      }
+
+      const oneDriveSources = await listDocumentSources("onedrive");
+      setSources(oneDriveSources);
+      cacheDocumentSources(accountId, oneDriveSources);
+      const sharePointPromise = loadSharePointSources(accountId, oneDriveSources.length === 0);
+      if (oneDriveSources.length > 0) await selectSource(oneDriveSources[0]);
+      void sharePointPromise;
+    } catch (loadError) {
+      setError(String(loadError));
+    } finally { setBusy(false); }
   };
 
   useEffect(() => { void loadSources(); }, []);
@@ -189,9 +246,11 @@ export function DocumentsPage({ onNavigate }: DocumentsPageProps) {
         <aside className="documents-sources">
           <h3><HardDrive size={18} /> Speicherorte</h3>
           {groupedSources.oneDrive.map((item) => <button className={source?.id === item.id ? "active" : ""} type="button" key={item.id} onClick={() => selectSource(item)} title={item.name}><Cloud size={18} /><span><strong>Mein OneDrive</strong><small>{item.name}</small></span></button>)}
+          {sourcesLoading && <p className="documents-sources-loading"><LoaderCircle className="spin" size={17} /> SharePoint wird geladen …</p>}
+          {sourcesError && <p className="documents-sources-error">{sourcesError}</p>}
           {groupedSources.sharePoint.length > 0 && <h4>SharePoint</h4>}
           {groupedSources.sharePoint.map((item) => <button className={source?.id === item.id ? "active" : ""} type="button" key={item.id} onClick={() => selectSource(item)} title={`${item.siteName} – ${item.name}`}><Folder size={18} /><span><strong>{item.siteName}</strong><small>{item.name}</small></span></button>)}
-          {!busy && sources.length === 0 && <p className="documents-no-sources">Keine zugänglichen Speicherorte gefunden.</p>}
+          {!busy && !sourcesLoading && sources.length === 0 && <p className="documents-no-sources">Keine zugänglichen Speicherorte gefunden.</p>}
         </aside>
         <section className="documents-browser">
           <nav className="documents-breadcrumbs" aria-label="Ordnerpfad">

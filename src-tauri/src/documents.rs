@@ -1,4 +1,5 @@
 use crate::m365;
+use futures_util::{future, stream, StreamExt};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -93,8 +94,7 @@ async fn graph_write(
     url: &str,
     body: Option<Value>,
 ) -> Result<Value, String> {
-    let client = reqwest::Client::new();
-    let mut request = client.request(method, url).bearer_auth(token);
+    let mut request = m365::http_client().request(method, url).bearer_auth(token);
     if let Some(body) = body {
         request = request.json(&body);
     }
@@ -135,53 +135,90 @@ fn drive_source(value: &Value, kind: &str, site_name: &str) -> Option<DocumentSo
 }
 
 #[tauri::command]
-pub async fn list_document_sources(app: AppHandle) -> Result<Vec<DocumentSource>, String> {
+pub async fn list_document_sources(
+    app: AppHandle,
+    scope: Option<String>,
+) -> Result<Vec<DocumentSource>, String> {
     let token = m365::refreshed_access_token(&app).await?;
+    match scope.as_deref().unwrap_or("all") {
+        "onedrive" => own_document_sources(&token).await,
+        "sharepoint" => sharepoint_document_sources(&token).await,
+        "all" => {
+            let (own, sharepoint) = future::join(
+                own_document_sources(&token),
+                sharepoint_document_sources(&token),
+            )
+            .await;
+            let mut sources = own?;
+            sources.extend(sharepoint.unwrap_or_default());
+            Ok(sorted_unique_sources(sources))
+        }
+        _ => Err("Unbekannter Dokumentquellen-Bereich.".to_string()),
+    }
+}
+
+async fn own_document_sources(token: &str) -> Result<Vec<DocumentSource>, String> {
     let mut sources = Vec::new();
-    let mut seen = HashSet::new();
     let own_drive =
         m365::graph_json(&token, &format!("{GRAPH}/me/drive?$select=id,name,webUrl")).await?;
     if let Some(source) = drive_source(&own_drive, "onedrive", "Mein OneDrive") {
-        seen.insert(source.id.clone());
         sources.push(source);
     }
+    Ok(sources)
+}
 
+async fn sharepoint_document_sources(token: &str) -> Result<Vec<DocumentSource>, String> {
     let sites = m365::graph_collection(
         &token,
         &format!("{GRAPH}/sites?search=*&$select=id,displayName,webUrl&$top=50"),
     )
-    .await
-    .unwrap_or_default();
-    for site in sites {
+    .await?;
+    let site_requests = sites.into_iter().filter_map(|site| {
         let site_id = text(&site, "id");
         if site_id.is_empty() {
-            continue;
+            return None;
         }
         let site_name = text(&site, "displayName");
-        let drives = m365::graph_collection(
-            &token,
-            &format!(
-                "{GRAPH}/sites/{}/drives?$select=id,name,webUrl&$top=50",
-                encode_segment(&site_id)
-            ),
-        )
+        let token = token.to_string();
+        Some(async move {
+            let drives = m365::graph_collection(
+                &token,
+                &format!(
+                    "{GRAPH}/sites/{}/drives?$select=id,name,webUrl&$top=50",
+                    encode_segment(&site_id)
+                ),
+            )
+            .await
+            .unwrap_or_default();
+            drives
+                .iter()
+                .filter_map(|drive| drive_source(drive, "sharepoint", &site_name))
+                .collect::<Vec<_>>()
+        })
+    });
+    let sources = stream::iter(site_requests)
+        .buffer_unordered(4)
+        .collect::<Vec<_>>()
         .await
-        .unwrap_or_default();
-        for drive in drives {
-            if let Some(source) = drive_source(&drive, "sharepoint", &site_name) {
-                if seen.insert(source.id.clone()) {
-                    sources.push(source);
-                }
-            }
-        }
-    }
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    Ok(sorted_unique_sources(sources))
+}
+
+fn sorted_unique_sources(sources: Vec<DocumentSource>) -> Vec<DocumentSource> {
+    let mut seen = HashSet::new();
+    let mut sources = sources
+        .into_iter()
+        .filter(|source| seen.insert(source.id.clone()))
+        .collect::<Vec<_>>();
     sources.sort_by(|left, right| {
         left.kind
             .cmp(&right.kind)
             .then_with(|| left.site_name.cmp(&right.site_name))
             .then_with(|| left.name.cmp(&right.name))
     });
-    Ok(sources)
+    sources
 }
 
 fn item_from_value(value: Value, drive_id: &str) -> Option<DocumentItem> {
@@ -464,7 +501,7 @@ fn local_document_folder(app: &AppHandle, relative_path: Vec<String>) -> Result<
 }
 
 async fn graph_upload_bytes(token: &str, url: &str, bytes: Vec<u8>) -> Result<Value, String> {
-    let response = reqwest::Client::new()
+    let response = m365::http_client()
         .put(url)
         .bearer_auth(token)
         .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
@@ -529,7 +566,7 @@ async fn upload_file_chunks(
     file_size: u64,
 ) -> Result<Value, String> {
     let mut file = File::open(file_path).map_err(|error| error.to_string())?;
-    let client = reqwest::Client::new();
+    let client = m365::http_client();
     let mut offset = 0_u64;
     loop {
         let mut chunk = vec![0_u8; UPLOAD_CHUNK_SIZE];
@@ -581,7 +618,7 @@ pub async fn download_document_item(
         encode_segment(&drive_id),
         encode_segment(&item_id)
     );
-    let response = reqwest::Client::new()
+    let response = m365::http_client()
         .get(url)
         .bearer_auth(&token)
         .send()
@@ -735,5 +772,25 @@ mod tests {
         assert_eq!(safe_file_name("Plan: 2026?.docx"), "Plan_ 2026_.docx");
         assert_eq!(safe_file_name(".."), "_");
         assert_eq!(safe_file_name("  "), "_");
+    }
+
+    #[test]
+    fn document_sources_are_sorted_and_deduplicated() {
+        let source = |id: &str, kind: &str, site_name: &str, name: &str| DocumentSource {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            site_name: site_name.to_string(),
+            name: name.to_string(),
+            web_url: String::new(),
+        };
+        let sources = sorted_unique_sources(vec![
+            source("2", "sharepoint", "Zentrale", "Dokumente"),
+            source("1", "onedrive", "Mein OneDrive", "OneDrive"),
+            source("2", "sharepoint", "Zentrale", "Duplikat"),
+        ]);
+
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0].id, "1");
+        assert_eq!(sources[1].id, "2");
     }
 }

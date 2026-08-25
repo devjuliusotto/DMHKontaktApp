@@ -1,5 +1,6 @@
 import {
   Armchair,
+  ArrowLeft,
   ArrowRight,
   Building2,
   CalendarDays,
@@ -8,22 +9,23 @@ import {
   ClipboardList,
   Clock3,
   FileText,
-  MapPin,
   Monitor,
   Paperclip,
-  Plus,
+  PackageOpen,
   Send,
   Table2,
   Tent,
   Ticket,
   Utensils,
-  Wrench,
   X
 } from "lucide-react";
 import { FormEvent, useMemo, useState } from "react";
 import { StatusMessage } from "../components/StatusMessage";
+import { OutdoorBookingsPanel } from "../components/OutdoorBookingsPanel";
 
-type ServiceSection = "bookings" | "tickets" | "checkin";
+type ServiceSection = "bookings" | "tickets" | "meals";
+type BookingMode = "standard" | "outdoor";
+type MealMode = "menu" | "reservation";
 type BookingResource = "Raum" | "Auto" | "Projektor" | "Zelt" | "Stühle" | "Tische";
 type CheckinView = "day" | "week" | "month";
 
@@ -80,6 +82,8 @@ const today = new Date().toISOString().slice(0, 10);
 
 export function DienstleistungenPage() {
   const [section, setSection] = useState<ServiceSection | null>(null);
+  const [bookingMode, setBookingMode] = useState<BookingMode | null>(null);
+  const [mealMode, setMealMode] = useState<MealMode | null>(null);
   const [bookings, setBookings] = useState<Booking[]>(() => readStored(bookingsKey, []));
   const [tickets, setTickets] = useState<ServiceTicket[]>(() => readStored(ticketsKey, []));
   const [checkins, setCheckins] = useState<MealCheckin[]>(() => readStored(checkinsKey, []));
@@ -90,7 +94,6 @@ export function DienstleistungenPage() {
   const [ticketAttachments, setTicketAttachments] = useState<TicketAttachment[]>([]);
   const [checkinForm, setCheckinForm] = useState({ date: today, people: "1", note: "" });
   const [checkinView, setCheckinView] = useState<CheckinView>("week");
-  const [showMenu, setShowMenu] = useState(false);
 
   const visibleCheckins = useMemo(() => {
     const reference = new Date(`${checkinForm.date}T12:00:00`);
@@ -109,6 +112,21 @@ export function DienstleistungenPage() {
 
   const selectSection = (next: ServiceSection) => {
     setSection(next);
+    setBookingMode(null);
+    setMealMode(null);
+    setMessage("");
+  };
+
+  const closeSection = () => {
+    setSection(null);
+    setBookingMode(null);
+    setMealMode(null);
+    setMessage("");
+  };
+
+  const openBooking = (resource: BookingResource) => {
+    setBookingForm((current) => ({ ...current, resource }));
+    setBookingMode("standard");
     setMessage("");
   };
 
@@ -148,7 +166,7 @@ export function DienstleistungenPage() {
     const next = [checkin, ...checkins];
     setCheckins(next);
     writeStored(checkinsKey, next);
-    setMessage("Der Mittagessen-Check-in wurde gespeichert.");
+    setMessage("Die Mahlzeit wurde reserviert.");
     setMessageType("success");
     setCheckinForm({ ...checkinForm, note: "" });
   };
@@ -158,46 +176,61 @@ export function DienstleistungenPage() {
       <header className="page-header">
         <div>
           <h2>Dienstleistungen</h2>
-          <p>Buchungen, Serviceanfragen und Mittagessen zentral organisieren.</p>
+          <p>Buchungen, Serviceanfragen und Mahlzeiten zentral organisieren.</p>
         </div>
       </header>
 
       <StatusMessage message={message} type={messageType} />
 
-      <section className="dienstleistungen-actions" aria-label="Dienstleistungsbereiche">
-        <ServiceAction variant="booking" icon={<CalendarDays size={27} />} title="Buchungen" description="Räume, Autos, Projektoren, Zelte, Stühle und Tische reservieren." active={section === "bookings"} onClick={() => selectSection("bookings")} />
-        <ServiceAction variant="ticket" icon={<Ticket size={27} />} title="Service anfordern" description="Tickets an IT, Hauswirtschaft oder Haustechnik senden." active={section === "tickets"} onClick={() => selectSection("tickets")} />
-        <ServiceAction variant="meal" icon={<Utensils size={27} />} title="Check-in Mittagessen" description="Mittagessen für Tag, Woche oder Monat anmelden und Speiseplan ansehen." active={section === "checkin"} onClick={() => selectSection("checkin")} />
-      </section>
-
       {!section && (
-        <section className="dienstleistungen-welcome">
-          <ClipboardList size={42} />
-          <h3>Womit möchten Sie beginnen?</h3>
-          <p>Wählen Sie oben eine Dienstleistung aus.</p>
-        </section>
+        <>
+          <section className="dienstleistungen-actions" aria-label="Dienstleistungsbereiche">
+            <ServiceAction variant="booking" icon={<CalendarDays size={27} />} title="Buchungen" description="Räume, Fahrzeuge, Technik, Ausstattung und Outdoor-Material reservieren." onClick={() => selectSection("bookings")} />
+            <ServiceAction variant="ticket" icon={<Ticket size={27} />} title="Service anfordern" description="Tickets an IT, Hauswirtschaft oder Haustechnik senden." onClick={() => selectSection("tickets")} />
+            <ServiceAction variant="meal" icon={<Utensils size={27} />} title="Mahlzeiten" description="Speiseplan ansehen und Mahlzeiten für eine oder mehrere Personen reservieren." onClick={() => selectSection("meals")} />
+          </section>
+          <section className="dienstleistungen-welcome">
+            <ClipboardList size={42} />
+            <h3>Womit möchten Sie beginnen?</h3>
+            <p>Wählen Sie eine Dienstleistung aus.</p>
+          </section>
+        </>
       )}
 
       {section === "bookings" && (
-        <section className="dienstleistung-panel">
-          <PanelHeading icon={<CalendarDays size={22} />} title="Buchungen" description="Eine Reservierungsanfrage für benötigte Ausstattung erstellen." onClose={() => setSection(null)} />
-          <form className="dienstleistung-form" onSubmit={saveBooking}>
-            <label className="field"><span>Was möchten Sie buchen? *</span><select value={bookingForm.resource} onChange={(event) => setBookingForm({ ...bookingForm, resource: event.target.value as BookingResource })}>{resourceOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
-            <label className="field"><span>Raum / Gegenstand / Nummer</span><input value={bookingForm.details} onChange={(event) => setBookingForm({ ...bookingForm, details: event.target.value })} placeholder="z. B. Gruppenraum 2 oder Fahrzeug 3" /></label>
-            <label className="field"><span>Datum *</span><input type="date" value={bookingForm.date} onChange={(event) => setBookingForm({ ...bookingForm, date: event.target.value })} required /></label>
-            <label className="field"><span>Von *</span><input type="time" value={bookingForm.from} onChange={(event) => setBookingForm({ ...bookingForm, from: event.target.value })} required /></label>
-            <label className="field"><span>Bis *</span><input type="time" value={bookingForm.to} onChange={(event) => setBookingForm({ ...bookingForm, to: event.target.value })} required /></label>
-            <label className="field"><span>Anfragende Person *</span><input value={bookingForm.requester} onChange={(event) => setBookingForm({ ...bookingForm, requester: event.target.value })} required placeholder="Name" /></label>
-            <label className="field wide"><span>Hinweise</span><textarea rows={3} value={bookingForm.note} onChange={(event) => setBookingForm({ ...bookingForm, note: event.target.value })} placeholder="Anlass, Anzahl Personen oder besondere Anforderungen" /></label>
-            <div className="button-row"><button className="primary" type="submit"><Send size={19} /> Buchungsanfrage senden</button></div>
-          </form>
-          <BookingList bookings={bookings} />
-        </section>
+        <div className="dienstleistung-workspace">
+          <WorkspaceHeading icon={<CalendarDays size={24} />} title="Buchungen" description="Wählen Sie zuerst, was Sie reservieren möchten." onBack={closeSection} />
+          {!bookingMode && <section className="dienstleistung-choice-grid" aria-label="Buchungsarten">
+            <ServiceChoice icon={<Building2 size={25} />} title="Räume" description="Besprechungs-, Gruppen- und Veranstaltungsräume reservieren." onClick={() => openBooking("Raum")} />
+            <ServiceChoice icon={<Car size={25} />} title="Fahrzeuge" description="Dienstfahrzeuge für einen Zeitraum anfragen." onClick={() => openBooking("Auto")} />
+            <ServiceChoice icon={<Monitor size={25} />} title="Technik" description="Projektoren und technische Ausstattung reservieren." onClick={() => openBooking("Projektor")} />
+            <ServiceChoice icon={<Armchair size={25} />} title="Ausstattung" description="Zelte, Stühle, Tische und weitere Ausstattung buchen." onClick={() => openBooking("Zelt")} />
+            <ServiceChoice icon={<PackageOpen size={25} />} title="Outdoor/Geräte" description="Outdoor-Veranstaltungen und Material mit vollständiger Checkliste planen." accent="outdoor" onClick={() => setBookingMode("outdoor")} />
+          </section>}
+          {bookingMode === "standard" && <section className="dienstleistung-panel">
+            <PanelHeading icon={<CalendarDays size={22} />} title={`${bookingForm.resource} buchen`} description="Reservierungszeitraum und benötigten Gegenstand angeben." onClose={() => setBookingMode(null)} />
+            <form className="dienstleistung-form" onSubmit={saveBooking}>
+              <label className="field"><span>Was möchten Sie buchen? *</span><select value={bookingForm.resource} onChange={(event) => setBookingForm({ ...bookingForm, resource: event.target.value as BookingResource })}>{resourceOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+              <label className="field"><span>Raum / Gegenstand / Nummer</span><input value={bookingForm.details} onChange={(event) => setBookingForm({ ...bookingForm, details: event.target.value })} placeholder="z. B. Gruppenraum 2 oder Fahrzeug 3" /></label>
+              <label className="field"><span>Datum *</span><input type="date" value={bookingForm.date} onChange={(event) => setBookingForm({ ...bookingForm, date: event.target.value })} required /></label>
+              <label className="field"><span>Von *</span><input type="time" value={bookingForm.from} onChange={(event) => setBookingForm({ ...bookingForm, from: event.target.value })} required /></label>
+              <label className="field"><span>Bis *</span><input type="time" value={bookingForm.to} onChange={(event) => setBookingForm({ ...bookingForm, to: event.target.value })} required /></label>
+              <label className="field"><span>Anfragende Person *</span><input value={bookingForm.requester} onChange={(event) => setBookingForm({ ...bookingForm, requester: event.target.value })} required placeholder="Name" /></label>
+              <label className="field wide"><span>Hinweise</span><textarea rows={3} value={bookingForm.note} onChange={(event) => setBookingForm({ ...bookingForm, note: event.target.value })} placeholder="Anlass, Anzahl Personen oder besondere Anforderungen" /></label>
+              <div className="button-row"><button className="primary" type="submit"><Send size={19} /> Buchungsanfrage senden</button></div>
+            </form>
+            <BookingList bookings={bookings} />
+          </section>}
+          {bookingMode === "outdoor" && <section className="dienstleistung-panel outdoor-panel">
+            <PanelHeading icon={<PackageOpen size={22} />} title="Outdoor/Geräte Buchungen" description="Outdoor-Veranstaltung planen, Material reservieren und Zuständigkeiten festhalten." onClose={() => setBookingMode(null)} />
+            <OutdoorBookingsPanel />
+          </section>}
+        </div>
       )}
 
       {section === "tickets" && (
         <section className="dienstleistung-panel">
-          <PanelHeading icon={<Ticket size={22} />} title="Service anfordern" description="Ein Ticket mit Beschreibung, Zuständigkeit und Fotos eröffnen." onClose={() => setSection(null)} />
+          <PanelHeading icon={<Ticket size={22} />} title="Service anfordern" description="Ein Ticket mit Beschreibung, Zuständigkeit und Fotos eröffnen." onClose={closeSection} />
           <form className="dienstleistung-form" onSubmit={saveTicket}>
             <label className="field"><span>Bereich *</span><select value={ticketForm.category} onChange={(event) => setTicketForm({ ...ticketForm, category: event.target.value as ServiceTicket["category"] })}><option>IT</option><option>Hauswirtschaft</option><option>Haustechnik</option></select></label>
             <label className="field"><span>Zuständig an</span><input value={ticketForm.assignee} onChange={(event) => setTicketForm({ ...ticketForm, assignee: event.target.value })} placeholder="Name oder Team" /></label>
@@ -211,27 +244,46 @@ export function DienstleistungenPage() {
         </section>
       )}
 
-      {section === "checkin" && (
-        <section className="dienstleistung-panel">
-          <PanelHeading icon={<Utensils size={22} />} title="Check-in Mittagessen" description="Anmeldungen für den gewünschten Zeitraum verwalten." onClose={() => setSection(null)} />
-          <div className="checkin-toolbar"><div className="checkin-view-buttons">{(["day", "week", "month"] as CheckinView[]).map((view) => <button key={view} className={checkinView === view ? "active" : ""} type="button" onClick={() => setCheckinView(view)}>{view === "day" ? "Tag" : view === "week" ? "Woche" : "Monat"}</button>)}</div><button type="button" onClick={() => setShowMenu((visible) => !visible)}><Utensils size={18} /> {showMenu ? "Speiseplan ausblenden" : "Speiseplan der Woche"}</button></div>
-          <form className="dienstleistung-form checkin-form" onSubmit={saveCheckin}>
-            <label className="field"><span>Datum *</span><input type="date" value={checkinForm.date} onChange={(event) => setCheckinForm({ ...checkinForm, date: event.target.value })} required /></label>
-            <label className="field"><span>Personen *</span><input type="number" min="1" max="500" value={checkinForm.people} onChange={(event) => setCheckinForm({ ...checkinForm, people: event.target.value })} required /></label>
-            <label className="field wide"><span>Hinweis / Ernährungswunsch</span><input value={checkinForm.note} onChange={(event) => setCheckinForm({ ...checkinForm, note: event.target.value })} placeholder="Optional" /></label>
-            <div className="button-row"><button className="primary" type="submit"><CheckCircle2 size={19} /> Zum Mittagessen einchecken</button></div>
-          </form>
-          {showMenu && <WeeklyMenu referenceDate={checkinForm.date} />}
-          <div className="checkin-list-heading"><h3>Anmeldungen</h3><span>{visibleCheckins.length} im gewählten Zeitraum</span></div>
-          {visibleCheckins.length === 0 ? <p className="dienstleistung-empty">Noch keine Check-ins für diesen Zeitraum.</p> : <div className="checkin-list">{visibleCheckins.map((checkin) => <article key={checkin.id}><span><strong>{formatDate(checkin.date)}</strong><small>{checkin.people} {checkin.people === 1 ? "Person" : "Personen"}</small></span><span>{checkin.note || "Kein Hinweis"}</span></article>)}</div>}
-        </section>
+      {section === "meals" && (
+        <div className="dienstleistung-workspace">
+          <WorkspaceHeading icon={<Utensils size={24} />} title="Mahlzeiten" description="Speiseplan ansehen oder eine Mahlzeit reservieren." onBack={closeSection} />
+          {!mealMode && <section className="dienstleistung-choice-grid meal-choice-grid" aria-label="Mahlzeiten">
+            <ServiceChoice icon={<Utensils size={25} />} title="Speiseplan der Woche" description="Das Menü von Montag bis Freitag ansehen." onClick={() => setMealMode("menu")} />
+            <ServiceChoice icon={<CheckCircle2 size={25} />} title="Mahlzeit reservieren" description="Essen für eine oder mehrere Personen verbindlich anmelden." onClick={() => setMealMode("reservation")} />
+          </section>}
+          {mealMode === "menu" && <section className="dienstleistung-panel">
+            <PanelHeading icon={<Utensils size={22} />} title="Speiseplan der Woche" description="Woche über das Referenzdatum auswählen." onClose={() => setMealMode(null)} />
+            <label className="field meal-reference-date"><span>Woche mit diesem Datum</span><input type="date" value={checkinForm.date} onChange={(event) => setCheckinForm({ ...checkinForm, date: event.target.value })} /></label>
+            <WeeklyMenu referenceDate={checkinForm.date} />
+          </section>}
+          {mealMode === "reservation" && <section className="dienstleistung-panel">
+            <PanelHeading icon={<CheckCircle2 size={22} />} title="Mahlzeit reservieren" description="Reservierungen für den gewünschten Zeitraum verwalten." onClose={() => setMealMode(null)} />
+            <div className="checkin-toolbar"><div className="checkin-view-buttons">{(["day", "week", "month"] as CheckinView[]).map((view) => <button key={view} className={checkinView === view ? "active" : ""} type="button" onClick={() => setCheckinView(view)}>{view === "day" ? "Tag" : view === "week" ? "Woche" : "Monat"}</button>)}</div></div>
+            <form className="dienstleistung-form checkin-form" onSubmit={saveCheckin}>
+              <label className="field"><span>Datum *</span><input type="date" value={checkinForm.date} onChange={(event) => setCheckinForm({ ...checkinForm, date: event.target.value })} required /></label>
+              <label className="field"><span>Personen *</span><input type="number" min="1" max="500" value={checkinForm.people} onChange={(event) => setCheckinForm({ ...checkinForm, people: event.target.value })} required /></label>
+              <label className="field wide"><span>Hinweis / Ernährungswunsch</span><input value={checkinForm.note} onChange={(event) => setCheckinForm({ ...checkinForm, note: event.target.value })} placeholder="Optional" /></label>
+              <div className="button-row"><button className="primary" type="submit"><CheckCircle2 size={19} /> Mahlzeit reservieren</button></div>
+            </form>
+            <div className="checkin-list-heading"><h3>Reservierungen</h3><span>{visibleCheckins.length} im gewählten Zeitraum</span></div>
+            {visibleCheckins.length === 0 ? <p className="dienstleistung-empty">Noch keine Mahlzeiten für diesen Zeitraum reserviert.</p> : <div className="checkin-list">{visibleCheckins.map((checkin) => <article key={checkin.id}><span><strong>{formatDate(checkin.date)}</strong><small>{checkin.people} {checkin.people === 1 ? "Person" : "Personen"}</small></span><span>{checkin.note || "Kein Hinweis"}</span></article>)}</div>}
+          </section>}
+        </div>
       )}
     </div>
   );
 }
 
-function ServiceAction({ variant, icon, title, description, active, onClick }: { variant: "booking" | "ticket" | "meal"; icon: React.ReactNode; title: string; description: string; active: boolean; onClick: () => void }) {
-  return <button aria-pressed={active} className={active ? `dienstleistung-action dienstleistung-action-${variant} active` : `dienstleistung-action dienstleistung-action-${variant}`} type="button" onClick={onClick}><span className="dienstleistung-action-icon">{icon}</span><strong>{title}</strong><small>{description}</small><span className="dienstleistung-action-cta">Öffnen <ArrowRight size={18} /></span></button>;
+function ServiceAction({ variant, icon, title, description, onClick }: { variant: "booking" | "ticket" | "meal"; icon: React.ReactNode; title: string; description: string; onClick: () => void }) {
+  return <button className={`dienstleistung-action dienstleistung-action-${variant}`} type="button" onClick={onClick}><span className="dienstleistung-action-icon">{icon}</span><strong>{title}</strong><small>{description}</small><span className="dienstleistung-action-cta">Öffnen <ArrowRight size={18} /></span></button>;
+}
+
+function WorkspaceHeading({ icon, title, description, onBack }: { icon: React.ReactNode; title: string; description: string; onBack: () => void }) {
+  return <header className="dienstleistung-workspace-heading"><button type="button" onClick={onBack}><ArrowLeft size={19} /> Übersicht</button><div><span>{icon}</span><div><h3>{title}</h3><p>{description}</p></div></div></header>;
+}
+
+function ServiceChoice({ icon, title, description, onClick, accent = "default" }: { icon: React.ReactNode; title: string; description: string; onClick: () => void; accent?: "default" | "outdoor" }) {
+  return <button className={`dienstleistung-choice dienstleistung-choice-${accent}`} type="button" onClick={onClick}><span>{icon}</span><div><strong>{title}</strong><small>{description}</small></div><ArrowRight size={20} /></button>;
 }
 
 function PanelHeading({ icon, title, description, onClose }: { icon: React.ReactNode; title: string; description: string; onClose: () => void }) {

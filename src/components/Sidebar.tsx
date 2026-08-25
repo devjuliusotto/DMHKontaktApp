@@ -25,10 +25,10 @@ export function Sidebar({ activePage, onNavigate, compact = false }: SidebarProp
     <aside className={compact ? "sidebar compact" : "sidebar"}>
       <div className="brand">
         <img className="brand-logo" src="/dmh-kontakte-kalender.png" alt="Logo von DMH Kontakte und Kalender" />
-        {!compact && <div>
+        <div className="brand-copy">
           <h1>{t.appName}</h1>
           <p>Kontakte und Termine lokal</p>
-        </div>}
+        </div>
       </div>
       <nav className="nav-list" aria-label="Hauptmenü">
         {items.map((item, index) => {
@@ -43,7 +43,7 @@ export function Sidebar({ activePage, onNavigate, compact = false }: SidebarProp
               type="button"
             >
               <Icon size={24} />
-              {!compact && <span>{item.label}</span>}
+              <span className="nav-label">{item.label}</span>
             </button>
           );
         })}
@@ -56,7 +56,7 @@ export function Sidebar({ activePage, onNavigate, compact = false }: SidebarProp
           type="button"
         >
           <Settings size={24} />
-          {!compact && <span>{t.settings}</span>}
+          <span className="nav-label">{t.settings}</span>
         </button>
       </div>
     </aside>

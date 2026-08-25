@@ -217,8 +217,8 @@ export function applyMicrosoft365Sync(request: {
   return invoke("apply_m365_sync", { request });
 }
 
-export function listDocumentSources(): Promise<DocumentSource[]> {
-  return invoke("list_document_sources");
+export function listDocumentSources(scope: "all" | "onedrive" | "sharepoint" = "all"): Promise<DocumentSource[]> {
+  return invoke("list_document_sources", { scope });
 }
 
 export function listDocumentItems(driveId: string, parentId?: string): Promise<DocumentItem[]> {

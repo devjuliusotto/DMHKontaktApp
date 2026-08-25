@@ -5,7 +5,8 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, State};
 use zeroize::Zeroize;
 
@@ -19,6 +20,19 @@ const LOGIN_SCOPES: &str = "openid profile offline_access User.Read Contacts.Rea
 #[derive(Default)]
 pub struct Microsoft365Runtime {
     pending_device_flow: Mutex<Option<PendingDeviceFlow>>,
+    access_token: Mutex<Option<CachedAccessToken>>,
+    refresh_gate: tokio::sync::Mutex<()>,
+}
+
+struct CachedAccessToken {
+    value: String,
+    expires_at: Instant,
+}
+
+impl Drop for CachedAccessToken {
+    fn drop(&mut self) {
+        self.value.zeroize();
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -195,6 +209,8 @@ struct OAuthTokenResponse {
     refresh_token: Option<String>,
     #[serde(default)]
     scope: String,
+    #[serde(default = "default_token_lifetime")]
+    expires_in: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -225,6 +241,20 @@ struct StoredTokenBundle {
 
 fn default_poll_interval() -> u64 {
     5
+}
+
+fn default_token_lifetime() -> i64 {
+    3600
+}
+
+pub(crate) fn http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
 }
 
 fn client_id() -> Option<&'static str> {
@@ -397,7 +427,7 @@ fn read_token(app: &AppHandle) -> Result<StoredTokenBundle, String> {
 }
 
 async fn graph_profile(access_token: &str) -> Result<GraphProfile, String> {
-    let response = reqwest::Client::new()
+    let response = http_client()
         .get(GRAPH_PROFILE_URL)
         .bearer_auth(access_token)
         .send()
@@ -418,6 +448,14 @@ async fn graph_profile(access_token: &str) -> Result<GraphProfile, String> {
 }
 
 pub(crate) async fn refreshed_access_token(app: &AppHandle) -> Result<String, String> {
+    let state = app.state::<AppState>();
+    if let Some(token) = cached_access_token(&state)? {
+        return Ok(token);
+    }
+    let _refresh_guard = state.m365.refresh_gate.lock().await;
+    if let Some(token) = cached_access_token(&state)? {
+        return Ok(token);
+    }
     let client_id = client_id().ok_or_else(|| {
         "Die EDV muss zuerst die Microsoft-Anwendungs-ID für diesen Build hinterlegen.".to_string()
     })?;
@@ -431,6 +469,7 @@ pub(crate) async fn refreshed_access_token(app: &AppHandle) -> Result<String, St
     .await
     .map_err(|error| oauth_error_message(&error))?;
     let refresh_token = token.refresh_token.unwrap_or(stored.refresh_token);
+    let expires_in = token.expires_in.max(300) as u64;
     let account = read_account(app)?.ok_or_else(|| {
         "Microsoft-365-Kontoprofil fehlt. Verbinden Sie das Konto erneut.".to_string()
     })?;
@@ -442,11 +481,34 @@ pub(crate) async fn refreshed_access_token(app: &AppHandle) -> Result<String, St
             scope: token.scope,
         },
     )?;
-    Ok(token.access_token)
+    let access_token = token.access_token;
+    *state.m365.access_token.lock().map_err(|_| {
+        "Microsoft-Anmeldung konnte intern nicht zwischengespeichert werden.".to_string()
+    })? = Some(CachedAccessToken {
+        value: access_token.clone(),
+        expires_at: Instant::now() + Duration::from_secs(expires_in),
+    });
+    Ok(access_token)
+}
+
+fn cached_access_token(state: &State<'_, AppState>) -> Result<Option<String>, String> {
+    let mut cache = state
+        .m365
+        .access_token
+        .lock()
+        .map_err(|_| "Microsoft-Anmeldung konnte intern nicht gelesen werden.".to_string())?;
+    if cache
+        .as_ref()
+        .is_some_and(|token| token.expires_at > Instant::now() + Duration::from_secs(60))
+    {
+        return Ok(cache.as_ref().map(|token| token.value.clone()));
+    }
+    *cache = None;
+    Ok(None)
 }
 
 pub(crate) async fn graph_json(access_token: &str, url: &str) -> Result<Value, String> {
-    let response = reqwest::Client::new()
+    let response = http_client()
         .get(url)
         .bearer_auth(access_token)
         .send()
@@ -1495,7 +1557,7 @@ async fn graph_write(
     url: &str,
     body: &Value,
 ) -> Result<Value, String> {
-    let response = reqwest::Client::new()
+    let response = http_client()
         .request(method, url)
         .bearer_auth(access_token)
         .json(body)
@@ -1813,7 +1875,7 @@ fn account_from_profile(profile: GraphProfile) -> Microsoft365Account {
 }
 
 async fn request_token(fields: &[(&str, &str)]) -> Result<OAuthTokenResponse, OAuthErrorResponse> {
-    let response = reqwest::Client::new()
+    let response = http_client()
         .post(oauth_url("token"))
         .header("content-type", "application/x-www-form-urlencoded")
         .body(form_body(fields))
@@ -1880,7 +1942,7 @@ pub async fn start_m365_connection(
     let client_id = client_id().ok_or_else(|| {
         "Die EDV muss zuerst die Microsoft-Anwendungs-ID für diesen Build hinterlegen.".to_string()
     })?;
-    let response = reqwest::Client::new()
+    let response = http_client()
         .post(oauth_url("devicecode"))
         .header("content-type", "application/x-www-form-urlencoded")
         .body(form_body(&[
@@ -2052,12 +2114,18 @@ pub async fn test_m365_connection(app: AppHandle) -> Result<Microsoft365Connecti
 #[tauri::command]
 pub fn disconnect_m365_account(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     clear_pending_flow(&state)?;
+    *state.m365.access_token.lock().map_err(|_| {
+        "Microsoft-Anmeldung konnte intern nicht zurückgesetzt werden.".to_string()
+    })? = None;
     delete_connection_settings(&app)
 }
 
 pub(crate) fn clear_runtime(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
     *state.m365.pending_device_flow.lock().map_err(|_| {
+        "Microsoft-Anmeldung konnte intern nicht zurückgesetzt werden.".to_string()
+    })? = None;
+    *state.m365.access_token.lock().map_err(|_| {
         "Microsoft-Anmeldung konnte intern nicht zurückgesetzt werden.".to_string()
     })? = None;
     Ok(())

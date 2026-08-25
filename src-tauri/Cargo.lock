@@ -51,6 +51,7 @@ dependencies = [
  "argon2",
  "base64 0.22.1",
  "chrono",
+ "futures-util",
  "rand 0.8.7",
  "reqwest",
  "rsa",

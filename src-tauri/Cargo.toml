@@ -17,6 +17,7 @@ aes-gcm = "0.10"
 argon2 = "0.5"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
+futures-util = "0.3"
 rand = "0.8"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 rsa = "0.9"
@@ -31,7 +32,7 @@ tauri-plugin-fs = "2.2.2"
 tauri-plugin-opener = "2.2.6"
 tauri-plugin-updater = "2.10.1"
 thiserror = "1"
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["sync", "time"] }
 uuid = { version = "1", features = ["v4"] }
 zeroize = "1"
 
