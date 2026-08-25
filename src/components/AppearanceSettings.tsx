@@ -59,7 +59,7 @@ export function AppearanceSettings() {
       <div className="appearance-setting-group">
         <h4>Akzentfarbe</h4>
         <div className="appearance-options">
-          {accentOption("pink", "Rosa", ["#aa074f", "#d89ab5", "#f4d6e0"])}
+          {accentOption("pink", "Bordeauxrot", ["#891538", "#b56a82", "#ead5db"])}
           {accentOption("green", "Grün", ["#7fa552", "#a9c28c", "#d0dec0"])}
         </div>
       </div>

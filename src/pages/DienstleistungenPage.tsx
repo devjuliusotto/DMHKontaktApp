@@ -12,6 +12,7 @@ import {
   Monitor,
   Paperclip,
   PackageOpen,
+  Search,
   Send,
   Table2,
   Tent,
@@ -19,7 +20,7 @@ import {
   Utensils,
   X
 } from "lucide-react";
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { StatusMessage } from "../components/StatusMessage";
 import { OutdoorBookingsPanel } from "../components/OutdoorBookingsPanel";
 
@@ -39,6 +40,7 @@ interface Booking {
   requester: string;
   note: string;
   createdAt: string;
+  status?: "Offen" | "Bestätigt" | "Abgelehnt" | "Abgeschlossen";
 }
 
 interface TicketAttachment {
@@ -65,9 +67,38 @@ interface MealCheckin {
   createdAt: string;
 }
 
+interface OutdoorBookingOverview {
+  id: string;
+  eventName: string;
+  date: string;
+  from: string;
+  to: string;
+  location: string;
+  responsible: string;
+  people: number;
+  status: "Offen" | "Bestätigt" | "Abgelehnt" | "Abgeschlossen";
+  createdAt: string;
+}
+
+interface ServiceOverviewRecord {
+  key: string;
+  id: string;
+  kind: ServiceSection;
+  title: string;
+  subtitle: string;
+  scheduled: string;
+  status: string;
+  createdAt: string;
+  searchText: string;
+  details: Array<{ label: string; value: string }>;
+}
+
+type ServiceOverviewFilter = "all" | ServiceSection;
+
 const bookingsKey = "dmh-dienstleistungen-bookings-v1";
 const ticketsKey = "dmh-dienstleistungen-tickets-v1";
 const checkinsKey = "dmh-dienstleistungen-checkins-v1";
+const outdoorBookingsKey = "dmh-dienstleistungen-outdoor-bookings-v1";
 
 const resourceOptions: Array<{ value: BookingResource; label: string; icon: typeof Building2 }> = [
   { value: "Raum", label: "Räume", icon: Building2 },
@@ -76,6 +107,13 @@ const resourceOptions: Array<{ value: BookingResource; label: string; icon: type
   { value: "Zelt", label: "Zelte / Pavillons", icon: Tent },
   { value: "Stühle", label: "Stühle", icon: Armchair },
   { value: "Tische", label: "Tische", icon: Table2 }
+];
+
+const overviewFilterOptions: Array<{ value: ServiceOverviewFilter; label: string }> = [
+  { value: "all", label: "Alle" },
+  { value: "tickets", label: "Tickets" },
+  { value: "bookings", label: "Buchungen" },
+  { value: "meals", label: "Mahlzeiten" }
 ];
 
 const today = new Date().toISOString().slice(0, 10);
@@ -132,7 +170,7 @@ export function DienstleistungenPage() {
 
   const saveBooking = (event: FormEvent) => {
     event.preventDefault();
-    const booking: Booking = { ...bookingForm, id: crypto.randomUUID(), createdAt: new Date().toISOString() };
+    const booking: Booking = { ...bookingForm, id: crypto.randomUUID(), createdAt: new Date().toISOString(), status: "Offen" };
     const next = [booking, ...bookings];
     setBookings(next);
     writeStored(bookingsKey, next);
@@ -189,11 +227,7 @@ export function DienstleistungenPage() {
             <ServiceAction variant="ticket" icon={<Ticket size={27} />} title="Service anfordern" description="Tickets an IT, Hauswirtschaft oder Haustechnik senden." onClick={() => selectSection("tickets")} />
             <ServiceAction variant="meal" icon={<Utensils size={27} />} title="Mahlzeiten" description="Speiseplan ansehen und Mahlzeiten für eine oder mehrere Personen reservieren." onClick={() => selectSection("meals")} />
           </section>
-          <section className="dienstleistungen-welcome">
-            <ClipboardList size={42} />
-            <h3>Womit möchten Sie beginnen?</h3>
-            <p>Wählen Sie eine Dienstleistung aus.</p>
-          </section>
+          <ServicesOverview bookings={bookings} tickets={tickets} checkins={checkins} onOpen={selectSection} />
         </>
       )}
 
@@ -274,6 +308,189 @@ export function DienstleistungenPage() {
   );
 }
 
+function ServicesOverview({ bookings, tickets, checkins, onOpen }: {
+  bookings: Booking[];
+  tickets: ServiceTicket[];
+  checkins: MealCheckin[];
+  onOpen: (section: ServiceSection) => void;
+}) {
+  const [filter, setFilter] = useState<ServiceOverviewFilter>("all");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [search, setSearch] = useState("");
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const outdoorBookings = useMemo(() => readStored<OutdoorBookingOverview[]>(outdoorBookingsKey, []), []);
+
+  const records = useMemo<ServiceOverviewRecord[]>(() => {
+    const bookingRecords = bookings.map((booking) => ({
+      key: `booking:${booking.id}`,
+      id: booking.id,
+      kind: "bookings" as const,
+      title: booking.details || booking.resource,
+      subtitle: `${booking.resource}${booking.requester ? ` · ${booking.requester}` : ""}`,
+      scheduled: `${formatDate(booking.date)} · ${booking.from}–${booking.to}`,
+      status: booking.status || "Offen",
+      createdAt: booking.createdAt,
+      searchText: [booking.resource, booking.details, booking.requester, booking.note, booking.status || "Offen"].join(" "),
+      details: [
+        { label: "Buchungsnummer", value: booking.id },
+        { label: "Ressource", value: booking.resource },
+        { label: "Raum / Gegenstand", value: booking.details || "Noch nicht konkretisiert" },
+        { label: "Termin", value: `${formatDate(booking.date)}, ${booking.from}–${booking.to}` },
+        { label: "Anfragende Person", value: booking.requester || "Nicht angegeben" },
+        { label: "Hinweise", value: booking.note || "Keine Hinweise" }
+      ]
+    }));
+    const outdoorRecords = outdoorBookings.map((booking) => ({
+      key: `outdoor:${booking.id}`,
+      id: booking.id,
+      kind: "bookings" as const,
+      title: booking.eventName || "Outdoor-/Geräteanfrage",
+      subtitle: `Outdoor/Geräte${booking.location ? ` · ${booking.location}` : ""}`,
+      scheduled: `${formatDate(booking.date)} · ${booking.from}–${booking.to}`,
+      status: booking.status || "Offen",
+      createdAt: booking.createdAt,
+      searchText: [booking.eventName, booking.location, booking.responsible, booking.status].join(" "),
+      details: [
+        { label: "Anfragenummer", value: booking.id },
+        { label: "Bereich", value: "Outdoor/Geräte" },
+        { label: "Termin", value: `${formatDate(booking.date)}, ${booking.from}–${booking.to}` },
+        { label: "Ort", value: booking.location || "Nicht angegeben" },
+        { label: "Verantwortlich", value: booking.responsible || "Nicht angegeben" },
+        { label: "Personenzahl", value: String(booking.people || 1) }
+      ]
+    }));
+    const ticketRecords = tickets.map((ticket) => ({
+      key: `ticket:${ticket.id}`,
+      id: ticket.id,
+      kind: "tickets" as const,
+      title: ticket.title,
+      subtitle: `${ticket.category}${ticket.assignee ? ` · ${ticket.assignee}` : ""}`,
+      scheduled: formatDateTime(ticket.createdAt),
+      status: ticket.status,
+      createdAt: ticket.createdAt,
+      searchText: [ticket.id, ticket.title, ticket.category, ticket.assignee, ticket.message, ticket.status].join(" "),
+      details: [
+        { label: "Ticketnummer", value: ticket.id },
+        { label: "Bereich", value: ticket.category },
+        { label: "Zuständig", value: ticket.assignee || "Noch nicht zugewiesen" },
+        { label: "Nachricht", value: ticket.message },
+        { label: "Anhänge", value: ticket.attachments.length ? `${ticket.attachments.length} Datei(en)` : "Keine Anhänge" },
+        { label: "Erstellt", value: formatDateTime(ticket.createdAt) }
+      ]
+    }));
+    const mealRecords = checkins.map((checkin) => ({
+      key: `meal:${checkin.id}`,
+      id: checkin.id,
+      kind: "meals" as const,
+      title: `Mittagessen für ${checkin.people} ${checkin.people === 1 ? "Person" : "Personen"}`,
+      subtitle: checkin.note || "Ohne besonderen Ernährungswunsch",
+      scheduled: formatDate(checkin.date),
+      status: checkin.date < today ? "Abgeschlossen" : "Reserviert",
+      createdAt: checkin.createdAt,
+      searchText: [checkin.note, checkin.people, checkin.date].join(" "),
+      details: [
+        { label: "Reservierungsnummer", value: checkin.id },
+        { label: "Datum", value: formatDate(checkin.date) },
+        { label: "Personen", value: String(checkin.people) },
+        { label: "Ernährungswunsch / Hinweis", value: checkin.note || "Kein Hinweis" },
+        { label: "Reserviert am", value: formatDateTime(checkin.createdAt) }
+      ]
+    }));
+
+    return [...ticketRecords, ...bookingRecords, ...outdoorRecords, ...mealRecords]
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }, [bookings, checkins, outdoorBookings, tickets]);
+
+  const counts = useMemo(() => records.reduce<Record<ServiceOverviewFilter, number>>((result, record) => {
+    result.all += 1;
+    result[record.kind] += 1;
+    return result;
+  }, { all: 0, bookings: 0, tickets: 0, meals: 0 }), [records]);
+  const statuses = useMemo(() => Array.from(new Set(records.map((record) => record.status))).sort((left, right) => left.localeCompare(right, "de")), [records]);
+  const visibleRecords = useMemo(() => {
+    const query = search.trim().toLocaleLowerCase("de-DE");
+    return records.filter((record) => {
+      if (filter !== "all" && record.kind !== filter) return false;
+      if (statusFilter !== "all" && record.status !== statusFilter) return false;
+      return !query || `${record.title} ${record.subtitle} ${record.id} ${record.searchText}`.toLocaleLowerCase("de-DE").includes(query);
+    });
+  }, [filter, records, search, statusFilter]);
+  const selectedRecord = records.find((record) => record.key === selectedKey) ?? null;
+  const activeCount = records.filter((record) => !["Abgeschlossen", "Abgelehnt", "Erledigt"].includes(record.status)).length;
+
+  useEffect(() => {
+    if (!selectedKey) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSelectedKey(null);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [selectedKey]);
+
+  return <section className="dienstleistungen-overview" aria-labelledby="services-overview-title">
+    <header className="dienstleistungen-overview-heading">
+      <div className="dienstleistungen-overview-title">
+        <span><ClipboardList size={24} /></span>
+        <div><h3 id="services-overview-title">Meine Vorgänge</h3><p>Eigene Tickets, Buchungen und Mahlzeiten mit aktuellem Status.</p></div>
+      </div>
+      <div className="dienstleistungen-overview-totals"><span><strong>{records.length}</strong> insgesamt</span><span><strong>{activeCount}</strong> aktiv</span></div>
+    </header>
+
+    <div className="dienstleistungen-overview-toolbar">
+      <label className="dienstleistungen-overview-search"><Search size={18} aria-hidden="true" /><span className="sr-only">Vorgänge suchen</span><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Vorgänge suchen …" /></label>
+      <div className="dienstleistungen-overview-filters" role="group" aria-label="Vorgangstyp filtern">
+        {overviewFilterOptions.map((option) => <button className={filter === option.value ? "active" : ""} type="button" key={option.value} onClick={() => setFilter(option.value)}>{option.label}<span>{counts[option.value]}</span></button>)}
+      </div>
+      <label className="dienstleistungen-status-filter"><span className="sr-only">Status filtern</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">Alle Status</option>{statuses.map((status) => <option key={status}>{status}</option>)}</select></label>
+    </div>
+
+    <div className="dienstleistungen-overview-table-wrap">
+      <table className="dienstleistungen-overview-table">
+        <thead><tr><th>Vorgang</th><th>Art</th><th>Termin / Eingang</th><th>Status</th><th>Erstellt</th><th><span className="sr-only">Details</span></th></tr></thead>
+        <tbody>
+          {visibleRecords.map((record) => <tr className={selectedKey === record.key ? "selected" : ""} key={record.key} tabIndex={0} onClick={() => setSelectedKey(record.key)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedKey(record.key); } }}>
+            <td><div className={`dienstleistungen-record-primary ${record.kind}`}><span><ServiceRecordIcon kind={record.kind} /></span><span><strong>{record.title}</strong><small>{record.subtitle}</small></span></div></td>
+            <td>{serviceKindLabel(record.kind)}</td>
+            <td>{record.scheduled}</td>
+            <td><span className={`dienstleistungen-status ${serviceStatusTone(record.status)}`}>{record.status}</span></td>
+            <td>{formatDateTime(record.createdAt)}</td>
+            <td><button className="icon-only" type="button" title="Details anzeigen" aria-label={`Details zu ${record.title} anzeigen`} onClick={() => setSelectedKey(record.key)}><ArrowRight size={18} /></button></td>
+          </tr>)}
+          {visibleRecords.length === 0 ? <tr><td className="dienstleistungen-overview-empty" colSpan={6}>{records.length === 0 ? "Noch keine eigenen Vorgänge vorhanden. Über die Schaltflächen oben können Sie die erste Anfrage erstellen." : "Keine Vorgänge entsprechen den gewählten Filtern."}</td></tr> : null}
+        </tbody>
+      </table>
+    </div>
+
+    {selectedRecord ? <div className="modal-backdrop dienstleistungen-record-modal" role="dialog" aria-modal="true" aria-labelledby="dienstleistungen-record-modal-title" onMouseDown={() => setSelectedKey(null)}>
+      <article className="modal-card dienstleistungen-record-details" onMouseDown={(event) => event.stopPropagation()}>
+        <header><div className="dienstleistungen-overview-title"><span><ServiceRecordIcon kind={selectedRecord.kind} /></span><div><small>{serviceKindLabel(selectedRecord.kind)} · {selectedRecord.id}</small><h4 id="dienstleistungen-record-modal-title">{selectedRecord.title}</h4></div></div><button className="icon-only" type="button" title="Details schließen" aria-label="Details schließen" autoFocus onClick={() => setSelectedKey(null)}><X size={19} /></button></header>
+        <div className="dienstleistungen-record-detail-grid">{selectedRecord.details.map((detail) => <div key={detail.label}><span>{detail.label}</span><strong>{detail.value}</strong></div>)}</div>
+        <footer><span className={`dienstleistungen-status ${serviceStatusTone(selectedRecord.status)}`}>{selectedRecord.status}</span><button type="button" onClick={() => { setSelectedKey(null); onOpen(selectedRecord.kind); }}>{serviceKindLabel(selectedRecord.kind)} öffnen <ArrowRight size={18} /></button></footer>
+      </article>
+    </div> : null}
+  </section>;
+}
+
+function ServiceRecordIcon({ kind }: { kind: ServiceSection }) {
+  if (kind === "tickets") return <Ticket size={19} />;
+  if (kind === "meals") return <Utensils size={19} />;
+  return <CalendarDays size={19} />;
+}
+
+function serviceKindLabel(kind: ServiceSection) {
+  if (kind === "tickets") return "Service-Ticket";
+  if (kind === "meals") return "Mahlzeit";
+  return "Buchung";
+}
+
+function serviceStatusTone(status: string) {
+  if (["Abgelehnt"].includes(status)) return "danger";
+  if (["Abgeschlossen", "Erledigt"].includes(status)) return "neutral";
+  if (["Bestätigt", "Reserviert"].includes(status)) return "success";
+  if (status === "In Bearbeitung") return "progress";
+  return "open";
+}
+
 function ServiceAction({ variant, icon, title, description, onClick }: { variant: "booking" | "ticket" | "meal"; icon: React.ReactNode; title: string; description: string; onClick: () => void }) {
   return <button className={`dienstleistung-action dienstleistung-action-${variant}`} type="button" onClick={onClick}><span className="dienstleistung-action-icon">{icon}</span><strong>{title}</strong><small>{description}</small><span className="dienstleistung-action-cta">Öffnen <ArrowRight size={18} /></span></button>;
 }
@@ -292,7 +509,7 @@ function PanelHeading({ icon, title, description, onClose }: { icon: React.React
 
 function BookingList({ bookings }: { bookings: Booking[] }) {
   if (bookings.length === 0) return <p className="dienstleistung-empty">Noch keine Buchungsanfragen gespeichert.</p>;
-  return <div className="dienstleistung-record-list">{bookings.slice(0, 8).map((booking) => <article key={booking.id}><span><strong>{booking.resource}</strong><small>{booking.details || "Kein konkreter Gegenstand"}</small></span><span><CalendarDays size={16} /> {formatDate(booking.date)} · {booking.from}–{booking.to}</span><em>Offen</em></article>)}</div>;
+  return <div className="dienstleistung-record-list">{bookings.slice(0, 8).map((booking) => <article key={booking.id}><span><strong>{booking.resource}</strong><small>{booking.details || "Kein konkreter Gegenstand"}</small></span><span><CalendarDays size={16} /> {formatDate(booking.date)} · {booking.from}–{booking.to}</span><em>{booking.status || "Offen"}</em></article>)}</div>;
 }
 
 function TicketList({ tickets }: { tickets: ServiceTicket[] }) {

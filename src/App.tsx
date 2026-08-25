@@ -21,7 +21,7 @@ import { Microsoft365Page } from "./pages/Microsoft365Page";
 import { SynchronizationsPage } from "./pages/SynchronizationsPage";
 import { DocumentsPage } from "./pages/DocumentsPage";
 import { DienstleistungenPage } from "./pages/DienstleistungenPage";
-import { createAutomaticBackup, createAutomaticPasswordBackup, getBackupData, getVaultStatus } from "./services/db";
+import { createAutomaticBackup, createAutomaticPasswordBackup, getBackupData, getVaultStatus, syncOfflineDocuments } from "./services/db";
 import type { VaultStatus } from "./types/vault";
 import { addBrowserDataToBackup } from "./utils/backup";
 
@@ -43,6 +43,7 @@ export default function App() {
   const [vaultStatus, setVaultStatus] = useState<VaultStatus | null>(null);
   const [startupError, setStartupError] = useState("");
   const automaticBackupPromise = useRef<Promise<void> | null>(null);
+  const documentSyncPromise = useRef<Promise<void> | null>(null);
   const closing = useRef(false);
   const settingsAreaOpen = page === "settings" || page === "appearance" || page === "simple-import" || page === "import" || page === "export" || page === "m365" || page === "trash" || page === "backup" || page === "synchronizations";
 
@@ -82,6 +83,15 @@ export default function App() {
     }
   }, []);
 
+  const runDocumentSync = useCallback(async (): Promise<void> => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    if (documentSyncPromise.current) return documentSyncPromise.current;
+    const promise = syncOfflineDocuments().then(() => undefined);
+    documentSyncPromise.current = promise;
+    try { await promise; }
+    finally { if (documentSyncPromise.current === promise) documentSyncPromise.current = null; }
+  }, []);
+
   const loadVaultStatus = () => {
     setStartupError("");
     const localBrowserPreview = !("__TAURI_INTERNALS__" in window)
@@ -107,8 +117,16 @@ export default function App() {
         // Backup failures must not interrupt normal contact/calendar work.
       });
     }, 15_000);
+    const documentSyncInterval = window.setInterval(() => {
+      void runDocumentSync().catch(() => {
+        // Offline changes remain queued and are retried when the connection returns.
+      });
+    }, 45_000);
     void runAutomaticBackup().catch(() => {
       // The next interval or the close handler will retry automatically.
+    });
+    void runDocumentSync().catch(() => {
+      // A missing connection is expected while the device is offline.
     });
 
     const appWindow = getCurrentWindow();
@@ -117,6 +135,10 @@ export default function App() {
       event.preventDefault();
       closing.current = true;
       window.clearInterval(interval);
+      window.clearInterval(documentSyncInterval);
+      await runDocumentSync().catch(() => {
+        // The local offline file and its manifest remain available for the next retry.
+      });
       try {
         await runAutomaticBackup(true);
       } catch (error) {
@@ -136,9 +158,10 @@ export default function App() {
 
     return () => {
       window.clearInterval(interval);
+      window.clearInterval(documentSyncInterval);
       void unlisten.then((dispose) => dispose());
     };
-  }, [runAutomaticBackup]);
+  }, [runAutomaticBackup, runDocumentSync]);
 
   if (!vaultStatus) {
     return (

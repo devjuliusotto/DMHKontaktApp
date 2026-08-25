@@ -1,9 +1,10 @@
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Copy, Edit3, FileUp, KeyRound, Plus, QrCode, Search, Smartphone, Trash2, X } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import type { DragEvent, FormEvent, KeyboardEvent } from "react";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { StatusMessage } from "../components/StatusMessage";
-import { deleteVaultEntry, getAppSetting, listVaultEntries, saveVaultEntry } from "../services/db";
+import { deleteVaultEntry, getAppSetting, listVaultEntries, saveVaultEntry, setAppSetting } from "../services/db";
 import type { VaultEntry, VaultEntryInput } from "../types/vault";
 import { deletionConfirmationSettingKey } from "../utils/settings";
 import { generateTotpCode, parseAuthenticatorImport, parseTotpInput, type TotpConfig } from "../utils/totp";
@@ -23,6 +24,55 @@ interface LiveCode {
 }
 
 const authenticatorCollator = new Intl.Collator("de", { numeric: true, sensitivity: "base" });
+const authenticatorOrderSettingKey = "authenticator-entry-order-v1";
+
+type DropPosition = "before" | "after";
+
+function parseAuthenticatorOrder(value: string | null): number[] {
+  if (!value) return [];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((id): id is number => Number.isInteger(id) && id > 0);
+  } catch {
+    return [];
+  }
+}
+
+function applyAuthenticatorOrder(entries: VaultEntry[], savedOrder: number[]): VaultEntry[] {
+  const orderById = new Map(savedOrder.map((id, index) => [id, index]));
+  return entries
+    .map((entry, originalIndex) => ({ entry, originalIndex }))
+    .sort((left, right) => {
+      const leftPosition = orderById.get(left.entry.id);
+      const rightPosition = orderById.get(right.entry.id);
+      if (leftPosition !== undefined || rightPosition !== undefined) {
+        if (leftPosition === undefined) return 1;
+        if (rightPosition === undefined) return -1;
+        return leftPosition - rightPosition;
+      }
+      return authenticatorCollator.compare(left.entry.platform, right.entry.platform)
+        || authenticatorCollator.compare(left.entry.username, right.entry.username)
+        || left.originalIndex - right.originalIndex;
+    })
+    .map(({ entry }) => entry);
+}
+
+function reorderAuthenticatorEntries(
+  entries: VaultEntry[],
+  sourceId: number,
+  targetId: number,
+  position: DropPosition
+): VaultEntry[] {
+  if (sourceId === targetId) return entries;
+  const source = entries.find((entry) => entry.id === sourceId);
+  if (!source || !entries.some((entry) => entry.id === targetId)) return entries;
+
+  const reordered = entries.filter((entry) => entry.id !== sourceId);
+  const targetIndex = reordered.findIndex((entry) => entry.id === targetId);
+  reordered.splice(targetIndex + (position === "after" ? 1 : 0), 0, source);
+  return reordered.every((entry, index) => entry.id === entries[index]?.id) ? entries : reordered;
+}
 
 export function AuthenticatorPage() {
   const [entries, setEntries] = useState<VaultEntry[]>([]);
@@ -36,10 +86,18 @@ export function AuthenticatorPage() {
   const [messageType, setMessageType] = useState<"success" | "error" | "info">("info");
   const [confirmDeletions, setConfirmDeletions] = useState(true);
   const [pendingDelete, setPendingDelete] = useState<VaultEntry | null>(null);
+  const [draggedEntryId, setDraggedEntryId] = useState<number | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ id: number; position: DropPosition } | null>(null);
+  const [savingOrder, setSavingOrder] = useState(false);
+  const [orderAnnouncement, setOrderAnnouncement] = useState("");
 
   const refresh = async () => {
-    const result = await listVaultEntries();
-    setEntries(result.filter((entry) => entry.kind === "totp"));
+    const [result, savedOrder] = await Promise.all([
+      listVaultEntries(),
+      getAppSetting(authenticatorOrderSettingKey).catch(() => null)
+    ]);
+    const authenticatorEntries = result.filter((entry) => entry.kind === "totp");
+    setEntries(applyAuthenticatorOrder(authenticatorEntries, parseAuthenticatorOrder(savedOrder)));
   };
 
   useEffect(() => {
@@ -213,14 +271,82 @@ export function AuthenticatorPage() {
     }, 30_000);
   };
 
+  const saveReorderedEntries = async (
+    sourceId: number,
+    targetId: number,
+    position: DropPosition
+  ) => {
+    const reordered = reorderAuthenticatorEntries(entries, sourceId, targetId, position);
+    if (reordered === entries) return;
+
+    setEntries(reordered);
+    setSavingOrder(true);
+    try {
+      await setAppSetting(authenticatorOrderSettingKey, JSON.stringify(reordered.map((entry) => entry.id)));
+      const movedEntry = reordered.find((entry) => entry.id === sourceId);
+      const newPosition = reordered.findIndex((entry) => entry.id === sourceId) + 1;
+      setOrderAnnouncement(`${movedEntry?.platform ?? "2FA-Konto"} wurde an Position ${newPosition} verschoben.`);
+    } catch (error) {
+      await refresh().catch(() => undefined);
+      showMessage(`Die Reihenfolge konnte nicht gespeichert werden: ${error}`, "error");
+    } finally {
+      setSavingOrder(false);
+    }
+  };
+
+  const startRowDrag = (event: DragEvent<HTMLTableRowElement>, entryId: number) => {
+    const target = event.target as HTMLElement;
+    if (savingOrder || target.closest("button, input, textarea, select, a")) {
+      event.preventDefault();
+      return;
+    }
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", String(entryId));
+    setDraggedEntryId(entryId);
+    setDropTarget(null);
+  };
+
+  const updateDropTarget = (event: DragEvent<HTMLTableRowElement>, entryId: number) => {
+    if (draggedEntryId === null || draggedEntryId === entryId) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const position: DropPosition = event.clientY < bounds.top + bounds.height / 2 ? "before" : "after";
+    setDropTarget((current) => current?.id === entryId && current.position === position
+      ? current
+      : { id: entryId, position });
+  };
+
+  const finishRowDrag = () => {
+    setDraggedEntryId(null);
+    setDropTarget(null);
+  };
+
+  const dropRow = (event: DragEvent<HTMLTableRowElement>, targetId: number) => {
+    event.preventDefault();
+    const sourceId = draggedEntryId ?? Number(event.dataTransfer.getData("text/plain"));
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const position: DropPosition = event.clientY < bounds.top + bounds.height / 2 ? "before" : "after";
+    finishRowDrag();
+    if (Number.isInteger(sourceId)) void saveReorderedEntries(sourceId, targetId, position);
+  };
+
   const visibleEntries = useMemo(() => {
     const query = search.trim().toLocaleLowerCase("de");
     return entries
       .filter((entry) => !query || [entry.platform, entry.username, entry.description]
-        .some((value) => value.toLocaleLowerCase("de").includes(query)))
-      .sort((left, right) => authenticatorCollator.compare(left.platform, right.platform)
-        || authenticatorCollator.compare(left.username, right.username));
+        .some((value) => value.toLocaleLowerCase("de").includes(query)));
   }, [entries, search]);
+
+  const moveRowWithKeyboard = (event: KeyboardEvent<HTMLTableRowElement>, entryId: number) => {
+    if (!event.ctrlKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown") || savingOrder) return;
+    const currentIndex = visibleEntries.findIndex((entry) => entry.id === entryId);
+    const targetIndex = event.key === "ArrowUp" ? currentIndex - 1 : currentIndex + 1;
+    const target = visibleEntries[targetIndex];
+    if (!target) return;
+    event.preventDefault();
+    void saveReorderedEntries(entryId, target.id, event.key === "ArrowUp" ? "before" : "after");
+  };
 
   const countLabel = entries.length === 1 ? "1 Konto" : `${entries.length} Konten`;
 
@@ -256,6 +382,10 @@ export function AuthenticatorPage() {
       </section>
 
       <section className="table-panel authenticator-list-panel" aria-label="Gespeicherte 2FA-Konten">
+        <p className="sr-only" id="authenticator-reorder-help">
+          Zeilen mit der Maus nach oben oder unten ziehen. Mit Strg und Pfeil nach oben oder unten kann die markierte Zeile ebenfalls verschoben werden.
+        </p>
+        <p className="sr-only" aria-live="polite">{orderAnnouncement}</p>
         <div className="authenticator-list-toolbar">
           <label className="search-field authenticator-search">
             <Search size={19} aria-hidden="true" />
@@ -291,11 +421,30 @@ export function AuthenticatorPage() {
               </tr>
             </thead>
             <tbody>
-              {visibleEntries.map((entry) => {
+              {visibleEntries.map((entry, visibleIndex) => {
                 const liveCode = codes[entry.id];
                 const code = liveCode?.value ?? "------";
+                const rowClassName = [
+                  draggedEntryId === entry.id ? "authenticator-row-dragging" : "",
+                  dropTarget?.id === entry.id ? `authenticator-drop-${dropTarget.position}` : ""
+                ].filter(Boolean).join(" ");
                 return (
-                  <tr key={entry.id} onDoubleClick={() => openEditEntry(entry)}>
+                  <tr
+                    key={entry.id}
+                    className={rowClassName}
+                    data-authenticator-entry-id={entry.id}
+                    draggable={!savingOrder}
+                    tabIndex={0}
+                    aria-describedby="authenticator-reorder-help"
+                    aria-rowindex={visibleIndex + 2}
+                    title="Zeile ziehen, um ihre Position zu ändern"
+                    onDoubleClick={() => openEditEntry(entry)}
+                    onDragStart={(event) => startRowDrag(event, entry.id)}
+                    onDragOver={(event) => updateDropTarget(event, entry.id)}
+                    onDrop={(event) => dropRow(event, entry.id)}
+                    onDragEnd={finishRowDrag}
+                    onKeyDown={(event) => moveRowWithKeyboard(event, entry.id)}
+                  >
                     <td>
                       <div className="authenticator-service">
                         <span className="authenticator-service-icon"><KeyRound size={18} aria-hidden="true" /></span>

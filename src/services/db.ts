@@ -34,7 +34,7 @@ import type {
   Microsoft365SyncPreview,
   Microsoft365SyncSources
 } from "../types/m365";
-import type { DocumentItem, DocumentMutationRequest, DocumentSource } from "../types/documents";
+import type { DocumentConflictDecision, DocumentItem, DocumentMutationRequest, DocumentOfflineFolderResult, DocumentSource, DocumentSyncConflict, DocumentSyncSummary, DocumentTransferRequest, DocumentTransferResult, DocumentUploadResult, DocumentVersion } from "../types/documents";
 
 export function listContacts(search = "", groupId?: number): Promise<Contact[]> {
   return invoke("list_contacts", { search, groupId });
@@ -237,16 +237,60 @@ export function deleteDocumentItem(driveId: string, itemId: string): Promise<voi
   return invoke("delete_document_item", { driveId, itemId });
 }
 
-export function downloadDocumentItem(driveId: string, itemId: string, name: string, relativePath?: string[], eTag?: string): Promise<string> {
-  return invoke("download_document_item", { driveId, itemId, name, relativePath, eTag });
+export function moveDocumentItems(request: DocumentTransferRequest): Promise<DocumentTransferResult> {
+  return invoke("move_document_items", { request });
+}
+
+export function copyDocumentItems(request: DocumentTransferRequest): Promise<DocumentTransferResult> {
+  return invoke("copy_document_items", { request });
+}
+
+export function createDocumentTextFile(driveId: string, parentId: string | undefined, name: string, content = ""): Promise<DocumentItem> {
+  return invoke("create_document_text_file", { driveId, parentId, name, content });
+}
+
+export function createDocumentShareLink(driveId: string, itemId: string, allowEdit: boolean): Promise<string> {
+  return invoke("create_document_share_link", { driveId, itemId, allowEdit });
+}
+
+export function listDocumentVersions(driveId: string, itemId: string): Promise<DocumentVersion[]> {
+  return invoke("list_document_versions", { driveId, itemId });
+}
+
+export function restoreDocumentVersion(driveId: string, itemId: string, versionId: string): Promise<void> {
+  return invoke("restore_document_version", { driveId, itemId, versionId });
+}
+
+export function downloadDocumentItem(driveId: string, itemId: string, name: string, relativePath?: string[], eTag?: string, parentId?: string): Promise<string> {
+  return invoke("download_document_item", { driveId, itemId, name, relativePath, eTag, parentId });
+}
+
+export function makeDocumentFolderOffline(driveId: string, folderId: string, name: string, relativePath: string[]): Promise<DocumentOfflineFolderResult> {
+  return invoke("make_document_folder_offline", { driveId, folderId, name, relativePath });
 }
 
 export function uploadDocumentFile(driveId: string, parentId: string | undefined, filePath: string): Promise<DocumentItem> {
   return invoke("upload_document_file", { driveId, parentId, filePath });
 }
 
+export function uploadDocumentPath(driveId: string, parentId: string | undefined, localPath: string): Promise<DocumentUploadResult> {
+  return invoke("upload_document_path", { driveId, parentId, localPath });
+}
+
 export function uploadDocumentRevision(driveId: string, itemId: string, filePath: string, expectedETag: string): Promise<DocumentItem> {
   return invoke("upload_document_revision", { driveId, itemId, filePath, expectedETag });
+}
+
+export function syncOfflineDocuments(): Promise<DocumentSyncSummary> {
+  return invoke("sync_offline_documents");
+}
+
+export function listDocumentSyncConflicts(): Promise<DocumentSyncConflict[]> {
+  return invoke("list_document_sync_conflicts");
+}
+
+export function resolveDocumentSyncConflict(conflictIdValue: string, decision: DocumentConflictDecision): Promise<void> {
+  return invoke("resolve_document_sync_conflict", { conflictIdValue, decision });
 }
 
 export function getDocumentsLocalRoot(): Promise<string> {

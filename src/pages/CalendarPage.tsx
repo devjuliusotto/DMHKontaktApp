@@ -1,4 +1,4 @@
-import { CalendarDays, ChevronLeft, ChevronRight, Edit, List, ListChecks, Plus, Rows3, Trash2, Undo2, X } from "lucide-react";
+import { CalendarDays, Edit, Filter, ListChecks, MoreHorizontal, Plus, Rows3, Trash2, Undo2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { CalendarEventForm } from "../components/CalendarEventForm";
 import { StatusMessage } from "../components/StatusMessage";
@@ -9,7 +9,7 @@ import { findExactCalendarDuplicateGroups, removeExactCalendarDuplicates } from 
 const categoriesStorageKey = "agendakontakte.calendarCategories";
 const duplicateCleanupBackupKey = "agendakontakte.calendarExactDuplicateCleanupBackup.v1";
 const weekdays = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
-type CalendarView = "month" | "week" | "list";
+type CalendarView = "day" | "week" | "month";
 type CalendarCategory = {
   name: string;
   color: string;
@@ -50,6 +50,17 @@ function startOfWeek(date: Date): Date {
 
 function sameDay(left: Date, right: Date): boolean {
   return left.getFullYear() === right.getFullYear() && left.getMonth() === right.getMonth() && left.getDate() === right.getDate();
+}
+
+function dateInputValue(date: Date): string {
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 10);
+}
+
+function dateFromInput(value: string): Date | null {
+  const [year, month, day] = value.split("-").map(Number);
+  if (!year || !month || !day) return null;
+  return new Date(year, month - 1, day);
 }
 
 function eventDate(event: CalendarEvent): Date | null {
@@ -111,6 +122,7 @@ export function CalendarPage() {
   const [categoryFilter, setCategoryFilter] = useState(allCategoriesValue);
   const [showCategoryDialog, setShowCategoryDialog] = useState(false);
   const [showDuplicateDialog, setShowDuplicateDialog] = useState(false);
+  const [showActionsMenu, setShowActionsMenu] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
   const [newCategoryColor, setNewCategoryColor] = useState(defaultCalendarColor);
   const [duplicateCleanupBackup, setDuplicateCleanupBackup] = useState<CalendarDuplicateCleanupBackup | null>(
@@ -140,10 +152,7 @@ export function CalendarPage() {
       const first = startOfWeek(cursor);
       return { start: first, end: addDays(first, 7) };
     }
-    return {
-      start: new Date(cursor.getFullYear() - 1, 0, 1),
-      end: new Date(cursor.getFullYear() + 6, 0, 1)
-    };
+    return { start: startOfDay(cursor), end: addDays(startOfDay(cursor), 1) };
   }, [cursor, view]);
   const allSortedEvents = useMemo(
     () => expandCalendarEvents(events, displayRange.start, displayRange.end)
@@ -191,7 +200,7 @@ export function CalendarPage() {
     ? new Intl.DateTimeFormat("de-DE", { month: "long", year: "numeric" }).format(cursor)
     : view === "week"
       ? `${new Intl.DateTimeFormat("de-DE", { day: "2-digit", month: "2-digit" }).format(weekDays[0])} - ${new Intl.DateTimeFormat("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" }).format(weekDays[6])}`
-      : `${sortedEvents.length} Termine`;
+      : new Intl.DateTimeFormat("de-DE", { weekday: "long", day: "2-digit", month: "long", year: "numeric" }).format(cursor);
 
   const persist = (nextEvents: CalendarEvent[]) => {
     const sorted = nextEvents.map(normalizeEvent).sort((a, b) => a.startsAt.localeCompare(b.startsAt));
@@ -277,11 +286,6 @@ export function CalendarPage() {
     setMessage(`Kategorie "${name}" wurde erstellt.`);
   };
 
-  const move = (direction: number) => {
-    if (view === "month") setCursor(new Date(cursor.getFullYear(), cursor.getMonth() + direction, 1));
-    if (view === "week") setCursor(addDays(cursor, direction * 7));
-  };
-
   const openNewEvent = (date = cursor) => {
     const event = blankEvent(date);
     const firstCategory = categories[0];
@@ -354,26 +358,24 @@ export function CalendarPage() {
       <header className="page-header">
         <div>
           <h2>Kalender</h2>
-          <p>Monats-, Wochen- oder Listenansicht für importierte Termine.</p>
+          <p>Termine übersichtlich planen und verwalten.</p>
         </div>
-        <div className="button-row">
-          <button className="primary" type="button" onClick={() => openNewEvent(new Date())}>
+        <div className="calendar-header-actions">
+          <button className="primary" type="button" onClick={() => openNewEvent(cursor)}>
             <Plus size={20} /> Neuer Termin
           </button>
-          <button type="button" onClick={() => setShowCategoryDialog(true)}>
-            <Plus size={20} /> Kategorie erstellen
-          </button>
-          <button className="danger-button" type="button" onClick={deleteAllEvents} disabled={events.length === 0}>
-            <Trash2 size={20} /> Alle Termine löschen
-          </button>
-          <button type="button" onClick={reviewExactDuplicates}>
-            <ListChecks size={20} /> Exakte Duplikate prüfen
-          </button>
-          {duplicateCleanupBackup && (
-            <button type="button" onClick={undoDuplicateCleanup}>
-              <Undo2 size={20} /> Bereinigung rückgängig
+          <div className="calendar-actions-menu-wrap">
+            <button className="icon-only" type="button" aria-label="Weitere Kalenderaktionen" title="Weitere Aktionen" aria-haspopup="menu" aria-expanded={showActionsMenu} onClick={() => setShowActionsMenu((open) => !open)}>
+              <MoreHorizontal size={21} />
             </button>
-          )}
+            {showActionsMenu && <div className="calendar-actions-menu" role="menu">
+              <button type="button" onClick={() => { setShowActionsMenu(false); setShowCategoryDialog(true); }}><Plus size={18} /> Kategorie erstellen</button>
+              <button type="button" onClick={() => { setShowActionsMenu(false); reviewExactDuplicates(); }}><ListChecks size={18} /> Exakte Duplikate prüfen</button>
+              {duplicateCleanupBackup && <button type="button" onClick={() => { setShowActionsMenu(false); undoDuplicateCleanup(); }}><Undo2 size={18} /> Bereinigung rückgängig</button>}
+              <span className="calendar-actions-separator" />
+              <button className="danger" type="button" onClick={() => { setShowActionsMenu(false); deleteAllEvents(); }} disabled={events.length === 0}><Trash2 size={18} /> Alle Termine löschen</button>
+            </div>}
+          </div>
         </div>
       </header>
       <StatusMessage message={message} />
@@ -466,30 +468,34 @@ export function CalendarPage() {
         </div>
       )}
 
-      <section className="calendar-toolbar">
-        <div className="calendar-navigation">
-          {view !== "list" && (
-            <>
-              <button className="icon-only compact" type="button" aria-label="Vorheriger Zeitraum" onClick={() => move(-1)}><ChevronLeft size={20} /></button>
-              <button type="button" onClick={() => setCursor(startOfDay(new Date()))}>Heute</button>
-              <button className="icon-only compact" type="button" aria-label="Nächster Zeitraum" onClick={() => move(1)}><ChevronRight size={20} /></button>
-            </>
-          )}
+      <section className="calendar-shell">
+        <section className="calendar-toolbar" aria-label="Kalendersteuerung">
           <h3>{title}</h3>
-        </div>
-        <div className="calendar-view-switch" aria-label="Kalenderansicht">
-          <button className={view === "month" ? "active" : ""} type="button" onClick={() => setView("month")}><CalendarDays size={18} /> Monat</button>
-          <button className={view === "week" ? "active" : ""} type="button" onClick={() => setView("week")}><Rows3 size={18} /> Woche</button>
-          <button className={view === "list" ? "active" : ""} type="button" onClick={() => setView("list")}><List size={18} /> Liste</button>
-        </div>
-        <label className="calendar-category-filter">
-          <span>Kategorie</span>
-          <select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}>
-            <option value={allCategoriesValue}>Alle Kategorien</option>
-            {categoryOptions.map((category) => <option value={category} key={category}>{category}</option>)}
-          </select>
-        </label>
-      </section>
+          <div className="calendar-toolbar-controls">
+            <label className="calendar-toolbar-field">
+              <CalendarDays size={18} aria-hidden="true" />
+              <span className="sr-only">Datum</span>
+              <input type="date" value={dateInputValue(cursor)} onChange={(event) => { const nextDate = dateFromInput(event.target.value); if (nextDate) setCursor(nextDate); }} />
+            </label>
+            <label className="calendar-toolbar-field">
+              <Filter size={18} aria-hidden="true" />
+              <span className="sr-only">Termine filtern</span>
+              <select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}>
+                <option value={allCategoriesValue}>Alle Filter</option>
+                {categoryOptions.map((category) => <option value={category} key={category}>{category}</option>)}
+              </select>
+            </label>
+            <label className="calendar-toolbar-field view-field">
+              <Rows3 size={18} aria-hidden="true" />
+              <span className="sr-only">Kalenderansicht</span>
+              <select value={view} onChange={(event) => setView(event.target.value as CalendarView)}>
+                <option value="day">Tag</option>
+                <option value="week">Woche</option>
+                <option value="month">Monat</option>
+              </select>
+            </label>
+          </div>
+        </section>
 
       {view === "month" && (
         <section className="calendar-grid month-view">
@@ -531,29 +537,25 @@ export function CalendarPage() {
         </section>
       )}
 
-      {view === "list" && (
-        <section className="table-panel calendar-list-panel">
-          <div className="table-wrap">
-            <table className="calendar-list-table">
-              <colgroup><col className="calendar-title-column" /><col className="calendar-date-column" /><col className="calendar-date-column" /><col className="calendar-category-column" /><col className="calendar-location-column" /><col className="calendar-actions-column" /></colgroup>
-              <thead><tr><th>Termin</th><th>Beginn</th><th>Ende</th><th>Kategorie</th><th>Ort</th><th>Aktionen</th></tr></thead>
-              <tbody>
-                {sortedEvents.map((event) => (
-                  <tr key={event.id} tabIndex={0} onDoubleClick={() => openEvent(event)}>
-                    <td title={event.description}><span className="calendar-color-dot" style={calendarColorStyle(event.color)} /><strong>{event.title}</strong></td>
-                    <td>{formatCalendarDate(event.startsAt)}</td>
-                    <td>{formatCalendarDate(event.endsAt)}</td>
-                    <td>{event.category}</td>
-                    <td>{event.location}</td>
-                    <td><div className="inline-actions"><button title="Termin bearbeiten" type="button" onClick={() => openEvent(event)}><Edit size={16} /></button><button title="Termin löschen" type="button" onClick={() => deleteEvent(event)}><Trash2 size={16} /></button></div></td>
-                  </tr>
-                ))}
-                {sortedEvents.length === 0 && <tr><td colSpan={6} className="empty-row">Keine Termine importiert.</td></tr>}
-              </tbody>
-            </table>
+      {view === "day" && (
+        <section className="calendar-day-view" onDoubleClick={() => openNewEvent(cursor)}>
+          <header>
+            <span>{new Intl.DateTimeFormat("de-DE", { weekday: "long" }).format(cursor)}</span>
+            <strong>{cursor.getDate()}</strong>
+          </header>
+          <div className="calendar-day-agenda">
+            {eventsForDay(cursor).map((event) => (
+              <button className="calendar-day-event" style={calendarColorStyle(event.color)} type="button" key={event.id} onClick={(click) => { click.stopPropagation(); openEvent(event); }} onDoubleClick={(doubleClick) => doubleClick.stopPropagation()}>
+                <time>{eventTime(event)}</time>
+                <span><strong>{event.title}</strong>{event.category && <small>{event.category}</small>}{event.location && <small>{event.location}</small>}</span>
+                <Edit size={17} aria-hidden="true" />
+              </button>
+            ))}
+            {eventsForDay(cursor).length === 0 && <div className="calendar-day-empty"><CalendarDays size={28} /><strong>Keine Termine an diesem Tag</strong><span>Doppelklicken Sie hier, um einen Termin zu erstellen.</span></div>}
           </div>
         </section>
       )}
+      </section>
     </div>
   );
 }

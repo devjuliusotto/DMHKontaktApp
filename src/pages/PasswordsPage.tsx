@@ -11,7 +11,6 @@ import {
   Plus,
   Search,
   ShieldCheck,
-  ShieldOff,
   Trash2,
   X
 } from "lucide-react";
@@ -308,22 +307,6 @@ export function PasswordsPage({ status, onStatusChanged }: PasswordsPageProps) {
       </header>
 
       <StatusMessage message={message} type={messageType} />
-
-      <section className={status.protectionEnabled ? "vault-protection-card enabled" : "vault-protection-card"}>
-        <span className="vault-protection-icon">
-          {status.protectionEnabled ? <ShieldCheck size={27} /> : <ShieldOff size={27} />}
-        </span>
-        <div>
-          <strong>{status.protectionEnabled ? "App-Schutz ist aktiv" : "App-Schutz ist noch nicht aktiviert"}</strong>
-          <p>
-            {status.protectionEnabled
-              ? `Anmeldung als ${status.username} · Wiederherstellung: ${status.recoveryEmailHint}`
-              : "Schützen Sie Kontakte, Kalender und Passwörter beim Öffnen der App mit Benutzername und Kennwort."}
-          </p>
-        </div>
-        <button type="button" onClick={openProtection}>{status.protectionEnabled ? "Schutz ändern" : "Jetzt schützen"}</button>
-        {status.protectionEnabled && <button className="danger-button" type="button" onClick={disableProtection}>Deaktivieren</button>}
-      </section>
 
       <div className="toolbar passwords-toolbar">
         <label className="search-field">

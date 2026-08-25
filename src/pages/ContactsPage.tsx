@@ -89,6 +89,9 @@ export function ContactsPage() {
   const [groupSelection, setGroupSelection] = useState<GroupSelection>("ungrouped");
   const [editing, setEditing] = useState<ContactInput | null>(null);
   const [groupForm, setGroupForm] = useState<Group>(blankGroup);
+  const [groupCreateOpen, setGroupCreateOpen] = useState(false);
+  const [groupCreateBusy, setGroupCreateBusy] = useState(false);
+  const [groupCreateError, setGroupCreateError] = useState("");
   const [renamingGroup, setRenamingGroup] = useState<Group | null>(null);
   const [groupRenameError, setGroupRenameError] = useState("");
   const [testMenuOpen, setTestMenuOpen] = useState(false);
@@ -119,7 +122,6 @@ export function ContactsPage() {
     [groups, groupSelection]
   );
 
-  const selectedGroupLabel = groupSelection === "ungrouped" ? ungroupedGroupName : selectedGroup?.name ?? "";
   const currentSearch = tab === "all" ? allSearch : groupSearch;
   const visibleContactIds = useMemo(
     () => contacts.map((contact) => contact.id).filter((id): id is number => Boolean(id)),
@@ -206,19 +208,47 @@ export function ContactsPage() {
 
   const startNew = () => setEditing({ ...emptyContact });
 
-  const submitGroup = async () => {
-    if (!groupForm.name.trim()) {
-      setMessage("Bitte geben Sie einen Gruppennamen ein.");
-      setMessageType("error");
+  const openGroupCreate = () => {
+    setGroupForm(blankGroup);
+    setGroupCreateError("");
+    setGroupCreateOpen(true);
+  };
+
+  const closeGroupCreate = () => {
+    if (groupCreateBusy) return;
+    setGroupCreateOpen(false);
+    setGroupForm(blankGroup);
+    setGroupCreateError("");
+  };
+
+  const submitGroup = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const name = groupForm.name.trim();
+    if (!name) {
+      setGroupCreateError("Bitte geben Sie einen Gruppennamen ein.");
       return;
     }
-    const groupId = await saveGroup(groupForm);
-    setGroupForm(blankGroup);
-    setGroupSelection(groupId);
-    setTab("groups");
-    setMessage("Gruppe wurde erstellt.");
-    setMessageType("success");
-    await refresh();
+    setGroupCreateBusy(true);
+    setGroupCreateError("");
+    try {
+      const groupId = await saveGroup({ ...groupForm, name });
+      setGroupForm(blankGroup);
+      setGroupCreateOpen(false);
+      setGroupSelection(groupId);
+      setTab("groups");
+      setMessage("Gruppe wurde erstellt.");
+      setMessageType("success");
+      await refresh();
+    } catch (error) {
+      const detail = String(error);
+      setGroupCreateError(
+        detail.includes("UNIQUE constraint failed")
+          ? "Eine Gruppe mit diesem Namen existiert bereits."
+          : `Gruppe konnte nicht erstellt werden: ${detail}`
+      );
+    } finally {
+      setGroupCreateBusy(false);
+    }
   };
 
   const startGroupRename = (group: Group) => {
@@ -569,7 +599,6 @@ export function ContactsPage() {
       <header className="contacts-commandbar">
         <div className="contacts-title">
           <h2>{tab === "all" ? "Alle Kontakte" : "Gruppen verwalten"}</h2>
-          {tab === "groups" && <span>{selectedGroupLabel}</span>}
         </div>
         <label className="search-field">
           <Search size={20} />
@@ -724,6 +753,38 @@ export function ContactsPage() {
         </div>
       )}
 
+      {groupCreateOpen && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="group-create-title">
+          <form className="form-panel modal-card group-rename-dialog" onSubmit={submitGroup}>
+            <div className="panel-heading">
+              <h3 id="group-create-title">Neue Gruppe erstellen</h3>
+              <button className="icon-only" type="button" aria-label="Schließen" onClick={closeGroupCreate} disabled={groupCreateBusy}>
+                <X size={22} />
+              </button>
+            </div>
+            <label className="field">
+              <span>Gruppenname</span>
+              <input
+                autoFocus
+                value={groupForm.name}
+                onChange={(event) => {
+                  setGroupForm({ ...groupForm, name: event.target.value });
+                  setGroupCreateError("");
+                }}
+                placeholder="Name der Gruppe"
+              />
+            </label>
+            {groupCreateError && <p className="field-error">{groupCreateError}</p>}
+            <div className="button-row">
+              <button className="primary" type="submit" disabled={groupCreateBusy}>
+                {groupCreateBusy ? "Wird erstellt …" : "Erstellen"}
+              </button>
+              <button type="button" onClick={closeGroupCreate} disabled={groupCreateBusy}>Abbrechen</button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {renamingGroup && (
         <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="group-rename-title">
           <form className="form-panel modal-card group-rename-dialog" onSubmit={submitGroupRename}>
@@ -774,19 +835,12 @@ export function ContactsPage() {
               <div>
                 <span className="groups-panel-kicker">Kontaktorganisation</span>
                 <h3>Gruppen</h3>
-                <p>Wählen Sie eine Gruppe aus, um ihre Kontakte zu sehen.</p>
               </div>
               <span className="group-summary" aria-label={`${groups.length + 1} Gruppen`}><strong>{groups.length + 1}</strong><small>Gruppen</small></span>
             </div>
-            <div className="group-create">
-              <label htmlFor="new-group-name">Neue Gruppe anlegen</label>
-              <div className="group-create-row">
-                <input id="new-group-name" value={groupForm.name} onChange={(event) => setGroupForm({ ...groupForm, name: event.target.value })} placeholder="Name der Gruppe" />
-                <button className="primary" type="button" onClick={submitGroup}>
-                  <Plus size={20} /> Erstellen
-                </button>
-              </div>
-            </div>
+            <button className="primary group-create-button" type="button" onClick={openGroupCreate}>
+              <Plus size={20} /> Neue Gruppe erstellen
+            </button>
             <div className="group-list" aria-label="Kontaktgruppen">
               <div
                 className={["group-drop", groupSelection === "ungrouped" ? "active" : "", dragOverGroupKey === "ungrouped" ? "drag-over" : ""].filter(Boolean).join(" ")}
