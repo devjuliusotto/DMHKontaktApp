@@ -33,10 +33,12 @@ export function parseTotpInput(value: string): TotpConfig {
     if (![6, 8].includes(digits) || !Number.isInteger(period) || period < 10 || period > 120) {
       throw new Error("Die TOTP-Einstellungen des QR-Codes sind ungültig.");
     }
+    const secret = normalizeSecret(params.get("secret") ?? "");
+    base32Decode(secret);
     const label = decodeURIComponent(uri.pathname.replace(/^\//, ""));
     const labelParts = label.split(":");
     return {
-      secret: normalizeSecret(params.get("secret") ?? ""),
+      secret,
       issuer: params.get("issuer") ?? (labelParts.length > 1 ? labelParts[0] : undefined),
       account: labelParts.length > 1 ? labelParts.slice(1).join(":") : label || undefined,
       algorithm,
@@ -45,8 +47,10 @@ export function parseTotpInput(value: string): TotpConfig {
     };
   }
 
+  const secret = normalizeSecret(input);
+  base32Decode(secret);
   return {
-    secret: normalizeSecret(input),
+    secret,
     algorithm: "SHA1",
     digits: 6,
     period: 30

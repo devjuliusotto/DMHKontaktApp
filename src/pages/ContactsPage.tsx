@@ -821,7 +821,6 @@ export function ContactsPage() {
           onDelete={remove}
           onCopyEmail={copyEmail}
           onEmail={chooseEmailApp}
-          onPrint={() => window.print()}
           selectionMode={false}
           selectedContactIds={emptySelection}
           onToggleSelection={() => undefined}
@@ -904,7 +903,6 @@ export function ContactsPage() {
               onDelete={remove}
               onCopyEmail={copyEmail}
               onEmail={chooseEmailApp}
-              onPrint={() => window.print()}
               selectionMode={selectionMode}
               selectedContactIds={selectedContactIds}
               onToggleSelection={toggleContactSelection}

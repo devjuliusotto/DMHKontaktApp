@@ -1,5 +1,7 @@
+import { isTauri } from "@tauri-apps/api/core";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { Copy, Edit3, FileUp, KeyRound, Plus, QrCode, Search, Smartphone, Trash2, X } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { Copy, Edit3, ExternalLink, FileUp, KeyRound, Plus, QrCode, Search, ShieldCheck, Smartphone, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { DragEvent, FormEvent, KeyboardEvent } from "react";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -25,6 +27,7 @@ interface LiveCode {
 
 const authenticatorCollator = new Intl.Collator("de", { numeric: true, sensitivity: "base" });
 const authenticatorOrderSettingKey = "authenticator-entry-order-v1";
+const microsoftSecurityInfoUrl = "https://mysignins.microsoft.com/security-info";
 
 type DropPosition = "before" | "after";
 
@@ -79,6 +82,7 @@ export function AuthenticatorPage() {
   const [codes, setCodes] = useState<Record<number, LiveCode>>({});
   const [entryForm, setEntryForm] = useState<VaultEntryInput | null>(null);
   const [importOpen, setImportOpen] = useState(false);
+  const [microsoftSetupOpen, setMicrosoftSetupOpen] = useState(false);
   const [importText, setImportText] = useState("");
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
@@ -131,6 +135,31 @@ export function AuthenticatorPage() {
 
   const openNewEntry = () => {
     setEntryForm({ ...emptyEntry });
+    setMessage("");
+  };
+
+  const openMicrosoftSecurityInfo = async () => {
+    try {
+      if (isTauri()) await openUrl(microsoftSecurityInfoUrl);
+      else window.open(microsoftSecurityInfoUrl, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      showMessage(`Die Microsoft-Sicherheitsseite konnte nicht geöffnet werden: ${error}`, "error");
+    }
+  };
+
+  const importMicrosoftQr = () => {
+    setMicrosoftSetupOpen(false);
+    setImportText("");
+    setImportOpen(true);
+  };
+
+  const enterMicrosoftSecret = () => {
+    setMicrosoftSetupOpen(false);
+    setEntryForm({
+      ...emptyEntry,
+      platform: "Microsoft 365",
+      description: "Microsoft-Arbeitskonto · TOTP"
+    });
     setMessage("");
   };
 
@@ -363,6 +392,7 @@ export function AuthenticatorPage() {
           <p>Einmalcodes lokal und verschlüsselt speichern und erzeugen.</p>
         </div>
         <div className="authenticator-header-actions">
+          <button type="button" onClick={() => setMicrosoftSetupOpen(true)}><ShieldCheck size={21} /> Microsoft-App ersetzen</button>
           <button type="button" onClick={() => setImportOpen(true)}><FileUp size={21} /> Importieren</button>
           <button className="primary" type="button" onClick={openNewEntry}><Plus size={22} /> 2FA-Code hinzufügen</button>
         </div>
@@ -501,6 +531,40 @@ export function AuthenticatorPage() {
           </table>
         </div>
       </section>
+
+      {microsoftSetupOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="form-panel modal-card authenticator-dialog authenticator-microsoft-dialog" role="dialog" aria-modal="true" aria-labelledby="authenticator-microsoft-title">
+            <div className="panel-heading">
+              <div><h3 id="authenticator-microsoft-title">Microsoft Authenticator vollständig ersetzen</h3><p>Diesen PC-Authenticator als primäre TOTP-App für Ihr Arbeitskonto registrieren.</p></div>
+              <button className="icon-only" type="button" title="Schließen" aria-label="Schließen" onClick={() => setMicrosoftSetupOpen(false)}><X size={22} /></button>
+            </div>
+
+            <div className="authenticator-microsoft-note">
+              <ShieldCheck size={22} aria-hidden="true" />
+              <p><strong>Wichtig:</strong> Die Bestätigung mit einer eingeblendeten Zahl ist eine geschlossene Push-Funktion von Microsoft. Diese App kann stattdessen einen offiziellen sechsstelligen Microsoft-TOTP-Code erzeugen.</p>
+            </div>
+
+            <ol className="authenticator-microsoft-steps">
+              <li><span>1</span><div><strong>Microsoft-Sicherheitsinformationen öffnen</strong><p>„Anmeldemethode hinzufügen“ → „Authenticator-App“ → „Ich möchte eine andere Authenticator-App verwenden“ auswählen.</p></div></li>
+              <li><span>2</span><div><strong>QR-Code oder geheimen Schlüssel übernehmen</strong><p>Den angezeigten QR-Code als Bild speichern oder unter „Bild kann nicht gescannt werden“ den geheimen Schlüssel kopieren.</p></div></li>
+              <li><span>3</span><div><strong>Mit dem ersten Code bestätigen</strong><p>Den hier erzeugten sechsstelligen Code auf der Microsoft-Seite eingeben und die Einrichtung abschließen.</p></div></li>
+              <li><span>4</span><div><strong>Den Prüfcode als Standard festlegen</strong><p>Auf der Seite „Sicherheitsinformationen“ neben der Standard-Anmeldemethode „Ändern“ wählen und „Authenticator-App oder Hardwaretoken – Code“ festlegen.</p></div></li>
+              <li><span>5</span><div><strong>Microsoft Authenticator erst nach einem Test entfernen</strong><p>Einmal ab- und wieder mit dem sechsstelligen Code anmelden. Funktioniert das, den bisherigen Microsoft-Authenticator-Eintrag auf derselben Sicherheitsseite löschen.</p></div></li>
+            </ol>
+
+            <p className="authenticator-microsoft-security">Der geheime Schlüssel wird verschlüsselt auf diesem Windows-PC gespeichert. Bequemer ist das, aber der zweite Faktor ist dadurch nicht mehr von Ihrem Anmeldegerät getrennt.</p>
+            <p className="authenticator-microsoft-admin-note">Fehlt die Option für eine andere Authenticator-App oder wird weiterhin zwingend eine Push-Bestätigung verlangt, muss Ihre EDV in Microsoft Entra „Third-party software OATH tokens“ erlauben und eine Richtlinie entfernen, die ausschließlich Microsoft Authenticator fordert.</p>
+
+            <div className="button-row vault-dialog-actions">
+              <button type="button" onClick={() => setMicrosoftSetupOpen(false)}>Abbrechen</button>
+              <button type="button" onClick={() => void openMicrosoftSecurityInfo()}><ExternalLink size={18} /> Microsoft-Seite öffnen</button>
+              <button type="button" onClick={importMicrosoftQr}><QrCode size={18} /> QR-Bild importieren</button>
+              <button className="primary" type="button" onClick={enterMicrosoftSecret}><KeyRound size={18} /> Geheimen Schlüssel eingeben</button>
+            </div>
+          </section>
+        </div>
+      )}
 
       {entryForm && (
         <div className="modal-backdrop" role="presentation">

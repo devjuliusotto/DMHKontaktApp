@@ -23,7 +23,7 @@ import { applyMicrosoft365Sync, createAutomaticBackup, createAutomaticPasswordBa
 import type { Microsoft365ConflictDecision, Microsoft365ConnectionStatus, Microsoft365SyncHistoryEntry, Microsoft365SyncPreview, Microsoft365SyncSource, Microsoft365SyncSources } from "../types/m365";
 import { defaultSyncConfig, parseSyncConfig, type SyncBase, type SyncConfig, type SyncDirection } from "../types/sync";
 import { addBrowserDataToBackup } from "../utils/backup";
-import { calendarStorageKey } from "../utils/calendar";
+import { calendarStorageKey, mergeImportedCalendarCategories } from "../utils/calendar";
 import type { CalendarEvent } from "../types/calendar";
 
 interface SynchronizationsPageProps {
@@ -257,6 +257,7 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
         const byId = new Map(current.map((event) => [event.id, event]));
         for (const event of result.calendarUpserts) byId.set(event.id, event);
         localStorage.setItem(calendarStorageKey, JSON.stringify(Array.from(byId.values())));
+        mergeImportedCalendarCategories(result.calendarUpserts);
       }
       await persistHistory({ ...result, id: `${result.startedAt}-${Date.now()}` });
       setPreview(null);

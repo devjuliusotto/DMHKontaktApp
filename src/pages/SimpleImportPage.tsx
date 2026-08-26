@@ -5,7 +5,7 @@ import { StatusMessage } from "../components/StatusMessage";
 import { importOutlookClassicAppointmentsOnce, importThunderbirdCalendarsOnce, importThunderbirdContactsOnce, previewOutlookClassicAppointments, undoLastOutlookContactImport } from "../services/db";
 import type { CalendarEvent, OutlookCalendarPreview } from "../types/calendar";
 import type { OutlookContactImportResult } from "../types/contact";
-import { calendarColorFromCategory, calendarStorageKey } from "../utils/calendar";
+import { calendarColorFromCategory, calendarStorageKey, mergeImportedCalendarCategories } from "../utils/calendar";
 import { mergeCalendarEventsExactly } from "../utils/calendarDuplicates";
 
 function storedCalendarEvents(): CalendarEvent[] {
@@ -105,12 +105,13 @@ export function SimpleImportPage() {
       }));
       const merged = mergeCalendarEventsExactly(existing, normalizedIncoming);
       localStorage.setItem(calendarStorageKey, JSON.stringify(merged.events));
+      const categoryResult = mergeImportedCalendarCategories(normalizedIncoming);
       const duplicates = merged.skippedSameId + merged.skippedExactDuplicates;
       setMessageType("success");
       setMessage(
         result.found === 0
           ? "In den erreichbaren Outlook-Kalendern wurden keine Termine gefunden."
-          : `${merged.imported} von ${result.found} Outlook-Terminen wurden einmalig übernommen. ${duplicates} bereits vorhandene oder in allen Feldern exakt gleiche und ${result.skippedInvalid} nicht lesbare Einträge wurden ausgelassen. Termine mit auch nur einer Abweichung bleiben erhalten.`
+          : `${merged.imported} von ${result.found} Outlook-Terminen wurden einmalig übernommen. ${categoryResult.added + categoryResult.updated} Kategorie(n) mit Farbe wurden übernommen. ${duplicates} bereits vorhandene oder in allen Feldern exakt gleiche und ${result.skippedInvalid} nicht lesbare Einträge wurden ausgelassen. Termine mit auch nur einer Abweichung bleiben erhalten.`
       );
     } catch (error) {
       setMessageType("error");
@@ -171,12 +172,14 @@ export function SimpleImportPage() {
           color: calendarColorFromCategory(event.category, event.color)
         });
       }
-      localStorage.setItem(calendarStorageKey, JSON.stringify(Array.from(eventsById.values())));
+      const mergedEvents = Array.from(eventsById.values());
+      localStorage.setItem(calendarStorageKey, JSON.stringify(mergedEvents));
+      const categoryResult = mergeImportedCalendarCategories(result.events);
       setMessageType(result.found > 0 ? "success" : "info");
       setMessage(
         result.found === 0
           ? `In ${result.calendars} Thunderbird-Kalendern wurden keine Termine gefunden.`
-          : `${imported} neue und ${updated} bereits importierte Thunderbird-Termine oder Serien wurden übernommen bzw. aktualisiert. `
+          : `${imported} neue und ${updated} bereits importierte Thunderbird-Termine oder Serien wurden übernommen bzw. aktualisiert. ${categoryResult.added + categoryResult.updated} Kategorie(n) mit Farbe wurden übernommen. `
             + `${result.calendars} Kalender wurden berücksichtigt; ${result.skippedInvalid} nicht unterstützte oder beschädigte Einträge wurden ausgelassen.`
       );
     } catch (error) {

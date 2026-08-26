@@ -8,7 +8,7 @@ import { t } from "../i18n";
 import { importContacts, importOutlookStore, listGroups, saveGroup } from "../services/db";
 import type { CalendarEvent } from "../types/calendar";
 import type { Group } from "../types/contact";
-import { calendarColorFromCategory, calendarColorOptions, calendarColorValue, calendarStorageKey, defaultCalendarColor, parseCalendarFile } from "../utils/calendar";
+import { calendarColorFromCategory, calendarColorOptions, calendarColorValue, calendarStorageKey, defaultCalendarColor, mergeImportedCalendarCategories, parseCalendarFile } from "../utils/calendar";
 import { mergeCalendarEventsExactly } from "../utils/calendarDuplicates";
 import { parseCsvBytes, parseXlsx, type ImportPreview } from "../utils/importers";
 
@@ -148,14 +148,16 @@ export function ImportPage() {
   };
 
   const savePendingEvents = () => {
-    if (!pendingEvents.length) return { imported: 0, skipped: 0 };
+    if (!pendingEvents.length) return { imported: 0, skipped: 0, categories: 0 };
     const existing = JSON.parse(localStorage.getItem(calendarStorageKey) ?? "[]") as CalendarEvent[];
     const incoming = pendingEvents.map((event) => applyCalendarImportCategory(event, calendarCategory, calendarColor));
     const merged = mergeCalendarEventsExactly(existing, incoming);
     localStorage.setItem(calendarStorageKey, JSON.stringify(merged.events));
+    const categoryResult = mergeImportedCalendarCategories(incoming);
     return {
       imported: merged.imported,
-      skipped: merged.skippedSameId + merged.skippedExactDuplicates
+      skipped: merged.skippedSameId + merged.skippedExactDuplicates,
+      categories: categoryResult.added + categoryResult.updated
     };
   };
 
@@ -191,6 +193,9 @@ export function ImportPage() {
           : "")
         + (calendarResult.skipped > 0
           ? ` ${eventsLabel(calendarResult.skipped)} mit gleicher ID oder exakt gleichen Feldern wurden sicher ausgelassen.`
+          : "")
+        + (calendarResult.categories > 0
+          ? ` ${calendarResult.categories} Kategorie(n) mit Farbe wurden übernommen.`
           : "")
       );
       resetImport();

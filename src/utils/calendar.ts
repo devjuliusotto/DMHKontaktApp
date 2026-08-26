@@ -4,6 +4,12 @@ import type { CalendarEvent, CalendarRecurrence } from "../types/calendar";
 export const defaultCalendarColor = "blue";
 export const calendarStorageKey = "agendakontakte.calendarEvents";
 export const calendarTrashStorageKey = "agendakontakte.deletedCalendarEvents";
+export const calendarCategoriesStorageKey = "agendakontakte.calendarCategories";
+
+export interface CalendarCategoryDefinition {
+  name: string;
+  color: string;
+}
 
 export const calendarColorOptions = [
   { value: "blue", label: "Blau", chip: "#dceafe", border: "#2563eb" },
@@ -29,6 +35,43 @@ export function calendarColorFromCategory(category: string, fallback = defaultCa
   if (/(grau|gray|grey|schwarz|black|steel)/.test(normalized)) return "gray";
   if (/(blau|blue)/.test(normalized)) return "blue";
   return calendarColorValue(fallback);
+}
+
+export function mergeImportedCalendarCategories(events: CalendarEvent[]) {
+  let stored: CalendarCategoryDefinition[] = [];
+  try {
+    const parsed = JSON.parse(localStorage.getItem(calendarCategoriesStorageKey) ?? "[]") as unknown;
+    if (Array.isArray(parsed)) stored = parsed.filter((entry): entry is CalendarCategoryDefinition => Boolean(entry && typeof entry === "object" && "name" in entry && "color" in entry));
+  } catch {
+    stored = [];
+  }
+
+  const byName = new Map<string, CalendarCategoryDefinition>();
+  for (const category of stored) {
+    const name = String(category.name).trim();
+    if (name) byName.set(name.toLocaleLowerCase("de-DE"), { name, color: calendarColorValue(category.color) });
+  }
+
+  let added = 0;
+  let updated = 0;
+  for (const event of events) {
+    const name = event.category?.trim();
+    if (!name) continue;
+    const key = name.toLocaleLowerCase("de-DE");
+    const importedColor = calendarColorValue(event.color);
+    const current = byName.get(key);
+    if (!current) {
+      byName.set(key, { name, color: importedColor });
+      added += 1;
+    } else if (current.color === defaultCalendarColor && importedColor !== defaultCalendarColor) {
+      byName.set(key, { ...current, color: importedColor });
+      updated += 1;
+    }
+  }
+
+  const categories = Array.from(byName.values()).sort((left, right) => left.name.localeCompare(right.name, "de"));
+  localStorage.setItem(calendarCategoriesStorageKey, JSON.stringify(categories));
+  return { added, updated, categories };
 }
 
 export function calendarColorStyle(value?: string) {
@@ -186,9 +229,28 @@ function parseRecurrence(raw: string): CalendarRecurrence | null {
   };
 }
 
-function colorFromHex(raw: string, category: string): string {
+function colorFromSource(raw: string, category: string): string {
   const match = raw.trim().match(/^#?([0-9a-f]{6})/i);
-  if (!match) return calendarColorFromCategory(category);
+  if (!match) {
+    const normalized = raw.trim().toLocaleLowerCase("en-US").replace(/[\s_-]+/g, "");
+    const preset = normalized.match(/^preset(\d{1,2})$/)?.[1];
+    if (preset) {
+      const number = Number(preset);
+      if ([0, 9, 15, 24].includes(number)) return "red";
+      if ([1, 2, 3, 16, 17, 18].includes(number)) return "yellow";
+      if ([4, 5, 6, 19, 20, 21].includes(number)) return "green";
+      if ([7, 22].includes(number)) return "blue";
+      if ([8, 23].includes(number)) return "purple";
+      if ([10, 11, 12, 13, 14].includes(number)) return "gray";
+    }
+    if (/^(red|pink|rose|crimson|cranberry|darkred)$/.test(normalized)) return "red";
+    if (/^(orange|yellow|gold|brown|peach|darkorange|darkyellow|darkbrown)$/.test(normalized)) return "yellow";
+    if (/^(green|teal|turquoise|olive|darkgreen|darkteal|darkolive)$/.test(normalized)) return "green";
+    if (/^(purple|violet|lavender|darkpurple)$/.test(normalized)) return "purple";
+    if (/^(gray|grey|steel|darksteel|darkgray|darkgrey|black)$/.test(normalized)) return "gray";
+    if (/^(blue|darkblue|navy)$/.test(normalized)) return "blue";
+    return calendarColorFromCategory(category);
+  }
   const value = Number.parseInt(match[1], 16);
   const red = (value >> 16) & 255;
   const green = (value >> 8) & 255;
@@ -212,14 +274,17 @@ export function parseCalendarFile(bytes: Uint8Array, source: string): CalendarEv
   const rawText = decodeText(bytes);
   const icsStart = rawText.indexOf("BEGIN:VCALENDAR");
   const text = unfoldIcs(icsStart >= 0 ? rawText.slice(icsStart) : rawText);
-  const globalColor = propertyValue(propertyLines(text.split(/\r?\n/), "X-APPLE-CALENDAR-COLOR")[0]);
+  const firstEventIndex = text.indexOf("BEGIN:VEVENT");
+  const calendarLines = text.slice(0, firstEventIndex >= 0 ? firstEventIndex : text.length).split(/\r?\n/);
+  const globalCategory = value(calendarLines, "CATEGORIES") || value(calendarLines, "NAME") || value(calendarLines, "X-WR-CALNAME");
+  const globalColor = value(calendarLines, "COLOR") || value(calendarLines, "X-APPLE-CALENDAR-COLOR") || value(calendarLines, "X-OUTLOOK-COLOR");
   const blocks = text.match(/BEGIN:VEVENT[\s\S]*?END:VEVENT/g) ?? [];
 
   const parsed: ParsedCalendarEvent[] = blocks.map((block, index) => {
     const lines = block.split(/\r?\n/);
     const uid = value(lines, "UID") || `${source}-${index}`;
-    const category = value(lines, "CATEGORIES");
-    const explicitColor = value(lines, "COLOR") || globalColor;
+    const category = value(lines, "CATEGORIES") || globalCategory;
+    const explicitColor = value(lines, "COLOR") || value(lines, "X-APPLE-EVENT-COLOR") || value(lines, "X-OUTLOOK-COLOR") || globalColor;
     const recurrenceId = parseIcsDate(value(lines, "RECURRENCE-ID"));
     const excludedDates = propertyLines(lines, "EXDATE")
       .flatMap((line) => propertyValue(line).split(","))
@@ -234,7 +299,7 @@ export function parseCalendarFile(bytes: Uint8Array, source: string): CalendarEv
       endsAt: parseIcsDate(value(lines, "DTEND")),
       location: value(lines, "LOCATION"),
       description: value(lines, "DESCRIPTION"),
-      color: colorFromHex(explicitColor, category),
+      color: colorFromSource(explicitColor, category),
       category,
       source,
       recurrence: parseRecurrence(value(lines, "RRULE")),

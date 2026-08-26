@@ -15,7 +15,7 @@ const PROFILE_SETTING_KEY: &str = "m365_connection_profile_v1";
 const DPAPI_ENTROPY: &[u8] = b"de.dmh.agendakontakte.m365.v1";
 const GRAPH_PROFILE_URL: &str =
     "https://graph.microsoft.com/v1.0/me?$select=id,displayName,mail,userPrincipalName";
-const LOGIN_SCOPES: &str = "openid profile offline_access User.Read Contacts.ReadWrite Contacts.ReadWrite.Shared Calendars.ReadWrite Calendars.ReadWrite.Shared Calendars.Read.Shared Files.ReadWrite.All Sites.Read.All";
+const LOGIN_SCOPES: &str = "openid profile offline_access User.Read Contacts.ReadWrite Contacts.ReadWrite.Shared Calendars.ReadWrite Calendars.ReadWrite.Shared Calendars.Read.Shared MailboxSettings.Read Files.ReadWrite.All Sites.Read.All";
 
 #[derive(Default)]
 pub struct Microsoft365Runtime {
@@ -1038,12 +1038,76 @@ fn local_event_key(event: &crate::CalendarEvent) -> String {
     )
 }
 
+fn outlook_category_color(value: &str) -> &'static str {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "preset0" | "preset9" | "preset15" | "preset24" => "red",
+        "preset1" | "preset2" | "preset3" | "preset16" | "preset17" | "preset18" => "yellow",
+        "preset4" | "preset5" | "preset6" | "preset19" | "preset20" | "preset21" => "green",
+        "preset7" | "preset22" => "blue",
+        "preset8" | "preset23" => "purple",
+        "preset10" | "preset11" | "preset12" | "preset13" | "preset14" => "gray",
+        _ => "blue",
+    }
+}
+
+async fn m365_master_category_colors(access_token: &str) -> HashMap<String, String> {
+    let Ok(categories) = graph_collection(
+        access_token,
+        "https://graph.microsoft.com/v1.0/me/outlook/masterCategories?$select=displayName,color",
+    )
+    .await
+    else {
+        return HashMap::new();
+    };
+    categories
+        .into_iter()
+        .filter_map(|category| {
+            let name = value_text(&category, "displayName").trim();
+            if name.is_empty() {
+                return None;
+            }
+            Some((
+                name.to_lowercase(),
+                outlook_category_color(value_text(&category, "color")).to_string(),
+            ))
+        })
+        .collect()
+}
+
+fn apply_m365_category_color(value: &mut Value, colors: &HashMap<String, String>) {
+    let category = value
+        .get("categories")
+        .and_then(Value::as_array)
+        .and_then(|categories| categories.first())
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
+    let Some(color) = colors.get(&category) else {
+        return;
+    };
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "_dmhCategoryColor".to_string(),
+            Value::String(color.clone()),
+        );
+    }
+}
+
 fn remote_event_to_local(
     value: &Value,
     source: &Microsoft365SyncSource,
     existing: Option<&crate::CalendarEvent>,
 ) -> crate::CalendarEvent {
     let remote_id = value_text(value, "id");
+    let category = value
+        .get("categories")
+        .and_then(Value::as_array)
+        .and_then(|categories| categories.first())
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let imported_color = value_text(value, "_dmhCategoryColor");
     crate::CalendarEvent {
         id: existing
             .map(|event| event.id.clone())
@@ -1073,16 +1137,14 @@ fn remote_event_to_local(
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
-        color: existing
-            .map(|event| event.color.clone())
-            .unwrap_or_else(|| "blue".to_string()),
-        category: value
-            .get("categories")
-            .and_then(Value::as_array)
-            .and_then(|categories| categories.first())
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
+        color: if imported_color.is_empty() {
+            existing
+                .map(|event| event.color.clone())
+                .unwrap_or_else(|| "blue".to_string())
+        } else {
+            imported_color.to_string()
+        },
+        category,
         source: format!("Microsoft 365 · {}", source.name),
         recurrence: existing.and_then(|event| event.recurrence.clone()),
         excluded_dates: existing
@@ -1136,6 +1198,7 @@ fn event_equivalent(
         && local.location.trim() == remote_local.location.trim()
         && local.description.trim() == remote_local.description.trim()
         && local.category.trim() == remote_local.category.trim()
+        && local.color.trim() == remote_local.color.trim()
 }
 
 fn merge_event(
@@ -1159,6 +1222,9 @@ fn merge_event(
     }
     if merged.category.trim().is_empty() {
         merged.category = remote_local.category;
+    }
+    if !value_text(remote, "_dmhCategoryColor").is_empty() {
+        merged.color = remote_local.color;
     }
     if merged.description.trim().is_empty() {
         merged.description = remote_local.description;
@@ -1263,6 +1329,11 @@ async fn build_m365_sync_plan(
     let mut operations = Vec::new();
     let mut remote_contacts = 0usize;
     let mut remote_events = 0usize;
+    let master_category_colors = if request.calendars {
+        m365_master_category_colors(access_token).await
+    } else {
+        HashMap::new()
+    };
 
     if request.contacts {
         for source in sources.contacts.iter().filter(|source| {
@@ -1398,7 +1469,10 @@ async fn build_m365_sync_plan(
         }) {
             let direction = source_direction(request, &source.id);
             let url = format!("{}/events?$select=id,subject,start,end,lastModifiedDateTime,location,body,categories,attendees,onlineMeeting,recurrence&$top=100", source.resource_path);
-            let values = graph_collection(access_token, &url).await?;
+            let mut values = graph_collection(access_token, &url).await?;
+            for value in &mut values {
+                apply_m365_category_color(value, &master_category_colors);
+            }
             remote_events += values.len();
             let remote_by_key: HashMap<String, &Value> = values
                 .iter()
@@ -2241,7 +2315,7 @@ mod tests {
     fn form_values_are_encoded_without_losing_scopes() {
         assert_eq!(
             form_body(&[("scope", LOGIN_SCOPES)]),
-            "scope=openid+profile+offline_access+User.Read+Contacts.ReadWrite+Contacts.ReadWrite.Shared+Calendars.ReadWrite+Calendars.ReadWrite.Shared+Calendars.Read.Shared+Files.ReadWrite.All+Sites.Read.All"
+            "scope=openid+profile+offline_access+User.Read+Contacts.ReadWrite+Contacts.ReadWrite.Shared+Calendars.ReadWrite+Calendars.ReadWrite.Shared+Calendars.Read.Shared+MailboxSettings.Read+Files.ReadWrite.All+Sites.Read.All"
         );
     }
 
@@ -2322,7 +2396,8 @@ mod tests {
                 "end": { "dateTime": "2026-08-18T10:00:00" },
                 "location": { "displayName": "Büro" },
                 "body": { "content": "Planung" },
-                "categories": ["Wichtig"]
+                "categories": ["Wichtig"],
+                "_dmhCategoryColor": "red"
             }),
             &source,
             None,
@@ -2331,6 +2406,17 @@ mod tests {
         assert_eq!(event.id, "m365:me:calendar:team:event-42");
         assert_eq!(event.title, "Besprechung");
         assert_eq!(event.category, "Wichtig");
+        assert_eq!(event.color, "red");
         assert_eq!(event.source, "Microsoft 365 · Teamkalender");
+    }
+
+    #[test]
+    fn maps_outlook_category_presets_to_the_local_palette() {
+        assert_eq!(outlook_category_color("preset0"), "red");
+        assert_eq!(outlook_category_color("preset4"), "green");
+        assert_eq!(outlook_category_color("preset7"), "blue");
+        assert_eq!(outlook_category_color("preset8"), "purple");
+        assert_eq!(outlook_category_color("preset12"), "gray");
+        assert_eq!(outlook_category_color("preset18"), "yellow");
     }
 }

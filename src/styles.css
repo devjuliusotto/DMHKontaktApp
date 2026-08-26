@@ -133,8 +133,8 @@ button:disabled {
 }
 
 .sidebar {
-  background: #891538;
-  border-right: 1px solid #70102e;
+  background: #640228;
+  border-right: 1px solid #4d011f;
   color: var(--on-primary);
   display: flex;
   flex-direction: column;
@@ -514,6 +514,91 @@ button:disabled {
 
 .authenticator-dialog {
   max-width: 560px;
+}
+
+.authenticator-microsoft-dialog {
+  max-width: 760px;
+}
+
+.authenticator-microsoft-note {
+  align-items: flex-start;
+  background: var(--info-surface);
+  border: 1px solid var(--info-border);
+  border-radius: 8px;
+  color: var(--info-text);
+  display: flex;
+  gap: 0.65rem;
+  padding: 0.75rem 0.85rem;
+}
+
+.authenticator-microsoft-note svg {
+  flex: 0 0 auto;
+  margin-top: 0.1rem;
+}
+
+.authenticator-microsoft-note p,
+.authenticator-microsoft-steps p,
+.authenticator-microsoft-security,
+.authenticator-microsoft-admin-note {
+  margin: 0;
+}
+
+.authenticator-microsoft-steps {
+  display: grid;
+  gap: 0.55rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.authenticator-microsoft-steps li {
+  align-items: flex-start;
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: 28px minmax(0, 1fr);
+  padding: 0.45rem 0 0.7rem;
+}
+
+.authenticator-microsoft-steps li:last-child {
+  border-bottom: 0;
+}
+
+.authenticator-microsoft-steps li > span {
+  align-items: center;
+  background: var(--soft);
+  border-radius: 999px;
+  color: var(--primary-dark);
+  display: flex;
+  font-size: 0.8rem;
+  font-weight: 900;
+  height: 28px;
+  justify-content: center;
+  width: 28px;
+}
+
+.authenticator-microsoft-steps li > div {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.authenticator-microsoft-steps p,
+.authenticator-microsoft-security,
+.authenticator-microsoft-admin-note {
+  color: var(--accent);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.authenticator-microsoft-security,
+.authenticator-microsoft-admin-note {
+  background: var(--surface-alt);
+  border-radius: 7px;
+  padding: 0.65rem 0.75rem;
+}
+
+.authenticator-microsoft-admin-note {
+  border-left: 3px solid var(--primary);
 }
 
 .authenticator-help {
@@ -7381,10 +7466,18 @@ td small {
   max-width: 1180px;
 }
 
+.dienstleistungen-page > .page-header h2 {
+  font-size: 1.8rem;
+}
+
+.dienstleistungen-page > .page-header p {
+  font-size: 0.9rem;
+}
+
 .dienstleistungen-actions {
   display: grid;
-  gap: 1rem;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.9rem;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .dienstleistung-workspace {
@@ -7396,11 +7489,12 @@ td small {
   align-items: center;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 10px;
+  box-shadow: 0 4px 14px rgba(58, 43, 49, 0.06);
   display: flex;
   gap: 1rem;
   justify-content: space-between;
-  padding: 1rem;
+  padding: 0.85rem;
 }
 
 .dienstleistung-workspace-heading > button {
@@ -7454,19 +7548,19 @@ td small {
   align-items: center;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 9px;
   display: grid;
   gap: 0.75rem;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  min-height: 112px;
-  padding: 0.9rem;
+  min-height: 96px;
+  padding: 0.8rem;
   text-align: left;
   transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
 }
 
 .dienstleistung-choice:hover {
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px rgba(137, 21, 56, 0.08), 0 10px 20px rgba(63, 107, 107, 0.1);
+  box-shadow: 0 6px 16px rgba(58, 43, 49, 0.1);
   transform: translateY(-1px);
 }
 
@@ -7514,37 +7608,57 @@ td small {
 }
 
 .dienstleistung-action {
-  align-items: flex-start;
+  align-items: center;
   background: var(--surface);
-  border: 2px solid var(--border);
-  border-radius: 14px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
   display: grid;
-  gap: 0.45rem;
-  justify-items: start;
-  min-height: 168px;
-  padding: 1.1rem;
+  gap: 0.15rem 0.7rem;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  min-height: 100px;
+  padding: 0.8rem 0.85rem;
   text-align: left;
-  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+  transition: background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease, color 150ms ease, transform 150ms ease;
 }
 
-.dienstleistung-action:hover {
-  box-shadow: 0 12px 26px rgba(63, 107, 107, 0.14);
-  transform: translateY(-2px);
+.dienstleistung-action:hover,
+.dienstleistung-action:focus-visible {
+  background: var(--soft);
+  border-color: var(--primary);
+  color: var(--primary-dark);
+  box-shadow: 0 7px 18px rgba(58, 43, 49, 0.11);
+  transform: translateY(-1px);
+}
+
+.dienstleistung-action:hover .dienstleistung-action-icon,
+.dienstleistung-action:focus-visible .dienstleistung-action-icon {
+  background: var(--surface);
+}
+
+.dienstleistung-action:hover small,
+.dienstleistung-action:focus-visible small {
+  color: var(--primary-dark);
 }
 
 .dienstleistung-action-icon {
   align-items: center;
   background: var(--soft);
-  border-radius: 10px;
+  border-radius: 8px;
   color: var(--primary);
   display: inline-flex;
-  height: 50px;
+  grid-column: 1;
+  grid-row: 1 / 3;
+  height: 44px;
   justify-content: center;
-  width: 50px;
+  width: 44px;
 }
 
 .dienstleistung-action strong {
-  font-size: 1.05rem;
+  align-self: end;
+  font-size: 0.98rem;
+  grid-column: 2;
+  grid-row: 1;
 }
 
 .dienstleistung-action small,
@@ -7556,26 +7670,26 @@ td small {
 }
 
 .dienstleistung-action small {
-  max-width: 30ch;
+  align-self: start;
+  font-size: 0.78rem;
+  grid-column: 2;
+  grid-row: 2;
+  line-height: 1.3;
+  max-width: 34ch;
 }
 
 .dienstleistung-action-cta {
   align-items: center;
-  border-top: 1px solid var(--border);
   color: var(--primary-dark);
   display: inline-flex;
-  font-size: 0.86rem;
-  font-weight: 800;
-  gap: 0.35rem;
-  justify-content: space-between;
-  margin-top: 0.4rem;
-  padding-top: 0.55rem;
-  width: 100%;
+  grid-column: 3;
+  grid-row: 1 / 3;
+  justify-content: center;
 }
 
 .dienstleistung-action-booking .dienstleistung-action-icon {
-  background: #e5effb;
-  color: #2d6fa3;
+  background: var(--info-surface);
+  color: #2f6fa3;
 }
 
 .dienstleistung-action-ticket .dienstleistung-action-icon {
@@ -7588,10 +7702,26 @@ td small {
   color: var(--success-text);
 }
 
+.dienstleistung-action-open-tickets .dienstleistung-action-icon {
+  background: var(--soft);
+  color: var(--primary-dark);
+}
+
+.dienstleistung-action-booking {
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--text);
+}
+
 .dienstleistung-action.active,
-.dienstleistung-action:hover {
+.dienstleistung-action:hover,
+.dienstleistung-action:focus-visible {
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px rgba(137, 21, 56, 0.1), 0 12px 26px rgba(63, 107, 107, 0.12);
+}
+
+.dienstleistung-action-booking:hover {
+  border-color: var(--primary);
+  box-shadow: 0 7px 18px rgba(58, 43, 49, 0.11);
 }
 
 .dienstleistungen-welcome {
@@ -7619,8 +7749,9 @@ td small {
 .dienstleistungen-overview {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  margin-top: 1rem;
+  border-radius: 10px;
+  box-shadow: 0 5px 16px rgba(58, 43, 49, 0.07);
+  margin-top: 1.15rem;
   overflow: hidden;
 }
 
@@ -7636,9 +7767,9 @@ td small {
 }
 
 .dienstleistungen-overview-heading {
-  gap: 1rem;
+  gap: 0.85rem;
   justify-content: space-between;
-  padding: 1rem;
+  padding: 0.85rem 0.95rem;
 }
 
 .dienstleistungen-overview-title {
@@ -7649,13 +7780,17 @@ td small {
 .dienstleistungen-overview-title > span {
   align-items: center;
   background: var(--soft);
-  border-radius: 9px;
+  border-radius: 8px;
   color: var(--primary);
   display: inline-flex;
   flex: 0 0 auto;
-  height: 44px;
+  height: 40px;
   justify-content: center;
-  width: 44px;
+  width: 40px;
+}
+
+.dienstleistungen-overview-title h3 {
+  font-size: 1.05rem;
 }
 
 .dienstleistungen-overview-title h3,
@@ -7671,8 +7806,9 @@ td small {
 }
 
 .dienstleistungen-overview-title p {
+  font-size: 0.82rem;
   line-height: 1.4;
-  margin-top: 0.15rem;
+  margin-top: 0.08rem;
 }
 
 .dienstleistungen-overview-totals {
@@ -7685,8 +7821,8 @@ td small {
   border: 1px solid var(--border);
   border-radius: 999px;
   color: var(--accent);
-  font-size: 0.8rem;
-  padding: 0.35rem 0.55rem;
+  font-size: 0.76rem;
+  padding: 0.3rem 0.5rem;
 }
 
 .dienstleistungen-overview-totals strong {
@@ -7694,23 +7830,23 @@ td small {
 }
 
 .dienstleistungen-overview-toolbar {
-  background: var(--surface-alt);
+  background: var(--surface);
   border-bottom: 1px solid var(--border);
   border-top: 1px solid var(--border);
-  gap: 0.65rem;
-  padding: 0.7rem;
+  gap: 0.55rem;
+  padding: 0.65rem 0.75rem;
 }
 
 .dienstleistungen-overview-search {
   align-items: center;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 7px;
   color: var(--accent);
   display: flex;
   flex: 1 1 260px;
   gap: 0.35rem;
-  max-width: 390px;
+  max-width: 360px;
   padding-left: 0.65rem;
 }
 
@@ -7723,7 +7859,7 @@ td small {
   background: transparent;
   border: 0;
   box-shadow: none;
-  min-height: 38px;
+  min-height: 36px;
   min-width: 0;
   padding: 0.35rem;
   width: 100%;
@@ -7742,8 +7878,8 @@ td small {
   background: var(--surface);
   border-color: var(--border);
   gap: 0.35rem;
-  min-height: 38px;
-  padding: 0.4rem 0.55rem;
+  min-height: 36px;
+  padding: 0.35rem 0.52rem;
 }
 
 .dienstleistungen-overview-filters button span {
@@ -7775,7 +7911,7 @@ td small {
 }
 
 .dienstleistungen-status-filter select {
-  min-height: 38px;
+  min-height: 36px;
   min-width: 145px;
   padding-bottom: 0.35rem;
   padding-top: 0.35rem;
@@ -7784,6 +7920,34 @@ td small {
 .dienstleistungen-overview-table-wrap {
   overflow-x: auto;
 }
+
+.dienstleistungen-open-tickets {
+  margin-top: 0;
+}
+
+.dienstleistungen-open-tickets-toolbar {
+  justify-content: space-between;
+}
+
+.dienstleistungen-open-tickets-toolbar .dienstleistungen-overview-search {
+  max-width: 460px;
+}
+
+.dienstleistungen-open-tickets-toolbar > button {
+  min-height: 38px;
+  padding-bottom: 0.4rem;
+  padding-top: 0.4rem;
+}
+
+.dienstleistungen-open-tickets-table {
+  min-width: 860px;
+}
+
+.dienstleistungen-open-tickets-table th:first-child { width: 35%; }
+.dienstleistungen-open-tickets-table th:nth-child(2) { width: 12%; }
+.dienstleistungen-open-tickets-table th:nth-child(3) { width: 17%; }
+.dienstleistungen-open-tickets-table th:nth-child(4) { width: 13%; }
+.dienstleistungen-open-tickets-table th:nth-child(5) { width: 18%; }
 
 .dienstleistungen-overview-table {
   border-collapse: collapse;
@@ -7795,15 +7959,15 @@ td small {
 .dienstleistungen-overview-table th,
 .dienstleistungen-overview-table td {
   border-bottom: 1px solid var(--border);
-  padding: 0.7rem;
+  padding: 0.6rem 0.7rem;
   text-align: left;
   vertical-align: middle;
 }
 
 .dienstleistungen-overview-table th {
-  background: var(--surface);
+  background: var(--surface-alt);
   color: var(--accent);
-  font-size: 0.76rem;
+  font-size: 0.72rem;
   font-weight: 800;
   letter-spacing: 0.02em;
   text-transform: uppercase;
@@ -7842,6 +8006,14 @@ td small {
 .dienstleistungen-overview-table td:last-child {
   padding-left: 0.3rem;
   padding-right: 0.5rem;
+}
+
+.dienstleistungen-overview-table .icon-only {
+  height: 38px;
+  min-height: 38px;
+  min-width: 38px;
+  padding: 0;
+  width: 38px;
 }
 
 .dienstleistungen-record-primary {
@@ -7994,10 +8166,615 @@ td small {
   white-space: pre-wrap;
 }
 
+.dienstleistungen-ticket-dialog {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-width: 900px;
+  overflow: hidden;
+}
+
+.dienstleistungen-ticket-dialog-body,
+.dienstleistungen-ticket-edit,
+.dienstleistungen-ticket-comments,
+.dienstleistungen-ticket-comment-list {
+  display: grid;
+}
+
+.dienstleistungen-ticket-dialog-body {
+  gap: 1rem;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 0.15rem;
+}
+
+.dienstleistungen-ticket-edit,
+.dienstleistungen-ticket-comments,
+.dienstleistungen-ticket-comment-list {
+  gap: 0.7rem;
+}
+
+.dienstleistungen-ticket-edit {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.85rem;
+}
+
+.dienstleistungen-ticket-edit-grid {
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.dienstleistungen-ticket-edit-grid .wide,
+.dienstleistungen-ticket-detail-grid .wide {
+  grid-column: 1 / -1;
+}
+
+.dienstleistungen-ticket-edit > .button-row {
+  justify-content: flex-end;
+}
+
+.dienstleistungen-ticket-attachments {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 0.7rem;
+  padding-top: 0.85rem;
+}
+
+.dienstleistungen-ticket-attachments-heading,
+.dienstleistungen-ticket-attachments-heading > div,
+.dienstleistungen-ticket-attachment-list article {
+  align-items: center;
+  display: flex;
+}
+
+.dienstleistungen-ticket-attachments-heading {
+  gap: 0.8rem;
+  justify-content: space-between;
+}
+
+.dienstleistungen-ticket-attachments-heading > div {
+  color: var(--primary-dark);
+  gap: 0.45rem;
+}
+
+.dienstleistungen-ticket-attachments-heading h5 {
+  font-size: 0.98rem;
+  margin: 0;
+}
+
+.dienstleistungen-ticket-attachments-heading > div > span {
+  align-items: center;
+  background: var(--soft);
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 0.75rem;
+  font-weight: 800;
+  justify-content: center;
+  min-width: 1.8rem;
+  padding: 0.22rem 0.45rem;
+}
+
+.service-attachment-input.compact {
+  border-style: solid;
+  font-size: 0.84rem;
+  padding: 0.45rem 0.6rem;
+}
+
+.service-attachment-input.compact input {
+  max-width: 220px;
+}
+
+.dienstleistungen-ticket-attachment-message,
+.dienstleistungen-ticket-no-attachments {
+  color: var(--accent);
+  font-size: 0.82rem;
+  margin: 0;
+}
+
+.dienstleistungen-ticket-attachment-list {
+  display: grid;
+  gap: 0.45rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.dienstleistungen-ticket-attachment-list article {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.45rem;
+}
+
+.dienstleistungen-ticket-attachment-list article > span:nth-child(2) {
+  display: grid;
+  min-width: 0;
+}
+
+.dienstleistungen-ticket-attachment-list article strong,
+.dienstleistungen-ticket-attachment-list article small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dienstleistungen-ticket-attachment-list article small {
+  color: var(--accent);
+  font-size: 0.72rem;
+}
+
+.dienstleistungen-ticket-attachment-preview {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--primary-dark);
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 38px;
+  justify-content: center;
+  overflow: hidden;
+  width: 38px;
+}
+
+.dienstleistungen-ticket-attachment-preview img {
+  height: 100%;
+  object-fit: cover;
+  width: 100%;
+}
+
+.dienstleistungen-ticket-attachment-list a.icon-only,
+.dienstleistungen-ticket-attachment-list button.icon-only {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 34px;
+  justify-content: center;
+  min-height: 34px;
+  min-width: 34px;
+  padding: 0;
+  text-decoration: none;
+  width: 34px;
+}
+
+.dienstleistungen-ticket-attachment-list a.icon-only:hover {
+  border-color: var(--primary);
+  color: var(--primary-dark);
+}
+
+.dienstleistungen-ticket-attachment-list button.danger-button:hover {
+  background: var(--danger-surface);
+}
+
+.dienstleistungen-ticket-comments {
+  border-top: 1px solid var(--border);
+  padding-top: 0.85rem;
+}
+
+.dienstleistungen-ticket-comments-heading,
+.dienstleistungen-ticket-comments-heading > div,
+.dienstleistungen-ticket-comment-list article header,
+.dienstleistungen-ticket-footer,
+.dienstleistungen-ticket-footer > .button-row {
+  align-items: center;
+  display: flex;
+}
+
+.dienstleistungen-ticket-comments-heading,
+.dienstleistungen-ticket-comment-list article header {
+  justify-content: space-between;
+}
+
+.dienstleistungen-ticket-comments-heading > div {
+  color: var(--primary-dark);
+  gap: 0.45rem;
+}
+
+.dienstleistungen-ticket-comments-heading h5 {
+  font-size: 0.98rem;
+  margin: 0;
+}
+
+.dienstleistungen-ticket-comments-heading > span {
+  align-items: center;
+  background: var(--soft);
+  border-radius: 999px;
+  color: var(--primary-dark);
+  display: inline-flex;
+  font-size: 0.75rem;
+  font-weight: 800;
+  justify-content: center;
+  min-width: 1.8rem;
+  padding: 0.22rem 0.45rem;
+}
+
+.dienstleistungen-ticket-comment-list {
+  max-height: 230px;
+  overflow-y: auto;
+}
+
+.dienstleistungen-ticket-comment-list article {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  gap: 0.35rem;
+  padding: 0.65rem 0.75rem;
+}
+
+.dienstleistungen-ticket-comment-list article.system {
+  background: var(--info-surface);
+  border-color: var(--info-border);
+}
+
+.dienstleistungen-ticket-comment-list article header {
+  padding: 0;
+}
+
+.dienstleistungen-ticket-comment-list article time {
+  color: var(--accent);
+  font-size: 0.72rem;
+}
+
+.dienstleistungen-ticket-comment-list article p,
+.dienstleistungen-ticket-no-comments {
+  margin: 0;
+}
+
+.dienstleistungen-ticket-comment-list article p {
+  color: var(--text);
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.dienstleistungen-ticket-no-comments {
+  color: var(--accent);
+  padding: 0.7rem;
+  text-align: center;
+}
+
+.dienstleistungen-ticket-comment-form {
+  align-items: end;
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.dienstleistungen-ticket-comment-form button {
+  margin-bottom: 1px;
+}
+
+.dienstleistungen-ticket-footer {
+  flex-wrap: wrap;
+}
+
+.dienstleistungen-ticket-footer > .button-row {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* Ticket workspace: Trello-inspired structure in the DMH visual language. */
+.dienstleistungen-ticket-dialog {
+  gap: 0;
+  grid-template-rows: auto minmax(0, 1fr);
+  max-width: 1120px;
+  padding: 0;
+  width: min(1120px, 100%);
+}
+
+.dienstleistungen-ticket-topbar {
+  align-items: center;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  min-height: 58px;
+  padding: 0.65rem 0.85rem;
+}
+
+.dienstleistungen-ticket-topbar > div,
+.dienstleistungen-ticket-context,
+.dienstleistungen-ticket-meta,
+.dienstleistungen-ticket-quick-actions,
+.dienstleistungen-ticket-content-card header,
+.dienstleistungen-ticket-content-card header > div {
+  align-items: center;
+  display: flex;
+}
+
+.dienstleistungen-ticket-topbar > div,
+.dienstleistungen-ticket-context {
+  gap: 0.55rem;
+}
+
+.dienstleistungen-ticket-context > span {
+  align-items: center;
+  background: var(--primary-dark);
+  border-radius: 7px;
+  color: white;
+  display: inline-flex;
+  height: 34px;
+  justify-content: center;
+  width: 34px;
+}
+
+.dienstleistungen-ticket-context > strong {
+  background: var(--soft);
+  border: 1px solid var(--primary-muted);
+  border-radius: 7px;
+  color: var(--primary-dark);
+  font-size: 0.82rem;
+  padding: 0.35rem 0.55rem;
+}
+
+.dienstleistungen-ticket-context > small {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.dienstleistungen-ticket-topbar .icon-only {
+  height: 38px;
+  min-height: 38px;
+  min-width: 38px;
+  padding: 0;
+  width: 38px;
+}
+
+.dienstleistungen-ticket-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(330px, 0.95fr);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.dienstleistungen-ticket-main {
+  align-content: start;
+  display: grid;
+  gap: 1.2rem;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 1.25rem 1.35rem 1.5rem;
+}
+
+.dienstleistungen-ticket-hero {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.dienstleistungen-ticket-marker {
+  border: 2px solid var(--primary);
+  border-radius: 999px;
+  height: 18px;
+  margin-top: 0.35rem;
+  width: 18px;
+}
+
+.dienstleistungen-ticket-hero h3 {
+  font-size: clamp(1.35rem, 2.1vw, 1.75rem);
+  line-height: 1.2;
+  margin: 0;
+}
+
+.dienstleistungen-ticket-meta {
+  color: var(--accent);
+  flex-wrap: wrap;
+  font-size: 0.8rem;
+  gap: 0.45rem 0.9rem;
+  margin-top: 0.45rem;
+}
+
+.dienstleistungen-ticket-meta > span {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.3rem;
+}
+
+.dienstleistungen-ticket-quick-actions {
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.9rem;
+}
+
+.dienstleistungen-ticket-quick-actions button {
+  background: var(--surface-alt);
+  min-height: 36px;
+  padding: 0.4rem 0.65rem;
+}
+
+.dienstleistungen-ticket-quick-actions button:hover {
+  background: var(--soft);
+  border-color: var(--primary-muted);
+}
+
+.dienstleistungen-ticket-content-card {
+  display: grid;
+  gap: 0.75rem;
+  padding-left: 2.6rem;
+}
+
+.dienstleistungen-ticket-content-card header {
+  justify-content: space-between;
+  padding: 0;
+}
+
+.dienstleistungen-ticket-content-card header > div {
+  color: var(--primary-dark);
+  gap: 0.5rem;
+}
+
+.dienstleistungen-ticket-content-card h5 {
+  font-size: 1rem;
+  margin: 0;
+}
+
+.dienstleistungen-ticket-content-card header button {
+  min-height: 34px;
+  padding: 0.35rem 0.55rem;
+}
+
+.dienstleistungen-ticket-content-card > p {
+  line-height: 1.6;
+  margin: 0;
+  padding: 0 0.15rem;
+  white-space: pre-wrap;
+}
+
+.dienstleistungen-ticket-extra {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.75rem 0.85rem;
+}
+
+.dienstleistungen-ticket-extra > span {
+  color: var(--accent);
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.dienstleistungen-ticket-extra p {
+  line-height: 1.5;
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.dienstleistungen-ticket-main .dienstleistungen-ticket-edit,
+.dienstleistungen-ticket-main .dienstleistungen-ticket-attachments {
+  margin-left: 2.6rem;
+}
+
+.dienstleistungen-ticket-main .dienstleistungen-ticket-attachments {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.dienstleistungen-ticket-activity {
+  background: var(--surface-alt);
+  border-left: 1px solid var(--border);
+  display: grid;
+  gap: 0.85rem;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  min-height: 0;
+  padding: 1rem;
+}
+
+.dienstleistungen-ticket-activity .dienstleistungen-ticket-comments-heading {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.75rem;
+}
+
+.dienstleistungen-ticket-activity .dienstleistungen-ticket-comment-form {
+  align-items: stretch;
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: 1fr;
+}
+
+.dienstleistungen-ticket-activity .dienstleistungen-ticket-comment-form textarea {
+  background: var(--surface);
+  resize: vertical;
+}
+
+.dienstleistungen-ticket-activity .dienstleistungen-ticket-comment-form button {
+  justify-self: start;
+  margin: 0;
+}
+
+.dienstleistungen-ticket-activity .dienstleistungen-ticket-comment-list {
+  align-content: start;
+  gap: 0.3rem;
+  max-height: none;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 0.2rem;
+}
+
+.dienstleistungen-ticket-activity .dienstleistungen-ticket-comment-list article {
+  align-items: flex-start;
+  background: transparent;
+  border: 0;
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: 32px minmax(0, 1fr);
+  padding: 0.55rem 0.2rem;
+}
+
+.dienstleistungen-ticket-activity .dienstleistungen-ticket-comment-list article.system {
+  background: transparent;
+}
+
+.dienstleistungen-ticket-activity .dienstleistungen-ticket-comment-list article + article {
+  border-top: 1px solid var(--border);
+}
+
+.dienstleistungen-ticket-comment-avatar {
+  align-items: center;
+  background: var(--primary-dark);
+  border-radius: 999px;
+  color: white;
+  display: inline-flex;
+  font-size: 0.75rem;
+  font-weight: 850;
+  height: 32px;
+  justify-content: center;
+  width: 32px;
+}
+
+.dienstleistungen-ticket-comment-list article.system .dienstleistungen-ticket-comment-avatar {
+  background: var(--soft);
+  color: var(--primary-dark);
+}
+
+.dienstleistungen-ticket-comment-list article > div {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.dienstleistungen-ticket-activity .dienstleistungen-ticket-comment-list article header {
+  align-items: baseline;
+  display: flex;
+  gap: 0.45rem;
+  justify-content: flex-start;
+}
+
+.dienstleistungen-ticket-activity .dienstleistungen-ticket-comment-list article time {
+  margin-left: auto;
+}
+
+@media (max-width: 900px) {
+  .dienstleistungen-ticket-workspace {
+    display: block;
+    overflow-y: auto;
+  }
+
+  .dienstleistungen-ticket-main {
+    overflow: visible;
+  }
+
+  .dienstleistungen-ticket-activity {
+    border-left: 0;
+    border-top: 1px solid var(--border);
+    min-height: 420px;
+  }
+
+  .dienstleistungen-ticket-activity .dienstleistungen-ticket-comment-list {
+    max-height: 360px;
+  }
+}
+
 .dienstleistung-panel {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
+  box-shadow: 0 4px 14px rgba(58, 43, 49, 0.06);
   display: grid;
   gap: 1rem;
   padding: 1.1rem;
@@ -8084,6 +8861,24 @@ td small {
   font-size: 0.82rem;
   gap: 0.35rem;
   padding: 0.3rem 0.55rem;
+}
+
+.service-attachments .attachment-remove {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  color: var(--accent);
+  display: inline-flex;
+  justify-content: center;
+  min-height: 22px;
+  min-width: 22px;
+  padding: 0;
+}
+
+.service-attachments .attachment-remove:hover {
+  background: var(--danger-surface);
+  color: var(--danger-text);
 }
 
 .dienstleistung-record-list,
@@ -8611,6 +9406,93 @@ td small {
 
   .dienstleistungen-record-details footer button {
     justify-content: center;
+  }
+
+  .dienstleistungen-ticket-edit-grid,
+  .dienstleistungen-ticket-comment-form {
+    grid-template-columns: 1fr;
+  }
+
+  .dienstleistungen-ticket-topbar {
+    align-items: flex-start;
+  }
+
+  .dienstleistungen-ticket-topbar > div:last-child {
+    flex: 0 0 auto;
+  }
+
+  .dienstleistungen-ticket-context {
+    flex-wrap: wrap;
+  }
+
+  .dienstleistungen-ticket-main,
+  .dienstleistungen-ticket-activity {
+    padding: 0.9rem;
+  }
+
+  .dienstleistungen-ticket-hero {
+    gap: 0.55rem;
+  }
+
+  .dienstleistungen-ticket-marker {
+    height: 15px;
+    width: 15px;
+  }
+
+  .dienstleistungen-ticket-quick-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .dienstleistungen-ticket-quick-actions button {
+    justify-content: center;
+    width: 100%;
+  }
+
+  .dienstleistungen-ticket-content-card,
+  .dienstleistungen-ticket-main .dienstleistungen-ticket-edit,
+  .dienstleistungen-ticket-main .dienstleistungen-ticket-attachments {
+    margin-left: 0;
+    padding-left: 0;
+  }
+
+  .dienstleistungen-ticket-content-card header {
+    align-items: flex-start;
+    gap: 0.6rem;
+  }
+
+  .dienstleistungen-ticket-comment-form button {
+    margin-bottom: 0;
+  }
+
+  .dienstleistungen-ticket-attachments-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .service-attachment-input.compact {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .service-attachment-input.compact input {
+    max-width: 100%;
+    width: 100%;
+  }
+
+  .dienstleistungen-ticket-attachment-list {
+    grid-template-columns: 1fr;
+  }
+
+  .dienstleistungen-ticket-footer > .button-row {
+    align-items: stretch;
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .dienstleistungen-ticket-footer > .button-row button {
+    justify-content: center;
+    width: 100%;
   }
 
   .dienstleistung-workspace-heading > button {

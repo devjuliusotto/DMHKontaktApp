@@ -3,10 +3,9 @@ import { useEffect, useMemo, useState } from "react";
 import { CalendarEventForm } from "../components/CalendarEventForm";
 import { StatusMessage } from "../components/StatusMessage";
 import type { CalendarEvent } from "../types/calendar";
-import { calendarColorOptions, calendarColorStyle, calendarColorValue, calendarStorageKey, calendarTrashStorageKey, defaultCalendarColor, expandCalendarEvents, formatCalendarDate, parseCalendarDate } from "../utils/calendar";
+import { calendarCategoriesStorageKey, calendarColorOptions, calendarColorStyle, calendarColorValue, calendarStorageKey, calendarTrashStorageKey, defaultCalendarColor, expandCalendarEvents, formatCalendarDate, parseCalendarDate } from "../utils/calendar";
 import { findExactCalendarDuplicateGroups, removeExactCalendarDuplicates } from "../utils/calendarDuplicates";
 
-const categoriesStorageKey = "agendakontakte.calendarCategories";
 const duplicateCleanupBackupKey = "agendakontakte.calendarExactDuplicateCleanupBackup.v1";
 const weekdays = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
 type CalendarView = "day" | "week" | "month";
@@ -136,7 +135,7 @@ export function CalendarPage() {
       setEvents(storedEvents);
     }
 
-    const savedCategories = localStorage.getItem(categoriesStorageKey);
+    const savedCategories = localStorage.getItem(calendarCategoriesStorageKey);
     if (savedCategories) {
       const storedCategories = (JSON.parse(savedCategories) as CalendarCategory[]).map(normalizeCategory).filter((category) => category.name);
       setCategories(storedCategories);
@@ -215,7 +214,7 @@ export function CalendarPage() {
     }
     const sorted = Array.from(byName.values()).sort((left, right) => left.name.localeCompare(right.name, "de"));
     setCategories(sorted);
-    localStorage.setItem(categoriesStorageKey, JSON.stringify(sorted));
+    localStorage.setItem(calendarCategoriesStorageKey, JSON.stringify(sorted));
   };
 
   const reviewExactDuplicates = () => {

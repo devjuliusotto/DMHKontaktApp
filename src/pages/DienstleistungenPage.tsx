@@ -8,15 +8,21 @@ import {
   CheckCircle2,
   ClipboardList,
   Clock3,
+  Download,
   FileText,
+  Edit3,
+  MessageSquare,
   Monitor,
   Paperclip,
   PackageOpen,
+  RotateCcw,
+  Save,
   Search,
   Send,
   Table2,
   Tent,
   Ticket,
+  Trash2,
   Utensils,
   X
 } from "lucide-react";
@@ -25,10 +31,10 @@ import { StatusMessage } from "../components/StatusMessage";
 import { OutdoorBookingsPanel } from "../components/OutdoorBookingsPanel";
 
 type ServiceSection = "bookings" | "tickets" | "meals";
+type ServicePageSection = ServiceSection | "open-tickets";
 type BookingMode = "standard" | "outdoor";
 type MealMode = "menu" | "reservation";
 type BookingResource = "Raum" | "Auto" | "Projektor" | "Zelt" | "Stühle" | "Tische";
-type CheckinView = "day" | "week" | "month";
 
 interface Booking {
   id: string;
@@ -46,6 +52,16 @@ interface Booking {
 interface TicketAttachment {
   name: string;
   dataUrl: string;
+  type?: string;
+  size?: number;
+}
+
+interface TicketComment {
+  id: string;
+  message: string;
+  createdAt: string;
+  author: string;
+  kind?: "comment" | "system";
 }
 
 interface ServiceTicket {
@@ -56,6 +72,12 @@ interface ServiceTicket {
   assignee: string;
   attachments: TicketAttachment[];
   createdAt: string;
+  updatedAt?: string;
+  additionalInfo?: string;
+  comments?: TicketComment[];
+  closedAt?: string;
+  closedByTeam?: string;
+  reopenedAt?: string;
   status: "Offen" | "In Bearbeitung" | "Erledigt";
 }
 
@@ -117,9 +139,11 @@ const overviewFilterOptions: Array<{ value: ServiceOverviewFilter; label: string
 ];
 
 const today = new Date().toISOString().slice(0, 10);
+const maxTicketAttachments = 10;
+const ticketAttachmentAccept = "image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.odt,.ods,.zip";
 
 export function DienstleistungenPage() {
-  const [section, setSection] = useState<ServiceSection | null>(null);
+  const [section, setSection] = useState<ServicePageSection | null>(null);
   const [bookingMode, setBookingMode] = useState<BookingMode | null>(null);
   const [mealMode, setMealMode] = useState<MealMode | null>(null);
   const [bookings, setBookings] = useState<Booking[]>(() => readStored(bookingsKey, []));
@@ -131,24 +155,8 @@ export function DienstleistungenPage() {
   const [ticketForm, setTicketForm] = useState({ category: "IT" as ServiceTicket["category"], title: "", message: "", assignee: "" });
   const [ticketAttachments, setTicketAttachments] = useState<TicketAttachment[]>([]);
   const [checkinForm, setCheckinForm] = useState({ date: today, people: "1", note: "" });
-  const [checkinView, setCheckinView] = useState<CheckinView>("week");
 
-  const visibleCheckins = useMemo(() => {
-    const reference = new Date(`${checkinForm.date}T12:00:00`);
-    return checkins.filter((checkin) => {
-      const date = new Date(`${checkin.date}T12:00:00`);
-      if (checkinView === "day") return checkin.date === checkinForm.date;
-      if (checkinView === "month") return date.getFullYear() === reference.getFullYear() && date.getMonth() === reference.getMonth();
-      const referenceDay = (reference.getDay() + 6) % 7;
-      const start = new Date(reference);
-      start.setDate(reference.getDate() - referenceDay);
-      const end = new Date(start);
-      end.setDate(start.getDate() + 7);
-      return date >= start && date < end;
-    }).sort((left, right) => left.date.localeCompare(right.date));
-  }, [checkins, checkinForm.date, checkinView]);
-
-  const selectSection = (next: ServiceSection) => {
+  const selectSection = (next: ServicePageSection) => {
     setSection(next);
     setBookingMode(null);
     setMealMode(null);
@@ -181,9 +189,21 @@ export function DienstleistungenPage() {
 
   const handleTicketFiles = async (files: FileList | null) => {
     if (!files) return;
-    const selected = Array.from(files).slice(0, 5);
-    const attachments = await Promise.all(selected.map(async (file) => ({ name: file.name, dataUrl: await readFileAsDataUrl(file) })));
-    setTicketAttachments(attachments);
+    const availableSlots = maxTicketAttachments - ticketAttachments.length;
+    if (availableSlots <= 0) {
+      setMessage(`Es können höchstens ${maxTicketAttachments} Dateien angehängt werden.`);
+      setMessageType("error");
+      return;
+    }
+    const { attachments, errors } = await prepareTicketAttachments(files, availableSlots);
+    if (attachments.length) setTicketAttachments((current) => [...current, ...attachments]);
+    if (errors.length) {
+      setMessage(errors.join(" "));
+      setMessageType("error");
+    } else if (attachments.length) {
+      setMessage(`${attachments.length} Datei(en) wurden zum Ticket hinzugefügt.`);
+      setMessageType("info");
+    }
   };
 
   const saveTicket = (event: FormEvent) => {
@@ -196,6 +216,14 @@ export function DienstleistungenPage() {
     setMessageType("success");
     setTicketForm({ category: ticketForm.category, title: "", message: "", assignee: "" });
     setTicketAttachments([]);
+  };
+
+  const updateTicket = (updatedTicket: ServiceTicket) => {
+    setTickets((current) => {
+      const next = current.map((ticket) => ticket.id === updatedTicket.id ? updatedTicket : ticket);
+      writeStored(ticketsKey, next);
+      return next;
+    });
   };
 
   const saveCheckin = (event: FormEvent) => {
@@ -226,8 +254,9 @@ export function DienstleistungenPage() {
             <ServiceAction variant="booking" icon={<CalendarDays size={27} />} title="Buchungen" description="Räume, Fahrzeuge, Technik, Ausstattung und Outdoor-Material reservieren." onClick={() => selectSection("bookings")} />
             <ServiceAction variant="ticket" icon={<Ticket size={27} />} title="Service anfordern" description="Tickets an IT, Hauswirtschaft oder Haustechnik senden." onClick={() => selectSection("tickets")} />
             <ServiceAction variant="meal" icon={<Utensils size={27} />} title="Mahlzeiten" description="Speiseplan ansehen und Mahlzeiten für eine oder mehrere Personen reservieren." onClick={() => selectSection("meals")} />
+            <ServiceAction variant="open-tickets" icon={<ClipboardList size={27} />} title="Offene Tickets" description={`${tickets.filter((ticket) => ticket.status !== "Erledigt").length} offene Tickets in einer detaillierten Liste ansehen.`} onClick={() => selectSection("open-tickets")} />
           </section>
-          <ServicesOverview bookings={bookings} tickets={tickets} checkins={checkins} onOpen={selectSection} />
+          <ServicesOverview bookings={bookings} tickets={tickets} checkins={checkins} onOpen={selectSection} onUpdateTicket={updateTicket} />
         </>
       )}
 
@@ -264,18 +293,21 @@ export function DienstleistungenPage() {
 
       {section === "tickets" && (
         <section className="dienstleistung-panel">
-          <PanelHeading icon={<Ticket size={22} />} title="Service anfordern" description="Ein Ticket mit Beschreibung, Zuständigkeit und Fotos eröffnen." onClose={closeSection} />
+          <PanelHeading icon={<Ticket size={22} />} title="Service anfordern" description="Ein Ticket mit Beschreibung, Zuständigkeit und Anhängen eröffnen." onClose={closeSection} />
           <form className="dienstleistung-form" onSubmit={saveTicket}>
             <label className="field"><span>Bereich *</span><select value={ticketForm.category} onChange={(event) => setTicketForm({ ...ticketForm, category: event.target.value as ServiceTicket["category"] })}><option>IT</option><option>Hauswirtschaft</option><option>Haustechnik</option></select></label>
             <label className="field"><span>Zuständig an</span><input value={ticketForm.assignee} onChange={(event) => setTicketForm({ ...ticketForm, assignee: event.target.value })} placeholder="Name oder Team" /></label>
             <label className="field wide"><span>Titel *</span><input value={ticketForm.title} onChange={(event) => setTicketForm({ ...ticketForm, title: event.target.value })} required placeholder="Kurze Beschreibung des Anliegens" /></label>
             <label className="field wide"><span>Nachricht *</span><textarea rows={6} value={ticketForm.message} onChange={(event) => setTicketForm({ ...ticketForm, message: event.target.value })} required placeholder="Was ist passiert, wo und wann?" /></label>
-            <label className="service-attachment-input"><Paperclip size={19} /><span>Fotos anhängen (max. 5)</span><input type="file" accept="image/*" multiple onChange={(event) => void handleTicketFiles(event.target.files)} /></label>
-            {ticketAttachments.length > 0 && <div className="service-attachments">{ticketAttachments.map((file) => <span key={file.name}><FileText size={16} /> {file.name}</span>)}</div>}
+            <label className="service-attachment-input"><Paperclip size={19} /><span>Bilder oder Dokumente anhängen (max. {maxTicketAttachments}, je 2 MB)</span><input type="file" accept={ticketAttachmentAccept} multiple onChange={(event) => { void handleTicketFiles(event.target.files); event.target.value = ""; }} /></label>
+            {ticketAttachments.length > 0 && <div className="service-attachments">{ticketAttachments.map((file, index) => <span key={`${file.name}-${index}`}><FileText size={16} /> {file.name}<button className="attachment-remove" type="button" title={`${file.name} entfernen`} aria-label={`${file.name} entfernen`} onClick={() => setTicketAttachments((current) => current.filter((_, attachmentIndex) => attachmentIndex !== index))}><X size={14} /></button></span>)}</div>}
             <div className="button-row"><button className="primary" type="submit"><Send size={19} /> Ticket öffnen</button></div>
           </form>
-          <TicketList tickets={tickets} />
         </section>
+      )}
+
+      {section === "open-tickets" && (
+        <OpenTicketsWorkspace tickets={tickets} onBack={closeSection} onUpdateTicket={updateTicket} onCreateTicket={() => selectSection("tickets")} />
       )}
 
       {section === "meals" && (
@@ -291,16 +323,13 @@ export function DienstleistungenPage() {
             <WeeklyMenu referenceDate={checkinForm.date} />
           </section>}
           {mealMode === "reservation" && <section className="dienstleistung-panel">
-            <PanelHeading icon={<CheckCircle2 size={22} />} title="Mahlzeit reservieren" description="Reservierungen für den gewünschten Zeitraum verwalten." onClose={() => setMealMode(null)} />
-            <div className="checkin-toolbar"><div className="checkin-view-buttons">{(["day", "week", "month"] as CheckinView[]).map((view) => <button key={view} className={checkinView === view ? "active" : ""} type="button" onClick={() => setCheckinView(view)}>{view === "day" ? "Tag" : view === "week" ? "Woche" : "Monat"}</button>)}</div></div>
+            <PanelHeading icon={<CheckCircle2 size={22} />} title="Mahlzeit reservieren" description="Eine neue Mahlzeit für das gewünschte Datum reservieren." onClose={() => setMealMode(null)} />
             <form className="dienstleistung-form checkin-form" onSubmit={saveCheckin}>
               <label className="field"><span>Datum *</span><input type="date" value={checkinForm.date} onChange={(event) => setCheckinForm({ ...checkinForm, date: event.target.value })} required /></label>
               <label className="field"><span>Personen *</span><input type="number" min="1" max="500" value={checkinForm.people} onChange={(event) => setCheckinForm({ ...checkinForm, people: event.target.value })} required /></label>
               <label className="field wide"><span>Hinweis / Ernährungswunsch</span><input value={checkinForm.note} onChange={(event) => setCheckinForm({ ...checkinForm, note: event.target.value })} placeholder="Optional" /></label>
               <div className="button-row"><button className="primary" type="submit"><CheckCircle2 size={19} /> Mahlzeit reservieren</button></div>
             </form>
-            <div className="checkin-list-heading"><h3>Reservierungen</h3><span>{visibleCheckins.length} im gewählten Zeitraum</span></div>
-            {visibleCheckins.length === 0 ? <p className="dienstleistung-empty">Noch keine Mahlzeiten für diesen Zeitraum reserviert.</p> : <div className="checkin-list">{visibleCheckins.map((checkin) => <article key={checkin.id}><span><strong>{formatDate(checkin.date)}</strong><small>{checkin.people} {checkin.people === 1 ? "Person" : "Personen"}</small></span><span>{checkin.note || "Kein Hinweis"}</span></article>)}</div>}
           </section>}
         </div>
       )}
@@ -308,11 +337,68 @@ export function DienstleistungenPage() {
   );
 }
 
-function ServicesOverview({ bookings, tickets, checkins, onOpen }: {
+function OpenTicketsWorkspace({ tickets, onBack, onUpdateTicket, onCreateTicket }: {
+  tickets: ServiceTicket[];
+  onBack: () => void;
+  onUpdateTicket: (ticket: ServiceTicket) => void;
+  onCreateTicket: () => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const openTickets = useMemo(() => tickets
+    .filter((ticket) => ticket.status !== "Erledigt")
+    .sort((left, right) => (right.updatedAt ?? right.createdAt).localeCompare(left.updatedAt ?? left.createdAt)), [tickets]);
+  const visibleTickets = useMemo(() => {
+    const query = search.trim().toLocaleLowerCase("de-DE");
+    if (!query) return openTickets;
+    return openTickets.filter((ticket) => [ticket.id, ticket.title, ticket.message, ticket.additionalInfo, ticket.category, ticket.assignee, ticket.status]
+      .join(" ")
+      .toLocaleLowerCase("de-DE")
+      .includes(query));
+  }, [openTickets, search]);
+  const selectedTicket = tickets.find((ticket) => ticket.id === selectedId) ?? null;
+
+  return <div className="dienstleistung-workspace">
+    <WorkspaceHeading icon={<ClipboardList size={24} />} title="Offene Tickets" description="Alle offenen und laufenden Serviceanfragen in einer detaillierten Liste." onBack={onBack} />
+    <section className="dienstleistungen-overview dienstleistungen-open-tickets" aria-labelledby="open-tickets-title">
+      <header className="dienstleistungen-overview-heading">
+        <div className="dienstleistungen-overview-title">
+          <span><Ticket size={24} /></span>
+          <div><h3 id="open-tickets-title">Offene Service-Tickets</h3><p>Tickets mit dem Status „Offen“ oder „In Bearbeitung“.</p></div>
+        </div>
+        <div className="dienstleistungen-overview-totals"><span><strong>{openTickets.length}</strong> offen</span></div>
+      </header>
+      <div className="dienstleistungen-overview-toolbar dienstleistungen-open-tickets-toolbar">
+        <label className="dienstleistungen-overview-search"><Search size={18} aria-hidden="true" /><span className="sr-only">Offene Tickets suchen</span><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Offene Tickets suchen …" /></label>
+        <button type="button" onClick={onCreateTicket}><Ticket size={18} /> Neues Ticket</button>
+      </div>
+      <div className="dienstleistungen-overview-table-wrap">
+        <table className="dienstleistungen-overview-table dienstleistungen-open-tickets-table">
+          <thead><tr><th>Ticket</th><th>Bereich</th><th>Zuständig</th><th>Status</th><th>Aktualisiert</th><th><span className="sr-only">Details</span></th></tr></thead>
+          <tbody>
+            {visibleTickets.map((ticket) => <tr key={ticket.id} tabIndex={0} onClick={() => setSelectedId(ticket.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedId(ticket.id); } }}>
+              <td><div className="dienstleistungen-record-primary tickets"><span><Ticket size={19} /></span><span><strong>{ticket.title}</strong><small>{ticket.message}</small></span></div></td>
+              <td>{ticket.category}</td>
+              <td>{ticket.assignee || "Nicht zugewiesen"}</td>
+              <td><span className={`dienstleistungen-status ${serviceStatusTone(ticket.status)}`}>{ticket.status}</span></td>
+              <td>{formatDateTime(ticket.updatedAt ?? ticket.createdAt)}</td>
+              <td><button className="icon-only" type="button" title="Ticket öffnen" aria-label={`${ticket.title} öffnen`} onClick={() => setSelectedId(ticket.id)}><ArrowRight size={18} /></button></td>
+            </tr>)}
+            {visibleTickets.length === 0 ? <tr><td className="dienstleistungen-overview-empty" colSpan={6}>{openTickets.length === 0 ? "Zurzeit sind keine Tickets offen." : "Keine offenen Tickets entsprechen der Suche."}</td></tr> : null}
+          </tbody>
+        </table>
+      </div>
+      {selectedTicket ? <TicketRecordDialog ticket={selectedTicket} onClose={() => setSelectedId(null)} onUpdate={onUpdateTicket} onOpenSection={() => { setSelectedId(null); onCreateTicket(); }} /> : null}
+    </section>
+  </div>;
+}
+
+function ServicesOverview({ bookings, tickets, checkins, onOpen, onUpdateTicket }: {
   bookings: Booking[];
   tickets: ServiceTicket[];
   checkins: MealCheckin[];
   onOpen: (section: ServiceSection) => void;
+  onUpdateTicket: (ticket: ServiceTicket) => void;
 }) {
   const [filter, setFilter] = useState<ServiceOverviewFilter>("all");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -368,13 +454,22 @@ function ServicesOverview({ bookings, tickets, checkins, onOpen }: {
       scheduled: formatDateTime(ticket.createdAt),
       status: ticket.status,
       createdAt: ticket.createdAt,
-      searchText: [ticket.id, ticket.title, ticket.category, ticket.assignee, ticket.message, ticket.status].join(" "),
+      searchText: [
+        ticket.id,
+        ticket.title,
+        ticket.category,
+        ticket.assignee,
+        ticket.message,
+        ticket.additionalInfo,
+        ...(ticket.comments ?? []).map((entry) => entry.message),
+        ticket.status
+      ].join(" "),
       details: [
         { label: "Ticketnummer", value: ticket.id },
         { label: "Bereich", value: ticket.category },
         { label: "Zuständig", value: ticket.assignee || "Noch nicht zugewiesen" },
         { label: "Nachricht", value: ticket.message },
-        { label: "Anhänge", value: ticket.attachments.length ? `${ticket.attachments.length} Datei(en)` : "Keine Anhänge" },
+        { label: "Anhänge", value: (ticket.attachments ?? []).length ? `${ticket.attachments.length} Datei(en)` : "Keine Anhänge" },
         { label: "Erstellt", value: formatDateTime(ticket.createdAt) }
       ]
     }));
@@ -416,6 +511,9 @@ function ServicesOverview({ bookings, tickets, checkins, onOpen }: {
     });
   }, [filter, records, search, statusFilter]);
   const selectedRecord = records.find((record) => record.key === selectedKey) ?? null;
+  const selectedTicket = selectedRecord?.kind === "tickets"
+    ? tickets.find((ticket) => ticket.id === selectedRecord.id) ?? null
+    : null;
   const activeCount = records.filter((record) => !["Abgeschlossen", "Abgelehnt", "Erledigt"].includes(record.status)).length;
 
   useEffect(() => {
@@ -461,7 +559,7 @@ function ServicesOverview({ bookings, tickets, checkins, onOpen }: {
       </table>
     </div>
 
-    {selectedRecord ? <div className="modal-backdrop dienstleistungen-record-modal" role="dialog" aria-modal="true" aria-labelledby="dienstleistungen-record-modal-title" onMouseDown={() => setSelectedKey(null)}>
+    {selectedTicket ? <TicketRecordDialog ticket={selectedTicket} onClose={() => setSelectedKey(null)} onUpdate={onUpdateTicket} onOpenSection={() => { setSelectedKey(null); onOpen("tickets"); }} /> : selectedRecord ? <div className="modal-backdrop dienstleistungen-record-modal" role="dialog" aria-modal="true" aria-labelledby="dienstleistungen-record-modal-title" onMouseDown={() => setSelectedKey(null)}>
       <article className="modal-card dienstleistungen-record-details" onMouseDown={(event) => event.stopPropagation()}>
         <header><div className="dienstleistungen-overview-title"><span><ServiceRecordIcon kind={selectedRecord.kind} /></span><div><small>{serviceKindLabel(selectedRecord.kind)} · {selectedRecord.id}</small><h4 id="dienstleistungen-record-modal-title">{selectedRecord.title}</h4></div></div><button className="icon-only" type="button" title="Details schließen" aria-label="Details schließen" autoFocus onClick={() => setSelectedKey(null)}><X size={19} /></button></header>
         <div className="dienstleistungen-record-detail-grid">{selectedRecord.details.map((detail) => <div key={detail.label}><span>{detail.label}</span><strong>{detail.value}</strong></div>)}</div>
@@ -469,6 +567,194 @@ function ServicesOverview({ bookings, tickets, checkins, onOpen }: {
       </article>
     </div> : null}
   </section>;
+}
+
+interface TicketRecordDialogProps {
+  ticket: ServiceTicket;
+  onClose: () => void;
+  onUpdate: (ticket: ServiceTicket) => void;
+  onOpenSection: () => void;
+}
+
+function TicketRecordDialog({ ticket, onClose, onUpdate, onOpenSection }: TicketRecordDialogProps) {
+  const [editing, setEditing] = useState(false);
+  const [comment, setComment] = useState("");
+  const [attachmentMessage, setAttachmentMessage] = useState("");
+  const [draft, setDraft] = useState(() => ticketDraft(ticket));
+  const comments = ticket.comments ?? [];
+  const attachments = ticket.attachments ?? [];
+  const closed = ticket.status === "Erledigt";
+
+  useEffect(() => {
+    setEditing(false);
+    setComment("");
+    setAttachmentMessage("");
+    setDraft(ticketDraft(ticket));
+  }, [ticket.id]);
+
+  const cancelEditing = () => {
+    setDraft(ticketDraft(ticket));
+    setEditing(false);
+  };
+
+  const saveChanges = (event: FormEvent) => {
+    event.preventDefault();
+    const title = draft.title.trim();
+    const message = draft.message.trim();
+    if (!title || !message) return;
+    const updated: ServiceTicket = {
+      ...ticket,
+      ...draft,
+      title,
+      message,
+      assignee: draft.assignee.trim(),
+      additionalInfo: draft.additionalInfo.trim(),
+      updatedAt: new Date().toISOString()
+    };
+    onUpdate(updated);
+    setDraft(ticketDraft(updated));
+    setEditing(false);
+  };
+
+  const addComment = (event: FormEvent) => {
+    event.preventDefault();
+    const message = comment.trim();
+    if (!message) return;
+    const now = new Date().toISOString();
+    onUpdate({
+      ...ticket,
+      updatedAt: now,
+      comments: [...comments, { id: crypto.randomUUID(), message, createdAt: now, author: "Benutzer", kind: "comment" }]
+    });
+    setComment("");
+  };
+
+  const addAttachments = async (files: FileList | null) => {
+    if (!files) return;
+    const availableSlots = maxTicketAttachments - attachments.length;
+    if (availableSlots <= 0) {
+      setAttachmentMessage(`Es können höchstens ${maxTicketAttachments} Dateien angehängt werden.`);
+      return;
+    }
+    const result = await prepareTicketAttachments(files, availableSlots);
+    if (result.attachments.length) {
+      onUpdate({
+        ...ticket,
+        attachments: [...attachments, ...result.attachments],
+        updatedAt: new Date().toISOString()
+      });
+    }
+    setAttachmentMessage(result.errors.length
+      ? result.errors.join(" ")
+      : `${result.attachments.length} Datei(en) wurden angehängt.`);
+  };
+
+  const removeAttachment = (index: number) => {
+    const attachment = attachments[index];
+    onUpdate({
+      ...ticket,
+      attachments: attachments.filter((_, attachmentIndex) => attachmentIndex !== index),
+      updatedAt: new Date().toISOString()
+    });
+    setAttachmentMessage(`${attachment.name} wurde entfernt.`);
+  };
+
+  const changeTicketState = () => {
+    const now = new Date().toISOString();
+    const responsibleTeam = ticket.closedByTeam || ticket.assignee.trim() || ticket.category;
+    const systemMessage = closed
+      ? `Ticket wurde erneut geöffnet und an ${responsibleTeam} zurückgegeben.`
+      : `Ticket wurde geschlossen. Zuständiges Team: ${responsibleTeam}.`;
+    onUpdate({
+      ...ticket,
+      status: closed ? "Offen" : "Erledigt",
+      assignee: responsibleTeam,
+      closedAt: closed ? ticket.closedAt : now,
+      closedByTeam: responsibleTeam,
+      reopenedAt: closed ? now : ticket.reopenedAt,
+      updatedAt: now,
+      comments: [...comments, { id: crypto.randomUUID(), message: systemMessage, createdAt: now, author: "System", kind: "system" }]
+    });
+  };
+
+  return <div className="modal-backdrop dienstleistungen-record-modal" role="dialog" aria-modal="true" aria-labelledby="dienstleistungen-ticket-modal-title" onMouseDown={onClose}>
+    <article className="modal-card dienstleistungen-record-details dienstleistungen-ticket-dialog" onMouseDown={(event) => event.stopPropagation()}>
+      <header className="dienstleistungen-ticket-topbar">
+        <div className="dienstleistungen-ticket-context"><span><Ticket size={18} /></span><strong>{ticket.category}</strong><small>{ticket.id}</small></div>
+        <div><span className={`dienstleistungen-status ${serviceStatusTone(ticket.status)}`}>{ticket.status}</span><button className="icon-only" type="button" title="Details schließen" aria-label="Ticketdetails schließen" autoFocus onClick={onClose}><X size={19} /></button></div>
+      </header>
+
+      <div className="dienstleistungen-ticket-workspace">
+        <main className="dienstleistungen-ticket-main">
+          <section className="dienstleistungen-ticket-hero">
+            <span className="dienstleistungen-ticket-marker" aria-hidden="true" />
+            <div>
+              <h3 id="dienstleistungen-ticket-modal-title">{ticket.title}</h3>
+              <div className="dienstleistungen-ticket-meta"><span><Building2 size={16} /> {ticket.assignee || "Noch nicht zugewiesen"}</span><span><Clock3 size={16} /> Erstellt {formatDateTime(ticket.createdAt)}</span>{ticket.updatedAt && <span>Aktualisiert {formatDateTime(ticket.updatedAt)}</span>}</div>
+              <div className="dienstleistungen-ticket-quick-actions">
+                <button type="button" onClick={() => editing ? cancelEditing() : setEditing(true)}>{editing ? <X size={17} /> : <Edit3 size={17} />} {editing ? "Bearbeitung beenden" : "Bearbeiten"}</button>
+                <button className={closed ? "" : "danger-button"} type="button" onClick={changeTicketState}>{closed ? <RotateCcw size={17} /> : <CheckCircle2 size={17} />}{closed ? ` Für ${ticket.closedByTeam || ticket.assignee || ticket.category} wieder öffnen` : "Ticket schließen"}</button>
+                <button type="button" onClick={onOpenSection}>Ticketbereich <ArrowRight size={17} /></button>
+              </div>
+            </div>
+          </section>
+
+          {editing ? <form className="dienstleistungen-ticket-edit" onSubmit={saveChanges}>
+            <div className="dienstleistungen-ticket-edit-grid">
+              <label className="field"><span>Bereich *</span><select value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value as ServiceTicket["category"] })}><option>IT</option><option>Hauswirtschaft</option><option>Haustechnik</option></select></label>
+              <label className="field"><span>Zuständig an</span><input value={draft.assignee} onChange={(event) => setDraft({ ...draft, assignee: event.target.value })} placeholder="Name oder Team" /></label>
+              <label className="field wide"><span>Titel *</span><input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} required /></label>
+              <label className="field wide"><span>Beschreibung *</span><textarea rows={5} value={draft.message} onChange={(event) => setDraft({ ...draft, message: event.target.value })} required /></label>
+              <label className="field wide"><span>Weitere Informationen</span><textarea rows={4} value={draft.additionalInfo} onChange={(event) => setDraft({ ...draft, additionalInfo: event.target.value })} placeholder="Ergänzungen, neue Beobachtungen oder wichtige Details" /></label>
+            </div>
+            <div className="button-row"><button type="button" onClick={cancelEditing}>Abbrechen</button><button className="primary" type="submit"><Save size={18} /> Änderungen speichern</button></div>
+          </form> : <section className="dienstleistungen-ticket-content-card" aria-labelledby="dienstleistungen-ticket-description-title">
+            <header><div><FileText size={19} /><h5 id="dienstleistungen-ticket-description-title">Beschreibung</h5></div><button type="button" onClick={() => setEditing(true)}><Edit3 size={16} /> Bearbeiten</button></header>
+            <p>{ticket.message}</p>
+            <div className="dienstleistungen-ticket-extra"><span>Weitere Informationen</span><p>{ticket.additionalInfo || "Noch keine zusätzlichen Informationen eingetragen."}</p></div>
+          </section>}
+
+          <section className="dienstleistungen-ticket-attachments" aria-labelledby="dienstleistungen-ticket-attachments-title">
+            <div className="dienstleistungen-ticket-attachments-heading">
+              <div><Paperclip size={19} /><h5 id="dienstleistungen-ticket-attachments-title">Anhänge</h5><span>{attachments.length}</span></div>
+              <label className="service-attachment-input compact"><span>Dateien hinzufügen</span><input type="file" accept={ticketAttachmentAccept} multiple onChange={(event) => { const input = event.currentTarget; void addAttachments(input.files).finally(() => { input.value = ""; }); }} /></label>
+            </div>
+            {attachmentMessage && <p className="dienstleistungen-ticket-attachment-message" role="status">{attachmentMessage}</p>}
+            {attachments.length > 0 ? <div className="dienstleistungen-ticket-attachment-list">
+              {attachments.map((attachment, index) => <article key={`${attachment.name}-${index}`}>
+                <span className="dienstleistungen-ticket-attachment-preview">{isImageAttachment(attachment) ? <img src={attachment.dataUrl} alt="" /> : <FileText size={21} />}</span>
+                <span><strong>{attachment.name}</strong><small>{attachment.size ? formatFileSize(attachment.size) : "Gespeicherte Datei"}</small></span>
+                <a className="icon-only" href={attachment.dataUrl} download={attachment.name} title={`${attachment.name} herunterladen`} aria-label={`${attachment.name} herunterladen`}><Download size={17} /></a>
+                <button className="icon-only danger-button" type="button" title={`${attachment.name} entfernen`} aria-label={`${attachment.name} entfernen`} onClick={() => removeAttachment(index)}><Trash2 size={17} /></button>
+              </article>)}
+            </div> : <p className="dienstleistungen-ticket-no-attachments">Noch keine Bilder oder Dokumente angehängt.</p>}
+          </section>
+        </main>
+
+        <aside className="dienstleistungen-ticket-activity" aria-labelledby="dienstleistungen-ticket-comments-title">
+          <div className="dienstleistungen-ticket-comments-heading"><div><MessageSquare size={19} /><h5 id="dienstleistungen-ticket-comments-title">Kommentare und Aktivität</h5></div><span>{comments.length}</span></div>
+          <form className="dienstleistungen-ticket-comment-form" onSubmit={addComment}>
+            <label className="field"><span>Kommentar hinzufügen</span><textarea rows={3} value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Neue Information oder Rückfrage schreiben …" /></label>
+            <button className="primary" type="submit" disabled={!comment.trim()}><Send size={18} /> Kommentar senden</button>
+          </form>
+          <div className="dienstleistungen-ticket-comment-list">
+            {comments.slice().reverse().map((entry) => <article className={entry.kind === "system" ? "system" : ""} key={entry.id}><span className="dienstleistungen-ticket-comment-avatar">{entry.kind === "system" ? "S" : entry.author.slice(0, 1).toUpperCase()}</span><div><header><strong>{entry.author}</strong><time>{formatDateTime(entry.createdAt)}</time></header><p>{entry.message}</p></div></article>)}
+            <article className="system created"><span className="dienstleistungen-ticket-comment-avatar"><Ticket size={15} /></span><div><header><strong>Ticket erstellt</strong><time>{formatDateTime(ticket.createdAt)}</time></header><p>{ticket.assignee ? `An ${ticket.assignee} gesendet.` : `Im Bereich ${ticket.category} angelegt.`}</p></div></article>
+          </div>
+        </aside>
+      </div>
+    </article>
+  </div>;
+}
+
+function ticketDraft(ticket: ServiceTicket) {
+  return {
+    category: ticket.category,
+    title: ticket.title,
+    message: ticket.message,
+    assignee: ticket.assignee,
+    additionalInfo: ticket.additionalInfo ?? ""
+  };
 }
 
 function ServiceRecordIcon({ kind }: { kind: ServiceSection }) {
@@ -491,8 +777,8 @@ function serviceStatusTone(status: string) {
   return "open";
 }
 
-function ServiceAction({ variant, icon, title, description, onClick }: { variant: "booking" | "ticket" | "meal"; icon: React.ReactNode; title: string; description: string; onClick: () => void }) {
-  return <button className={`dienstleistung-action dienstleistung-action-${variant}`} type="button" onClick={onClick}><span className="dienstleistung-action-icon">{icon}</span><strong>{title}</strong><small>{description}</small><span className="dienstleistung-action-cta">Öffnen <ArrowRight size={18} /></span></button>;
+function ServiceAction({ variant, icon, title, description, onClick }: { variant: "booking" | "ticket" | "meal" | "open-tickets"; icon: React.ReactNode; title: string; description: string; onClick: () => void }) {
+  return <button className={`dienstleistung-action dienstleistung-action-${variant}`} type="button" onClick={onClick}><span className="dienstleistung-action-icon">{icon}</span><strong>{title}</strong><small>{description}</small><span className="dienstleistung-action-cta"><span className="sr-only">Öffnen</span><ArrowRight size={19} /></span></button>;
 }
 
 function WorkspaceHeading({ icon, title, description, onBack }: { icon: React.ReactNode; title: string; description: string; onBack: () => void }) {
@@ -510,11 +796,6 @@ function PanelHeading({ icon, title, description, onClose }: { icon: React.React
 function BookingList({ bookings }: { bookings: Booking[] }) {
   if (bookings.length === 0) return <p className="dienstleistung-empty">Noch keine Buchungsanfragen gespeichert.</p>;
   return <div className="dienstleistung-record-list">{bookings.slice(0, 8).map((booking) => <article key={booking.id}><span><strong>{booking.resource}</strong><small>{booking.details || "Kein konkreter Gegenstand"}</small></span><span><CalendarDays size={16} /> {formatDate(booking.date)} · {booking.from}–{booking.to}</span><em>{booking.status || "Offen"}</em></article>)}</div>;
-}
-
-function TicketList({ tickets }: { tickets: ServiceTicket[] }) {
-  if (tickets.length === 0) return <p className="dienstleistung-empty">Noch keine Tickets geöffnet.</p>;
-  return <div className="dienstleistung-record-list">{tickets.slice(0, 8).map((ticket) => <article key={ticket.id}><span><strong>{ticket.title}</strong><small>{ticket.category}{ticket.assignee ? ` · ${ticket.assignee}` : ""}</small></span><span><Clock3 size={16} /> {formatDateTime(ticket.createdAt)}</span><em>{ticket.status}</em></article>)}</div>;
 }
 
 function WeeklyMenu({ referenceDate }: { referenceDate: string }) {
@@ -536,6 +817,34 @@ function readStored<T>(key: string, fallback: T): T {
 
 function writeStored<T>(key: string, value: T) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* local storage may be unavailable */ }
+}
+
+async function prepareTicketAttachments(files: FileList, availableSlots: number) {
+  const selected = Array.from(files).slice(0, Math.max(0, availableSlots));
+  const errors: string[] = [];
+  if (files.length > availableSlots) errors.push(`Es wurden nur ${availableSlots} Datei(en) übernommen.`);
+  const results = await Promise.allSettled(selected.map(async (file): Promise<TicketAttachment> => ({
+    name: file.name,
+    dataUrl: await readFileAsDataUrl(file),
+    type: file.type,
+    size: file.size
+  })));
+  const attachments: TicketAttachment[] = [];
+  results.forEach((result) => {
+    if (result.status === "fulfilled") attachments.push(result.value);
+    else errors.push(result.reason instanceof Error ? result.reason.message : "Eine Datei konnte nicht gelesen werden.");
+  });
+  return { attachments, errors };
+}
+
+function isImageAttachment(attachment: TicketAttachment) {
+  return attachment.type?.startsWith("image/") || attachment.dataUrl.startsWith("data:image/");
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes < 1_000) return `${bytes} B`;
+  if (bytes < 1_000_000) return `${Math.round(bytes / 1_000)} KB`;
+  return `${(bytes / 1_000_000).toFixed(1)} MB`;
 }
 
 function readFileAsDataUrl(file: File): Promise<string> {

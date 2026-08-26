@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, ChevronsUpDown, Copy, Edit, GripVertical, Mail, Printer, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, ChevronsUpDown, Copy, Edit, GripVertical, Mail, Trash2 } from "lucide-react";
 import type { PointerEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
 import type { Contact } from "../types/contact";
@@ -11,7 +11,6 @@ interface ContactTableProps {
   onDelete: (contact: Contact) => void;
   onCopyEmail: (email: string) => void;
   onEmail: (email: string) => void;
-  onPrint: () => void;
   selectionMode: boolean;
   selectedContactIds: Set<number>;
   onToggleSelection: (contact: Contact) => void;
@@ -31,7 +30,6 @@ export function ContactTable({
   onDelete,
   onCopyEmail,
   onEmail,
-  onPrint,
   selectionMode,
   selectedContactIds,
   onToggleSelection,
@@ -114,9 +112,6 @@ export function ContactTable({
     <section className="table-panel contacts-list-panel">
       <div className="panel-heading">
         <h2>{t.contacts} <span className="contact-count">{contacts.length}</span></h2>
-        <button type="button" onClick={onPrint}>
-          <Printer size={22} /> Drucken
-        </button>
       </div>
       <div className="table-wrap">
         <table className={dragEnabled ? "contacts-table" : "contacts-table drag-disabled"}>
