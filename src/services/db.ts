@@ -309,8 +309,8 @@ export function importOutlookStore(path: string): Promise<{ contacts: ContactInp
   return invoke("import_outlook_store", { path });
 }
 
-export function previewOutlookClassicContacts(): Promise<OutlookContactImportPreview> {
-  return invoke("preview_outlook_classic_contacts");
+export function previewOutlookClassicContacts(cleanImportedNames = true): Promise<OutlookContactImportPreview> {
+  return invoke("preview_outlook_classic_contacts", { cleanImportedNames });
 }
 
 export function importSelectedOutlookClassicContacts(request: OutlookContactImportRequest): Promise<OutlookContactImportResult> {
@@ -329,8 +329,8 @@ export function previewOutlookClassicAppointments(): Promise<OutlookCalendarPrev
   return invoke("preview_outlook_classic_appointments");
 }
 
-export function importThunderbirdContactsOnce(): Promise<ThunderbirdContactImportResult> {
-  return invoke("import_thunderbird_contacts_once");
+export function importThunderbirdContactsOnce(cleanImportedNames = true): Promise<ThunderbirdContactImportResult> {
+  return invoke("import_thunderbird_contacts_once", { cleanImportedNames });
 }
 
 export function importThunderbirdCalendarsOnce(): Promise<ThunderbirdCalendarImportResult> {

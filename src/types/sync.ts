@@ -56,7 +56,7 @@ export const defaultSyncConfig: SyncConfig = {
   selectedCalendarSourceIds: [],
   sourceDirections: {},
   runOnOpen: true,
-  runOnClose: true
+  runOnClose: false
 };
 
 export function parseSyncConfig(raw: string | null): SyncConfig {
@@ -95,7 +95,7 @@ export function parseSyncConfig(raw: string | null): SyncConfig {
         ? parsed.sourceDirections as Record<string, SyncDirection>
         : {},
       runOnOpen: parsed.runOnOpen !== false,
-      runOnClose: parsed.runOnClose !== false
+      runOnClose: Boolean(parsed.runOnClose)
     };
   } catch {
     return defaultSyncConfig;

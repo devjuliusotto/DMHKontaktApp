@@ -1,6 +1,6 @@
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
-import { ArchiveRestore, ShieldCheck } from "lucide-react";
+import { ArchiveRestore, CheckCircle2, Download, Info, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 import { StatusMessage } from "../components/StatusMessage";
 import { t } from "../i18n";
@@ -33,34 +33,38 @@ export function BackupPage() {
   };
 
   return (
-    <div className="page">
+    <div className="page backup-page-clean">
       <header className="page-header">
         <div>
           <h2>{t.backup}</h2>
-          <p>
-            Kontakte, Gruppen, Kalender und Darstellung sichern oder wiederherstellen.
-            Kennwörter und EDV-Übertragungsstatus werden nicht exportiert.
-          </p>
-          <p>
-            Zusätzlich erstellt die App automatisch eine kumulative Sicherung in
-            <code>Dokumente\DMH Kontakte und Kalender\Automatische Sicherung</code>.
-            Diese Sicherung wird während der Nutzung regelmäßig und beim Schließen aktualisiert.
-            Gelöschte Kontakte, Termine und Kennworteinträge bleiben dort erhalten und werden mit
-            „Gelöschtes Element“ gekennzeichnet. Kennwörter werden dabei ausschließlich verschlüsselt
-            gespeichert. Die Wiederherstellung dieser automatischen Sicherung ist aus Sicherheitsgründen
-            nur verdeckt in den Einstellungen und zusammen mit der EDV möglich.
-          </p>
+          <p>Lokale Sicherheitskopien erstellen oder wiederherstellen.</p>
         </div>
       </header>
       <StatusMessage message={message} />
-      <section className="action-panel">
-        <button className="primary large" type="button" onClick={create}>
-          <ShieldCheck size={26} /> {t.createBackup}
-        </button>
-        <button className="large" type="button" onClick={restore}>
-          <ArchiveRestore size={26} /> {t.restoreBackup}
-        </button>
+      <section className="backup-status-card form-panel" title="Die automatische lokale Sicherung ergänzt die spätere Azure-Speicherung und schützt bei Verbindungsproblemen oder versehentlichen Änderungen.">
+        <span className="backup-status-icon"><CheckCircle2 size={23} aria-hidden="true" /></span>
+        <div><strong>Automatische Sicherung aktiv</strong><small>Wird regelmäßig und beim Schließen aktualisiert</small></div>
       </section>
+      <section className="backup-action-grid">
+        <article className="form-panel backup-action-card">
+          <ShieldCheck size={25} aria-hidden="true" />
+          <div><h3>Sicherung erstellen</h3><p>Eine Datei zum Aufbewahren oder Übertragen erstellen.</p></div>
+          <button className="primary" type="button" onClick={create}><Download size={19} /> Erstellen</button>
+        </article>
+        <article className="form-panel backup-action-card">
+          <ArchiveRestore size={25} aria-hidden="true" />
+          <div><h3>Sicherung wiederherstellen</h3><p>Daten aus einer zuvor erstellten Datei laden.</p></div>
+          <button type="button" onClick={restore}><ArchiveRestore size={19} /> Datei wählen</button>
+        </article>
+      </section>
+      <details className="form-panel backup-details">
+        <summary><Info size={18} /> Was wird gesichert?</summary>
+        <div>
+          <p>Die manuelle Datei enthält Kontakte, Gruppen, Kalender und Darstellung. Kennwörter und der EDV-Übertragungsstatus werden nicht exportiert.</p>
+          <p>Die automatische Sicherung liegt unter <code>Dokumente\DMH Kontakte und Kalender\Automatische Sicherung</code>. Kennwörter werden dort ausschließlich verschlüsselt gespeichert.</p>
+          <p>Auch mit SQL Azure bleibt diese lokale Sicherung sinnvoll: Sie schützt bei fehlender Internetverbindung, versehentlichem Löschen und Problemen mit dem Cloud-Dienst.</p>
+        </div>
+      </details>
     </div>
   );
 }

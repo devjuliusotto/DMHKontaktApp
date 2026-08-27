@@ -29,6 +29,7 @@ export function SimpleImportPage() {
   const [messageType, setMessageType] = useState<"success" | "error" | "info">("info");
   const [contactImportDialogOpen, setContactImportDialogOpen] = useState(false);
   const [outlookCalendarPreview, setOutlookCalendarPreview] = useState<OutlookCalendarPreview | null>(null);
+  const [cleanImportedNames, setCleanImportedNames] = useState(true);
 
   const contactsImported = (result: OutlookContactImportResult, source: "classic" | "csv") => {
     setMessageType("success");
@@ -131,7 +132,7 @@ export function SimpleImportPage() {
     setMessageType("info");
     setMessage("Thunderbird-Adressbücher und Listen werden gelesen …");
     try {
-      const result = await importThunderbirdContactsOnce();
+      const result = await importThunderbirdContactsOnce(cleanImportedNames);
       setMessageType(result.found > 0 ? "success" : "info");
       setMessage(
         result.found === 0
@@ -200,6 +201,13 @@ export function SimpleImportPage() {
       </header>
 
       <StatusMessage message={message} type={messageType} />
+
+      <section className="simple-import-cleanup form-panel">
+        <label className="checkbox-row">
+          <input type="checkbox" checked={cleanImportedNames} onChange={(event) => setCleanImportedNames(event.target.checked)} />
+          <span><strong>Importierte Namen automatisch bereinigen</strong><small>E-Mail-Adressen erkennen und Namen wie „max.mustermann@firma.de“ als „Max Mustermann“ anzeigen.</small></span>
+        </label>
+      </section>
 
       <div className="simple-import-source-list">
         <section className="simple-import-source-card">
@@ -327,6 +335,7 @@ export function SimpleImportPage() {
 
       <OutlookContactImportDialog
         open={contactImportDialogOpen}
+        cleanImportedNames={cleanImportedNames}
         onClose={() => setContactImportDialogOpen(false)}
         onImported={contactsImported}
       />

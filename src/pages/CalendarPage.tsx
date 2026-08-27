@@ -5,6 +5,12 @@ import { StatusMessage } from "../components/StatusMessage";
 import type { CalendarEvent } from "../types/calendar";
 import { calendarCategoriesStorageKey, calendarColorOptions, calendarColorStyle, calendarColorValue, calendarStorageKey, calendarTrashStorageKey, defaultCalendarColor, expandCalendarEvents, formatCalendarDate, parseCalendarDate } from "../utils/calendar";
 import { findExactCalendarDuplicateGroups, removeExactCalendarDuplicates } from "../utils/calendarDuplicates";
+import {
+  calendarAutomaticSyncStatusEventName,
+  calendarChangedEventName,
+  calendarStorageUpdatedEventName,
+  type CalendarAutomaticSyncStatus
+} from "../utils/automaticCalendarSync";
 
 const duplicateCleanupBackupKey = "agendakontakte.calendarExactDuplicateCleanupBackup.v1";
 const weekdays = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
@@ -140,6 +146,27 @@ export function CalendarPage() {
       const storedCategories = (JSON.parse(savedCategories) as CalendarCategory[]).map(normalizeCategory).filter((category) => category.name);
       setCategories(storedCategories);
     }
+  }, []);
+
+  useEffect(() => {
+    const reloadStoredEvents = () => {
+      try {
+        const storedEvents = JSON.parse(localStorage.getItem(calendarStorageKey) ?? "[]") as CalendarEvent[];
+        setEvents(storedEvents.map(normalizeEvent));
+      } catch {
+        setMessage("Die von Microsoft 365 empfangenen Kalenderdaten konnten nicht angezeigt werden.");
+      }
+    };
+    const showAutomaticSyncStatus = (event: Event) => {
+      const detail = (event as CustomEvent<CalendarAutomaticSyncStatus>).detail;
+      if (detail?.message) setMessage(detail.message);
+    };
+    window.addEventListener(calendarStorageUpdatedEventName, reloadStoredEvents);
+    window.addEventListener(calendarAutomaticSyncStatusEventName, showAutomaticSyncStatus);
+    return () => {
+      window.removeEventListener(calendarStorageUpdatedEventName, reloadStoredEvents);
+      window.removeEventListener(calendarAutomaticSyncStatusEventName, showAutomaticSyncStatus);
+    };
   }, []);
 
   const displayRange = useMemo(() => {
@@ -307,6 +334,7 @@ export function CalendarPage() {
     if (date) setCursor(startOfDay(date));
     setEditingEvent(null);
     setMessage(editingIsNew ? "Termin wurde erstellt." : "Termin wurde aktualisiert.");
+    window.dispatchEvent(new Event(calendarChangedEventName));
   };
 
   const deleteEvent = (event = editingEvent) => {

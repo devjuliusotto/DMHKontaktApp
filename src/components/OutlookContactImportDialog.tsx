@@ -35,10 +35,12 @@ import type {
   OutlookContactPreviewStatus
 } from "../types/contact";
 import { contactExactContentKey } from "../utils/contactDuplicates";
+import { cleanImportedContactName } from "../utils/contactImportCleanup";
 import { parseCsvBytes } from "../utils/importers";
 
 interface OutlookContactImportDialogProps {
   open: boolean;
+  cleanImportedNames: boolean;
   onClose: () => void;
   onImported: (result: OutlookContactImportResult, source: "classic" | "csv") => void;
 }
@@ -50,7 +52,7 @@ const pageSize = 50;
 const csvSourceId = "new-outlook-csv";
 const csvGroupName = "Neues Outlook";
 
-export function OutlookContactImportDialog({ open: isOpen, onClose, onImported }: OutlookContactImportDialogProps) {
+export function OutlookContactImportDialog({ open: isOpen, cleanImportedNames, onClose, onImported }: OutlookContactImportDialogProps) {
   const [source, setSource] = useState<ImportSource>("choose");
   const [preview, setPreview] = useState<OutlookContactImportPreview | null>(null);
   const [selectedSourceIds, setSelectedSourceIds] = useState<Set<string>>(new Set());
@@ -156,7 +158,7 @@ export function OutlookContactImportDialog({ open: isOpen, onClose, onImported }
     setPreview(null);
     try {
       await waitForNextPaint();
-      const nextPreview = await previewOutlookClassicContacts();
+      const nextPreview = await previewOutlookClassicContacts(cleanImportedNames);
       setPreview(nextPreview);
       setSelectedSourceIds(new Set(nextPreview.sources.map((item) => item.id)));
     } catch (scanError) {
@@ -185,7 +187,10 @@ export function OutlookContactImportDialog({ open: isOpen, onClose, onImported }
       const parsed = parseCsvBytes(bytes);
       const existing = await listContacts();
       const fileName = path.split(/[\\/]/).pop() || "Outlook-Kontakte.csv";
-      const csvPreview = createCsvPreview(parsed.contacts, existing, fileName);
+      const contacts = cleanImportedNames
+        ? parsed.contacts.map(({ selected, ...contact }) => ({ ...cleanImportedContactName(contact), selected }))
+        : parsed.contacts;
+      const csvPreview = createCsvPreview(contacts, existing, fileName);
       csvContacts.current = csvPreview.contactMap;
       setCsvFileName(fileName);
       setPreview(csvPreview.preview);
@@ -226,7 +231,8 @@ export function OutlookContactImportDialog({ open: isOpen, onClose, onImported }
       if (source === "classic") {
         importResult = await importSelectedOutlookClassicContacts({
           selectedSourceIds: Array.from(selectedSourceIds),
-          createSourceGroups
+          createSourceGroups,
+          cleanImportedNames
         });
       } else {
         let groupIds: number[] = [];

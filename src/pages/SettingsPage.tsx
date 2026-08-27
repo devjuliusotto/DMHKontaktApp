@@ -1,12 +1,10 @@
 import { useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { save } from "@tauri-apps/plugin-dialog";
-import { AlertTriangle, ArchiveRestore, CheckCircle2, ChevronDown, Download, Eye, EyeOff, FileText, Mail, RefreshCw, RotateCcw, Search, Send, ShieldCheck, Trash2, X } from "lucide-react";
+import { AlertTriangle, ArchiveRestore, CheckCircle2, ChevronDown, Download, Eye, EyeOff, Mail, RefreshCw, Search, Send, ShieldCheck, Trash2, X } from "lucide-react";
 import { MigrationCaptureDialog } from "../components/MigrationCaptureDialog";
 import { StatusMessage } from "../components/StatusMessage";
 import type { SettingsSection } from "../components/SettingsSubtabs";
 import type { Page } from "../components/Sidebar";
 import {
-  getMigrationDiagnosticLog,
   getAppSetting,
   createAutomaticBackup,
   getBackupData,
@@ -17,12 +15,10 @@ import {
   removeMailAccount,
   restoreAutomaticBackup,
   resetLocalAppData,
-  resetMigrationCaptureStatus,
   restartApp,
   scanOutlookAccounts,
   setAppSetting,
-  testMailConnection,
-  writeExportFile
+  testMailConnection
 } from "../services/db";
 import type { MailAccount, MigrationCaptureResult, MigrationCaptureStatus, OutlookAccountCandidate } from "../types/mail";
 import { addBrowserDataToBackup, restoreBrowserDataFromBackup } from "../utils/backup";
@@ -49,7 +45,7 @@ const settingsSearchItems: SettingsSearchItem[] = [
   { id: "appearance", label: "Erscheinungsbild öffnen", description: "Erscheinungsbild → Darstellung", keywords: "erscheinungsbild thema farbe dunkel hell akzent", page: "appearance", section: "appearance" },
   { id: "import", label: "Import öffnen", description: "Import → Kontakte und Termine", keywords: "import outlook thunderbird kontakte termine", page: "simple-import", section: "import" },
   { id: "sync", label: "Synchronisierungen öffnen", description: "Synchronisierungen → Microsoft 365 und Datenbereiche", keywords: "synchronisierung sync microsoft 365 exchange kontakte kalender verbundene apps", page: "synchronizations", section: "sync" },
-  { id: "advanced", label: "Erweiterte Funktionen öffnen", description: "Erweitert → Import, Export und Microsoft 365", keywords: "erweitert advanced import export microsoft 365", page: "import", section: "advanced" },
+  { id: "advanced", label: "Erweiterte Funktionen öffnen", description: "Erweitert → Import und Export", keywords: "erweitert advanced import export", page: "import", section: "advanced" },
   { id: "trash", label: "Papierkorb öffnen", description: "Papierkorb → Gelöschte Daten", keywords: "papierkorb gelöscht wiederherstellen löschen", page: "trash", section: "trash" },
   { id: "edv", label: "Sicher an EDV senden", description: "Allgemein → Status", keywords: "edv umstellung migration sicher senden", page: "settings", section: "general", targetId: "settings-migration-status" }
 ];
@@ -140,49 +136,7 @@ export function SettingsPage({ section = "general", onNavigate = () => undefined
 
   const migrationFailed = (error: string) => {
     setMessageType("error");
-    setMessage(`EDV-Übertragung fehlgeschlagen: ${error} Exportieren Sie den Diagnosebericht unten und senden Sie ihn an die EDV.`);
-  };
-
-  const exportMigrationDiagnostic = async () => {
-    setBusyAction("export-diagnostic");
-    setMessage("");
-    try {
-      const content = await getMigrationDiagnosticLog();
-      const target = await save({
-        defaultPath: `DMH-EDV-Diagnose-${new Date().toISOString().slice(0, 10)}.log`,
-        filters: [{ name: "Diagnosebericht", extensions: ["log", "txt"] }]
-      });
-      if (!target) return;
-      await writeExportFile(target, content);
-      setMessageType("success");
-      setMessage("Der datenschutzfreundliche EDV-Diagnosebericht wurde gespeichert.");
-    } catch (error) {
-      setMessageType("error");
-      setMessage(`Diagnosebericht konnte nicht gespeichert werden: ${error}`);
-    } finally {
-      setBusyAction(null);
-    }
-  };
-
-  const reopenMigrationCapture = async () => {
-    const confirmed = window.confirm(
-      "EDV-Übertragung erneut freigeben?\n\nDer bisherige lokale Abschlussvermerk wird entfernt. Die vorhandene Übertragungs-ID bleibt erhalten, damit die EDV einen erneuten Versand möglichst als denselben Vorgang erkennen kann."
-    );
-    if (!confirmed) return;
-
-    setBusyAction("reopen-migration");
-    setMessage("");
-    try {
-      const status = await resetMigrationCaptureStatus();
-      setMigrationStatus(status);
-      setMessageType("success");
-      setMessage("„Sicher an EDV senden“ ist wieder freigegeben.");
-    } catch (error) {
-      setMessageType("error");
-      setMessage(`EDV-Übertragung konnte nicht erneut freigegeben werden: ${error}`);
-    } finally {
-      setBusyAction(null);
-    }
+    setMessage(`EDV-Übertragung fehlgeschlagen: ${error}`);
   };
 
   const resetApplication = async () => {
@@ -479,66 +433,12 @@ export function SettingsPage({ section = "general", onNavigate = () => undefined
             ))}
           </div>
         )}
-        <div className="settings-search-chips" aria-label="Schnellsuche-Vorschläge">
-          <span>Schnellsuche-Vorschläge:</span>
-          <button className="settings-search-chip" type="button" onClick={() => selectSearchItem(settingsSearchItems[0])}>
-            <Mail size={16} /> E-Mail-Konten verwalten
-          </button>
-          <button className="settings-search-chip" type="button" onClick={() => selectSearchItem(settingsSearchItems[1])}>
-            <ShieldCheck size={16} /> Sicherung öffnen
-          </button>
-        </div>
       </div>
 
       <StatusMessage message={message} type={messageType} />
 
       {section === "general" && (
         <div className="settings-overview">
-          <section className="settings-overview-section" id="settings-migration-status">
-            <h3>Status</h3>
-            <article className="settings-overview-card">
-              <span className="settings-overview-icon"><ShieldCheck size={27} aria-hidden="true" /></span>
-              <div>
-                <h3>E-Mail-Umstellung</h3>
-                {migrationSummary}
-              </div>
-              <button
-                className="primary"
-                type="button"
-                onClick={() => setMigrationDialogOpen(true)}
-                disabled={busyAction !== null || !migrationStatus?.configured || migrationStatus.completed}
-              >
-                <Send size={18} /> Sicher an EDV senden
-              </button>
-            </article>
-          </section>
-
-          <section className="settings-overview-section">
-            <h3>Konten</h3>
-            <article className="settings-overview-card" id="settings-mail-card">
-              <span className="settings-overview-icon"><Mail size={27} aria-hidden="true" /></span>
-              <div>
-                <h3>{accounts.length} E-Mail-Konten eingerichtet</h3>
-                <p>Outlook-Konten verwalten</p>
-              </div>
-              <button type="button" onClick={() => onNavigate("settings", "mail")}>
-                Verwalten
-              </button>
-            </article>
-          </section>
-
-          <section className="settings-overview-section">
-            <h3>Datensicherheit</h3>
-            <article className="settings-overview-card">
-              <span className="settings-overview-icon"><ArchiveRestore size={27} aria-hidden="true" /></span>
-              <div>
-                <h3>Sicherung</h3>
-                <p>Lokale Daten sichern und wiederherstellen</p>
-              </div>
-              <button type="button" onClick={() => onNavigate("backup", "backup")}>Öffnen</button>
-            </article>
-          </section>
-
           <section className="settings-overview-section">
             <h3>Bedienung</h3>
             <article className="settings-overview-card settings-preference-card">
@@ -574,21 +474,21 @@ export function SettingsPage({ section = "general", onNavigate = () => undefined
             </section>
           )}
 
-          <section className="settings-danger-zone">
-            <h3>Gefahrenzone</h3>
-            <section className="form-panel settings-reset-panel">
+          <details className="form-panel settings-danger-zone settings-collapsible-danger">
+            <summary>App zurücksetzen</summary>
+            <section className="settings-reset-panel">
               <div className="settings-task-heading">
                 <AlertTriangle size={25} aria-hidden="true" />
                 <div>
                   <h3>App vollständig zurücksetzen</h3>
-                  <p>Löscht sämtliche lokalen App-Daten und startet die App anschließend wie bei der ersten Verwendung. Dadurch wird auch „Sicher an EDV senden“ wieder verfügbar. Outlook und Exchange werden nicht verändert.</p>
+                  <p>Löscht sämtliche lokalen App-Daten. Outlook und Exchange werden nicht verändert.</p>
                 </div>
               </div>
               <button className="danger-button" type="button" onClick={resetApplication} disabled={busyAction !== null}>
                 <Trash2 size={18} /> Alle lokalen Daten löschen und App neu starten
               </button>
             </section>
-          </section>
+          </details>
         </div>
       )}
 
@@ -606,21 +506,6 @@ export function SettingsPage({ section = "general", onNavigate = () => undefined
               <Send size={19} /> Sicher an EDV senden
             </button>
           </section>
-
-          <details className="form-panel settings-support-panel">
-            <summary>
-              <span className="settings-summary-icon"><FileText size={24} aria-hidden="true" /></span>
-              <div><h3>EDV-Diagnose und erneutes Senden</h3><p>Fehlerursache sicher eingrenzen oder die Übertragung erneut freigeben</p></div>
-              <ChevronDown className="settings-summary-chevron" size={21} aria-hidden="true" />
-            </summary>
-            <div className="settings-support-content">
-              <div className="settings-diagnostic-note"><ShieldCheck size={20} aria-hidden="true" /><p>Der Diagnosebericht enthält ausschließlich technische Schritte, Zeitangaben, Statuscodes und eine Diagnose-ID – keine Kennwörter, E-Mail-Adressen, Servernamen oder übertragenen Inhalte.</p></div>
-              <div className="inline-actions">
-                <button type="button" onClick={exportMigrationDiagnostic} disabled={busyAction !== null}><FileText size={18} /> Diagnosebericht speichern</button>
-                <button type="button" onClick={reopenMigrationCapture} disabled={busyAction !== null || !migrationStatus?.configured}><RotateCcw size={18} /> EDV-Übertragung erneut freigeben</button>
-              </div>
-            </div>
-          </details>
 
           <details className="form-panel settings-mail-panel" id="settings-mail-accounts" open>
             <summary>

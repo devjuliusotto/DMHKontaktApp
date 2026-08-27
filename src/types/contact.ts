@@ -96,6 +96,7 @@ export interface OutlookContactImportPreview {
 export interface OutlookContactImportRequest {
   selectedSourceIds: string[];
   createSourceGroups: boolean;
+  cleanImportedNames: boolean;
 }
 
 export interface OutlookContactImportResult {

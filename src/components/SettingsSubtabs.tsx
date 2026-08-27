@@ -9,8 +9,8 @@ const items: Array<{ page: Page; section: SettingsSection; label: string; icon: 
   { page: "appearance", section: "appearance", label: "Erscheinungsbild", icon: Palette },
   { page: "simple-import", section: "import", label: "Import", icon: Download },
   { page: "backup", section: "backup", label: "Sicherung", icon: ArchiveRestore },
-  { page: "synchronizations", section: "sync", label: "Synchronisierungen", icon: ArrowLeftRight },
-  { page: "import", section: "advanced", label: "Erweitert", icon: SlidersHorizontal, activePages: ["import", "export", "m365"] },
+  { page: "synchronizations", section: "sync", label: "Synchronisierungen", icon: ArrowLeftRight, activePages: ["synchronizations", "m365"] },
+  { page: "import", section: "advanced", label: "Erweitert", icon: SlidersHorizontal, activePages: ["import", "export"] },
   { page: "trash", section: "trash", label: "Papierkorb", icon: Trash2 }
 ];
 

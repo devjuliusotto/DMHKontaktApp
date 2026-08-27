@@ -749,6 +749,7 @@ fn ensure_group(
 #[tauri::command]
 pub fn import_thunderbird_contacts_once(
     app: AppHandle,
+    clean_imported_names: bool,
 ) -> Result<ThunderbirdContactImportResult, String> {
     let books = read_thunderbird_books()?;
     let found = books.iter().map(|book| book.contacts.len()).sum();
@@ -796,6 +797,9 @@ pub fn import_thunderbird_contacts_once(
 
         for mut source_contact in book.contacts {
             let contact = &mut source_contact.input;
+            if clean_imported_names {
+                crate::clean_imported_contact_name(contact);
+            }
             if contact.display_name.trim().is_empty()
                 && contact.email.trim().is_empty()
                 && contact.phone.trim().is_empty()

@@ -409,6 +409,19 @@ export function ContactsPage() {
     });
   };
 
+  const startSelectionMode = () => {
+    setSelectedContactIds(new Set());
+    setSelectionMode(true);
+    setTestMenuOpen(false);
+  };
+
+  const changeTab = (nextTab: ContactsTab) => {
+    setTab(nextTab);
+    setSelectionMode(false);
+    setSelectedContactIds(new Set());
+    setTestMenuOpen(false);
+  };
+
   const toggleContactSelection = (contact: Contact) => {
     if (!contact.id) return;
     setSelectedContactIds((current) => {
@@ -588,10 +601,10 @@ export function ContactsPage() {
   return (
     <div className={`${draggedContactIds.length === 0 ? "page contacts-page" : "page contacts-page dragging-contact"} contacts-font-${contactsFontSize}`}>
       <div className="contacts-tabs" role="tablist" aria-label="Kontakte">
-        <button className={tab === "all" ? "active" : ""} type="button" onClick={() => setTab("all")}>
+        <button className={tab === "all" ? "active" : ""} type="button" onClick={() => changeTab("all")}>
           Alle Kontakte
         </button>
-        <button className={tab === "groups" ? "active" : ""} type="button" onClick={() => setTab("groups")}>
+        <button className={tab === "groups" ? "active" : ""} type="button" onClick={() => changeTab("groups")}>
           Gruppen verwalten
         </button>
       </div>
@@ -609,35 +622,33 @@ export function ContactsPage() {
           />
         </label>
         <div className="button-row contacts-actions">
-          {tab === "groups" && (
-            <>
+          {tab === "groups" && !selectionMode && (
               <button
-                className={selectionMode ? "primary" : ""}
                 type="button"
                 onClick={toggleSelectionMode}
                 disabled={bulkDeleting}
               >
-                {selectionMode ? "Fertig" : "Auswählen"}
+                Auswählen
               </button>
-              {selectionMode && (
-                <>
-                  <button type="button" onClick={toggleSelectAllVisible} disabled={bulkDeleting || visibleContactIds.length === 0}>
-                    {allVisibleContactsSelected ? "Auswahl aufheben" : "Alle auswählen"}
-                  </button>
-                  <button
-                    className="danger-button"
-                    type="button"
-                    onClick={removeSelectedContacts}
-                    disabled={bulkDeleting || selectedVisibleContactIds.length === 0}
-                  >
-                    <Trash2 size={19} />
-                    {bulkDeleting
-                      ? "Wird gelöscht …"
-                      : `Ausgewählte löschen (${selectedVisibleContactIds.length})`}
-                  </button>
-                  <span className="selection-count">{selectedVisibleContactIds.length} ausgewählt</span>
-                </>
-              )}
+          )}
+          {selectionMode && (
+            <>
+              <button className="primary" type="button" onClick={toggleSelectionMode} disabled={bulkDeleting}>Fertig</button>
+              <button type="button" onClick={toggleSelectAllVisible} disabled={bulkDeleting || visibleContactIds.length === 0}>
+                {allVisibleContactsSelected ? "Auswahl aufheben" : "Alle auswählen"}
+              </button>
+              <button
+                className="danger-button"
+                type="button"
+                onClick={removeSelectedContacts}
+                disabled={bulkDeleting || selectedVisibleContactIds.length === 0}
+              >
+                <Trash2 size={19} />
+                {bulkDeleting
+                  ? "Wird gelöscht …"
+                  : `Ausgewählte löschen (${selectedVisibleContactIds.length})`}
+              </button>
+              <span className="selection-count">{selectedVisibleContactIds.length} ausgewählt</span>
             </>
           )}
           <button className="primary" type="button" onClick={startNew}>
@@ -649,6 +660,7 @@ export function ContactsPage() {
             </button>
             {testMenuOpen && (
               <div className="more-menu">
+                {tab === "all" && !selectionMode && <button type="button" onClick={startSelectionMode}>Auswählen</button>}
                 <button type="button" onClick={removeAllContacts}>Alle Kontakte löschen</button>
               </div>
             )}
@@ -821,9 +833,9 @@ export function ContactsPage() {
           onDelete={remove}
           onCopyEmail={copyEmail}
           onEmail={chooseEmailApp}
-          selectionMode={false}
-          selectedContactIds={emptySelection}
-          onToggleSelection={() => undefined}
+          selectionMode={selectionMode}
+          selectedContactIds={selectionMode ? selectedContactIds : emptySelection}
+          onToggleSelection={toggleContactSelection}
           onPointerDragStart={startContactDrag}
           dragEnabled={false}
         />

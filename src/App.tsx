@@ -24,6 +24,12 @@ import { DienstleistungenPage } from "./pages/DienstleistungenPage";
 import { createAutomaticBackup, createAutomaticPasswordBackup, getBackupData, getVaultStatus, syncOfflineDocuments } from "./services/db";
 import type { VaultStatus } from "./types/vault";
 import { addBrowserDataToBackup } from "./utils/backup";
+import {
+  calendarAutomaticSyncStatusEventName,
+  calendarChangedEventName,
+  runAutomaticCalendarSync as performAutomaticCalendarSync,
+  type CalendarAutomaticSyncStatus
+} from "./utils/automaticCalendarSync";
 
 const browserPreviewStatus: VaultStatus = {
   protectionEnabled: false,
@@ -44,6 +50,7 @@ export default function App() {
   const [startupError, setStartupError] = useState("");
   const automaticBackupPromise = useRef<Promise<void> | null>(null);
   const documentSyncPromise = useRef<Promise<void> | null>(null);
+  const calendarSyncPromise = useRef<Promise<CalendarAutomaticSyncStatus | null> | null>(null);
   const closing = useRef(false);
   const settingsAreaOpen = page === "settings" || page === "appearance" || page === "simple-import" || page === "import" || page === "export" || page === "m365" || page === "trash" || page === "backup" || page === "synchronizations";
 
@@ -57,9 +64,9 @@ export default function App() {
     else if (nextPage === "appearance") setSettingsSection("appearance");
     else if (nextPage === "simple-import") setSettingsSection("import");
     else if (nextPage === "backup") setSettingsSection("backup");
-    else if (nextPage === "synchronizations") setSettingsSection("sync");
+    else if (nextPage === "synchronizations" || nextPage === "m365") setSettingsSection("sync");
     else if (nextPage === "trash") setSettingsSection("trash");
-    else if (nextPage === "import" || nextPage === "export" || nextPage === "m365") setSettingsSection("advanced");
+    else if (nextPage === "import" || nextPage === "export") setSettingsSection("advanced");
   };
 
   const runAutomaticBackup = useCallback(async (snapshot = false): Promise<void> => {
@@ -92,6 +99,27 @@ export default function App() {
     finally { if (documentSyncPromise.current === promise) documentSyncPromise.current = null; }
   }, []);
 
+  const runCalendarSync = useCallback(async (trigger: "open" | "change"): Promise<void> => {
+    if (!("__TAURI_INTERNALS__" in window) || calendarSyncPromise.current) return;
+    const promise = performAutomaticCalendarSync(trigger);
+    calendarSyncPromise.current = promise;
+    try {
+      const status = await promise;
+      if (status) {
+        window.dispatchEvent(new CustomEvent<CalendarAutomaticSyncStatus>(calendarAutomaticSyncStatusEventName, { detail: status }));
+      }
+    } catch (error) {
+      window.dispatchEvent(new CustomEvent<CalendarAutomaticSyncStatus>(calendarAutomaticSyncStatusEventName, {
+        detail: {
+          state: "error",
+          message: `Automatische Microsoft-365-Synchronisierung fehlgeschlagen: ${error}`
+        }
+      }));
+    } finally {
+      if (calendarSyncPromise.current === promise) calendarSyncPromise.current = null;
+    }
+  }, []);
+
   const loadVaultStatus = () => {
     setStartupError("");
     const localBrowserPreview = !("__TAURI_INTERNALS__" in window)
@@ -108,6 +136,22 @@ export default function App() {
   useEffect(() => {
     loadVaultStatus();
   }, []);
+
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window) || !vaultStatus || (vaultStatus.protectionEnabled && !vaultStatus.unlocked)) return;
+    let debounceTimer: number | undefined;
+    const queueChangedCalendarSync = () => {
+      if (debounceTimer !== undefined) window.clearTimeout(debounceTimer);
+      debounceTimer = window.setTimeout(() => void runCalendarSync("change"), 1_200);
+    };
+    const startupTimer = window.setTimeout(() => void runCalendarSync("open"), 2_500);
+    window.addEventListener(calendarChangedEventName, queueChangedCalendarSync);
+    return () => {
+      window.removeEventListener(calendarChangedEventName, queueChangedCalendarSync);
+      window.clearTimeout(startupTimer);
+      if (debounceTimer !== undefined) window.clearTimeout(debounceTimer);
+    };
+  }, [runCalendarSync, vaultStatus]);
 
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
@@ -131,28 +175,22 @@ export default function App() {
 
     const appWindow = getCurrentWindow();
     const unlisten = appWindow.onCloseRequested(async (event) => {
-      if (closing.current) return;
       event.preventDefault();
+      if (closing.current) return;
       closing.current = true;
-      window.clearInterval(interval);
-      window.clearInterval(documentSyncInterval);
-      await runDocumentSync().catch(() => {
-        // The local offline file and its manifest remain available for the next retry.
-      });
+      const closingTasks = Promise.allSettled([
+        runDocumentSync(),
+        runAutomaticBackup(true)
+      ]);
+      await Promise.race([
+        closingTasks,
+        new Promise<void>((resolve) => window.setTimeout(resolve, 4_000))
+      ]);
       try {
-        await runAutomaticBackup(true);
+        await appWindow.destroy();
       } catch (error) {
         closing.current = false;
-        const details = String(error).trim();
-        window.alert(
-          `Die interne automatische Sicherung konnte nicht abgeschlossen werden. Das App-Fenster bleibt geöffnet.${details ? `\n\nDetails: ${details}` : ""}`
-        );
-        return;
-      }
-      try {
-        await appWindow.close();
-      } catch {
-        closing.current = false;
+        window.alert(`Die App konnte nicht geschlossen werden: ${error}`);
       }
     });
 
@@ -196,7 +234,7 @@ export default function App() {
         <Sidebar activePage={page} onNavigate={navigate} compact={settingsAreaOpen} />
         {settingsAreaOpen && <SettingsSubtabs activePage={page} activeSection={settingsSection} onNavigate={navigate} />}
         <main className="content">
-          {(page === "import" || page === "export" || page === "m365") && <AdvancedSubtabs activePage={page} onNavigate={navigate} />}
+          {(page === "import" || page === "export") && <AdvancedSubtabs activePage={page} onNavigate={navigate} />}
           {page === "contacts" && <ContactsPage />}
           {page === "calendar" && <CalendarPage />}
           {page === "documents" && <DocumentsPage />}

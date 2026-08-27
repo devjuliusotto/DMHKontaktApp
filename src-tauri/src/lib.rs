@@ -459,6 +459,8 @@ pub struct OutlookContactImportRequest {
     pub selected_source_ids: Vec<String>,
     #[serde(default = "default_true")]
     pub create_source_groups: bool,
+    #[serde(default = "default_true")]
+    pub clean_imported_names: bool,
 }
 
 fn default_true() -> bool {
@@ -2364,6 +2366,118 @@ fn outlook_record_to_contact(record: &OutlookContactRecord) -> ContactInput {
     }
 }
 
+fn extract_imported_email(values: &[&str]) -> String {
+    for value in values {
+        for candidate in value.split(|character: char| {
+            character.is_whitespace()
+                || matches!(character, '<' | '>' | '"' | '\'' | '(' | ')' | ',' | ';' | ':')
+        }) {
+            let cleaned = candidate
+                .trim_matches(|character| matches!(character, '.' | ',' | ';' | ':' | '!' | '?'))
+                .trim();
+            let mut parts = cleaned.split('@');
+            let local_part = parts.next().unwrap_or("");
+            let domain = parts.next().unwrap_or("");
+            if !local_part.is_empty() && !domain.is_empty() && parts.next().is_none() {
+                return cleaned.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+fn capitalize_imported_name(value: &str) -> String {
+    let mut result = String::with_capacity(value.len());
+    let mut uppercase_next = true;
+    for character in value.trim().chars() {
+        if uppercase_next && character.is_alphabetic() {
+            result.extend(character.to_uppercase());
+            uppercase_next = false;
+        } else {
+            result.push(character);
+            if character.is_alphabetic() {
+                uppercase_next = false;
+            }
+        }
+        if character.is_whitespace() || matches!(character, '-' | '\'' | '’') {
+            uppercase_next = true;
+        }
+    }
+    result
+}
+
+pub(crate) fn clean_imported_display_name(value: &str, email: &str) -> String {
+    let trim_quotes = |text: &str| {
+        text.trim()
+            .trim_matches(|character| {
+                matches!(character, '"' | '\'' | '“' | '”' | '„' | '‚' | '‘' | '’')
+            })
+            .trim()
+            .to_string()
+    };
+    let normalized_email = email.trim();
+    let email_local_part = normalized_email.split('@').next().unwrap_or("").trim();
+    let mut cleaned = trim_quotes(value);
+
+    if let Some((name, address)) = cleaned.rsplit_once('<') {
+        if address
+            .trim_end_matches('>')
+            .trim()
+            .eq_ignore_ascii_case(normalized_email)
+        {
+            cleaned = trim_quotes(name);
+        }
+    }
+
+    if let Some((local_part, _)) = cleaned.split_once('@') {
+        cleaned = local_part.to_string();
+    }
+    if cleaned.is_empty() && !email_local_part.is_empty() {
+        cleaned = email_local_part.to_string();
+    }
+    cleaned = cleaned.replace(['.', '_', '@'], " ");
+
+    let normalized = trim_quotes(&cleaned)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    capitalize_imported_name(&normalized)
+}
+
+pub(crate) fn clean_imported_contact_name(contact: &mut ContactInput) {
+    let fallback_name = format!(
+        "{} {}",
+        contact.first_name.trim(),
+        contact.last_name.trim()
+    )
+    .trim()
+    .to_string();
+    let original_email = contact.email.trim().to_string();
+    let detected_email = extract_imported_email(&[
+        &original_email,
+        &contact.display_name,
+        &fallback_name,
+    ]);
+    let source_name = if !contact.display_name.trim().is_empty() {
+        contact.display_name.clone()
+    } else if !fallback_name.is_empty() {
+        fallback_name
+    } else if !original_email.is_empty() {
+        original_email.clone()
+    } else {
+        detected_email.clone()
+    };
+    let comparison_email = if detected_email.is_empty() {
+        original_email
+    } else {
+        detected_email.clone()
+    };
+    contact.first_name = capitalize_imported_name(&contact.first_name);
+    contact.last_name = capitalize_imported_name(&contact.last_name);
+    contact.display_name = clean_imported_display_name(&source_name, &comparison_email);
+    contact.email = detected_email;
+}
+
 fn outlook_hash(value: &str) -> String {
     format!("{:x}", Sha256::digest(value.as_bytes()))
 }
@@ -2611,6 +2725,7 @@ fn add_fingerprint(
 
 fn preview_outlook_classic_contacts_blocking(
     app: AppHandle,
+    clean_imported_names: bool,
 ) -> Result<OutlookContactImportPreview, String> {
     let (read_result, warnings) = read_outlook_classic_contacts_for_import()?;
     let conn = open_db(&app)?;
@@ -2621,7 +2736,10 @@ fn preview_outlook_classic_contacts_blocking(
     let mut skipped_invalid = read_result.skipped;
 
     for record in &read_result.contacts {
-        let contact = outlook_record_to_contact(record);
+        let mut contact = outlook_record_to_contact(record);
+        if clean_imported_names {
+            clean_imported_contact_name(&mut contact);
+        }
         let display_name = normalize_contact_display_name(&contact);
         let email = contact.email.trim().to_lowercase();
         if !contact_has_identity(&contact, &display_name, &email) {
@@ -2716,8 +2834,11 @@ fn preview_outlook_classic_contacts_blocking(
 #[tauri::command]
 async fn preview_outlook_classic_contacts(
     app: AppHandle,
+    clean_imported_names: bool,
 ) -> Result<OutlookContactImportPreview, String> {
-    tauri::async_runtime::spawn_blocking(move || preview_outlook_classic_contacts_blocking(app))
+    tauri::async_runtime::spawn_blocking(move || {
+        preview_outlook_classic_contacts_blocking(app, clean_imported_names)
+    })
         .await
         .map_err(|error| format!("Outlook-Kontaktprüfung wurde unerwartet beendet: {error}"))?
 }
@@ -2752,7 +2873,10 @@ fn import_selected_outlook_classic_contacts_blocking(
             continue;
         }
         found += 1;
-        let contact = outlook_record_to_contact(record);
+        let mut contact = outlook_record_to_contact(record);
+        if request.clean_imported_names {
+            clean_imported_contact_name(&mut contact);
+        }
         let display_name = normalize_contact_display_name(&contact);
         let email = contact.email.trim().to_lowercase();
         if !contact_has_identity(&contact, &display_name, &email) {
@@ -4448,6 +4572,40 @@ mod tests {
             notes: String::new(),
             group_ids: Vec::new(),
         }
+    }
+
+    #[test]
+    fn cleans_imported_names_and_recognizes_email_fields() {
+        assert_eq!(
+            clean_imported_display_name("\"max.mustermann@example.org\"", "max.mustermann@example.org"),
+            "Max Mustermann"
+        );
+        assert_eq!(
+            clean_imported_display_name("max.mustermann", "max.mustermann@example.org"),
+            "Max Mustermann"
+        );
+        assert_eq!(
+            clean_imported_display_name("Dr. Erika Mustermann", "erika@example.org"),
+            "Dr Erika Mustermann"
+        );
+
+        let mut address_only = sample_contact("", "jane.doe@example.org", "");
+        clean_imported_contact_name(&mut address_only);
+        assert_eq!(address_only.display_name, "Jane Doe");
+        assert_eq!(address_only.email, "jane.doe@example.org");
+
+        let mut invalid_email = sample_contact("", "max.mustermann", "");
+        clean_imported_contact_name(&mut invalid_email);
+        assert_eq!(invalid_email.display_name, "Max Mustermann");
+        assert!(invalid_email.email.is_empty());
+
+        let mut named = sample_contact("", "erika@example.org", "");
+        named.first_name = "erika".to_string();
+        named.last_name = "mustermann".to_string();
+        clean_imported_contact_name(&mut named);
+        assert_eq!(named.first_name, "Erika");
+        assert_eq!(named.last_name, "Mustermann");
+        assert_eq!(named.display_name, "Erika Mustermann");
     }
 
     #[test]
