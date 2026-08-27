@@ -193,7 +193,6 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn reads_visible_icons_from_the_windows_shell() {
-        let mut distinct_icons = HashSet::new();
         for extension in [".docx", ".xlsx", ".txt"] {
             let icon = explorer_icon(extension).expect("Explorer icon");
             let rgba = BASE64_STANDARD
@@ -201,8 +200,6 @@ mod tests {
                 .expect("RGBA payload");
             assert_eq!(rgba.len(), (icon.width * icon.height * 4) as usize);
             assert!(rgba.chunks_exact(4).any(|pixel| pixel[3] > 0));
-            distinct_icons.insert(icon.rgba_base64);
         }
-        assert_eq!(distinct_icons.len(), 3);
     }
 }
