@@ -256,7 +256,6 @@ export function DienstleistungenPage() {
             <ServiceAction variant="meal" icon={<Utensils size={27} />} title="Mahlzeiten" description="Speiseplan ansehen und Mahlzeiten für eine oder mehrere Personen reservieren." onClick={() => selectSection("meals")} />
             <ServiceAction variant="open-tickets" icon={<ClipboardList size={27} />} title="Offene Tickets" description={`${tickets.filter((ticket) => ticket.status !== "Erledigt").length} offene Tickets in einer detaillierten Liste ansehen.`} onClick={() => selectSection("open-tickets")} />
           </section>
-          <ServicesOverview bookings={bookings} tickets={tickets} checkins={checkins} onOpen={selectSection} onUpdateTicket={updateTicket} />
         </>
       )}
 
@@ -307,7 +306,10 @@ export function DienstleistungenPage() {
       )}
 
       {section === "open-tickets" && (
-        <OpenTicketsWorkspace tickets={tickets} onBack={closeSection} onUpdateTicket={updateTicket} onCreateTicket={() => selectSection("tickets")} />
+        <div className="dienstleistung-workspace">
+          <WorkspaceHeading icon={<ClipboardList size={24} />} title="Offene Tickets" description="Eigene Tickets, Buchungen und Mahlzeiten in einer detaillierten Liste." onBack={closeSection} />
+          <ServicesOverview bookings={bookings} tickets={tickets} checkins={checkins} onOpen={selectSection} onUpdateTicket={updateTicket} />
+        </div>
       )}
 
       {section === "meals" && (
@@ -335,62 +337,6 @@ export function DienstleistungenPage() {
       )}
     </div>
   );
-}
-
-function OpenTicketsWorkspace({ tickets, onBack, onUpdateTicket, onCreateTicket }: {
-  tickets: ServiceTicket[];
-  onBack: () => void;
-  onUpdateTicket: (ticket: ServiceTicket) => void;
-  onCreateTicket: () => void;
-}) {
-  const [search, setSearch] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const openTickets = useMemo(() => tickets
-    .filter((ticket) => ticket.status !== "Erledigt")
-    .sort((left, right) => (right.updatedAt ?? right.createdAt).localeCompare(left.updatedAt ?? left.createdAt)), [tickets]);
-  const visibleTickets = useMemo(() => {
-    const query = search.trim().toLocaleLowerCase("de-DE");
-    if (!query) return openTickets;
-    return openTickets.filter((ticket) => [ticket.id, ticket.title, ticket.message, ticket.additionalInfo, ticket.category, ticket.assignee, ticket.status]
-      .join(" ")
-      .toLocaleLowerCase("de-DE")
-      .includes(query));
-  }, [openTickets, search]);
-  const selectedTicket = tickets.find((ticket) => ticket.id === selectedId) ?? null;
-
-  return <div className="dienstleistung-workspace">
-    <WorkspaceHeading icon={<ClipboardList size={24} />} title="Offene Tickets" description="Alle offenen und laufenden Serviceanfragen in einer detaillierten Liste." onBack={onBack} />
-    <section className="dienstleistungen-overview dienstleistungen-open-tickets" aria-labelledby="open-tickets-title">
-      <header className="dienstleistungen-overview-heading">
-        <div className="dienstleistungen-overview-title">
-          <span><Ticket size={24} /></span>
-          <div><h3 id="open-tickets-title">Offene Service-Tickets</h3><p>Tickets mit dem Status „Offen“ oder „In Bearbeitung“.</p></div>
-        </div>
-        <div className="dienstleistungen-overview-totals"><span><strong>{openTickets.length}</strong> offen</span></div>
-      </header>
-      <div className="dienstleistungen-overview-toolbar dienstleistungen-open-tickets-toolbar">
-        <label className="dienstleistungen-overview-search"><Search size={18} aria-hidden="true" /><span className="sr-only">Offene Tickets suchen</span><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Offene Tickets suchen …" /></label>
-        <button type="button" onClick={onCreateTicket}><Ticket size={18} /> Neues Ticket</button>
-      </div>
-      <div className="dienstleistungen-overview-table-wrap">
-        <table className="dienstleistungen-overview-table dienstleistungen-open-tickets-table">
-          <thead><tr><th>Ticket</th><th>Bereich</th><th>Zuständig</th><th>Status</th><th>Aktualisiert</th><th><span className="sr-only">Details</span></th></tr></thead>
-          <tbody>
-            {visibleTickets.map((ticket) => <tr key={ticket.id} tabIndex={0} onClick={() => setSelectedId(ticket.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedId(ticket.id); } }}>
-              <td><div className="dienstleistungen-record-primary tickets"><span><Ticket size={19} /></span><span><strong>{ticket.title}</strong><small>{ticket.message}</small></span></div></td>
-              <td>{ticket.category}</td>
-              <td>{ticket.assignee || "Nicht zugewiesen"}</td>
-              <td><span className={`dienstleistungen-status ${serviceStatusTone(ticket.status)}`}>{ticket.status}</span></td>
-              <td>{formatDateTime(ticket.updatedAt ?? ticket.createdAt)}</td>
-              <td><button className="icon-only" type="button" title="Ticket öffnen" aria-label={`${ticket.title} öffnen`} onClick={() => setSelectedId(ticket.id)}><ArrowRight size={18} /></button></td>
-            </tr>)}
-            {visibleTickets.length === 0 ? <tr><td className="dienstleistungen-overview-empty" colSpan={6}>{openTickets.length === 0 ? "Zurzeit sind keine Tickets offen." : "Keine offenen Tickets entsprechen der Suche."}</td></tr> : null}
-          </tbody>
-        </table>
-      </div>
-      {selectedTicket ? <TicketRecordDialog ticket={selectedTicket} onClose={() => setSelectedId(null)} onUpdate={onUpdateTicket} onOpenSection={() => { setSelectedId(null); onCreateTicket(); }} /> : null}
-    </section>
-  </div>;
 }
 
 function ServicesOverview({ bookings, tickets, checkins, onOpen, onUpdateTicket }: {

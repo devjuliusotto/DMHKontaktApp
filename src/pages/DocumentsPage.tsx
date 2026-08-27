@@ -6,22 +6,22 @@ import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import {
   AlertTriangle, ArrowUp, CheckCircle2, CheckSquare, ChevronDown, ChevronRight, ClipboardPaste, Cloud, Copy, Download,
   ExternalLink, File, FilePlus2, Folder, FolderOpen, FolderPlus, Grid2X2, HardDrive,
-  History, List, LoaderCircle, MoreHorizontal, Pencil, RefreshCw, Scissors, Search,
+  History, KeyRound, List, LoaderCircle, MoreHorizontal, Pencil, RefreshCw, Scissors, Search,
   Share2, Trash2, Upload, UploadCloud, X
 } from "lucide-react";
 import { DragEvent, MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Page } from "../components/Sidebar";
 import {
-  copyDocumentItems, createDocumentFolder, createDocumentShareLink, createDocumentTextFile,
-  deleteDocumentItem, downloadDocumentItem, getDocumentsLocalRoot,
+  cancelMicrosoft365Connection, copyDocumentItems, createDocumentFolder, createDocumentShareLink, createDocumentTextFile,
+  deleteDocumentItem, downloadDocumentItem, getDocumentFileIcons, getDocumentsLocalRoot,
   getMicrosoft365ConnectionStatus, listDocumentItems, listDocumentSources,
-  listDocumentVersions, moveDocumentItems, renameDocumentItem, restoreDocumentVersion,
+  listDocumentVersions, moveDocumentItems, openDocumentInOffice, openMicrosoft365SignIn,
+  pollMicrosoft365Connection, renameDocumentItem, restoreDocumentVersion, startMicrosoft365Connection,
   uploadDocumentPath, uploadDocumentRevision, listDocumentSyncConflicts,
   resolveDocumentSyncConflict, syncOfflineDocuments, makeDocumentFolderOffline
 } from "../services/db";
-import type { DocumentConflictDecision, DocumentItem, DocumentSource, DocumentSyncConflict, DocumentSyncSummary, DocumentVersion } from "../types/documents";
+import type { DocumentConflictDecision, DocumentItem, DocumentSource, DocumentSyncConflict, DocumentSyncSummary, DocumentVersion, SystemFileIcon } from "../types/documents";
+import type { Microsoft365DeviceCode } from "../types/m365";
 
-interface DocumentsPageProps { onNavigate: (page: Page) => void }
 interface Breadcrumb { id?: string; name: string; webUrl?: string }
 interface DocumentClipboard { operation: "copy" | "cut"; driveId: string; items: Array<Pick<DocumentItem, "id" | "name" | "isFolder">> }
 interface DocumentsContextMenuState { x: number; y: number; itemId?: string }
@@ -30,6 +30,25 @@ type SortKey = "name" | "modified" | "size";
 
 const documentSourceCacheTtl = 5 * 60 * 1000;
 let documentSourceCache: { accountId: string; sources: DocumentSource[]; cachedAt: number } | null = null;
+const documentFileIconCache = new Map<string, string>();
+
+function fileExtensionKey(fileName: string) {
+  const separator = fileName.lastIndexOf(".");
+  return separator > 0 ? fileName.slice(separator).toLocaleLowerCase("de-DE") : "";
+}
+
+function systemIconDataUrl(icon: SystemFileIcon) {
+  const binary = window.atob(icon.rgbaBase64);
+  if (binary.length !== icon.width * icon.height * 4) return "";
+  const rgba = new Uint8ClampedArray(binary.length);
+  for (let index = 0; index < binary.length; index += 1) rgba[index] = binary.charCodeAt(index);
+  const canvas = document.createElement("canvas");
+  canvas.width = icon.width; canvas.height = icon.height;
+  const context = canvas.getContext("2d");
+  if (!context) return "";
+  context.putImageData(new ImageData(rgba, icon.width, icon.height), 0, 0);
+  return canvas.toDataURL("image/png");
+}
 
 function sortDocumentSources(sources: DocumentSource[]) {
   return [...sources].sort((left, right) => left.kind.localeCompare(right.kind)
@@ -41,12 +60,16 @@ function cacheDocumentSources(accountId: string, sources: DocumentSource[]) {
   documentSourceCache = { accountId, sources, cachedAt: Date.now() };
 }
 
-export function DocumentsPage({ onNavigate }: DocumentsPageProps) {
+export function DocumentsPage() {
   const [sources, setSources] = useState<DocumentSource[]>([]);
   const [source, setSource] = useState<DocumentSource | null>(null);
   const [items, setItems] = useState<DocumentItem[]>([]);
+  const [fileIcons, setFileIcons] = useState<Record<string, string>>(() => Object.fromEntries(documentFileIconCache));
   const [breadcrumbs, setBreadcrumbs] = useState<Breadcrumb[]>([]);
   const [connected, setConnected] = useState<boolean | null>(null);
+  const [reconnectCode, setReconnectCode] = useState<Microsoft365DeviceCode | null>(null);
+  const [reconnectBusy, setReconnectBusy] = useState(false);
+  const [reconnectError, setReconnectError] = useState("");
   const [busy, setBusy] = useState(false);
   const [sourcesLoading, setSourcesLoading] = useState(false);
   const [sourcesError, setSourcesError] = useState("");
@@ -98,6 +121,23 @@ export function DocumentsPage({ onNavigate }: DocumentsPageProps) {
     return item ? [item] : [];
   }, [contextMenu?.itemId, items, selectedIds, selectedItems]);
 
+  useEffect(() => {
+    if (!isTauri()) return;
+    const fileNames = items
+      .filter((item) => !item.isFolder && !documentFileIconCache.has(fileExtensionKey(item.name)))
+      .map((item) => item.name);
+    if (fileNames.length === 0) return;
+    let cancelled = false;
+    getDocumentFileIcons(fileNames).then((icons) => {
+      for (const [extension, icon] of Object.entries(icons)) {
+        const dataUrl = systemIconDataUrl(icon);
+        if (dataUrl) documentFileIconCache.set(extension, dataUrl);
+      }
+      if (!cancelled) setFileIcons(Object.fromEntries(documentFileIconCache));
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [items]);
+
   const loadItems = useCallback(async (nextSource: DocumentSource, nextParentId?: string) => {
     setBusy(true); setError(""); setMenuItemId(null);
     try { setItems(await listDocumentItems(nextSource.id, nextParentId)); setSelectedIds(new Set()); }
@@ -127,7 +167,9 @@ export function DocumentsPage({ onNavigate }: DocumentsPageProps) {
     setBusy(true); setError(""); setMessage("");
     try {
       const status = await getMicrosoft365ConnectionStatus(); setConnected(status.connected);
-      if (!status.connected || !status.account) { documentSourceCache = null; return; }
+      if (!status.connected || !status.account) {
+        documentSourceCache = null; setSources([]); setSource(null); setItems([]); setBreadcrumbs([]); return;
+      }
       const accountId = status.account.id;
       const cached = documentSourceCache && documentSourceCache.accountId === accountId
         && Date.now() - documentSourceCache.cachedAt < documentSourceCacheTtl ? documentSourceCache.sources : [];
@@ -144,6 +186,53 @@ export function DocumentsPage({ onNavigate }: DocumentsPageProps) {
   }, [loadSharePointSources, selectSource]);
 
   useEffect(() => { void loadSources(); }, [loadSources]);
+
+  useEffect(() => {
+    if (!reconnectCode) return;
+    let active = true; let timeout: number | undefined;
+    const poll = async () => {
+      if (!active) return;
+      try {
+        const result = await pollMicrosoft365Connection();
+        if (result.state === "connected") {
+          active = false; setReconnectCode(null); setReconnectBusy(false); setReconnectError("");
+          await loadSources(); return;
+        }
+        timeout = window.setTimeout(poll, Math.max(3, result.intervalSeconds || reconnectCode.intervalSeconds) * 1000);
+      } catch (pollError) {
+        if (!active) return;
+        setReconnectCode(null); setReconnectBusy(false);
+        setReconnectError(`Die Microsoft-Anmeldung wurde nicht abgeschlossen: ${String(pollError)}`);
+      }
+    };
+    timeout = window.setTimeout(poll, Math.max(2, reconnectCode.intervalSeconds) * 1000);
+    return () => { active = false; if (timeout) window.clearTimeout(timeout); };
+  }, [loadSources, reconnectCode]);
+
+  const startReconnect = async () => {
+    if (reconnectBusy) return;
+    setReconnectBusy(true); setReconnectError("");
+    try {
+      const code = await startMicrosoft365Connection();
+      setReconnectCode(code);
+      try { await writeText(code.userCode); } catch { /* The large code remains visible. */ }
+      try { await openMicrosoft365SignIn(); }
+      catch (openError) { setReconnectError(`Die Microsoft-Anmeldung konnte nicht automatisch geöffnet werden: ${String(openError)}`); }
+    } catch (startError) {
+      setReconnectBusy(false);
+      setReconnectError(`Die Verbindung konnte nicht gestartet werden: ${String(startError)}`);
+    }
+  };
+
+  const reopenMicrosoftSignIn = async () => {
+    try { await openMicrosoft365SignIn(); }
+    catch (openError) { setReconnectError(String(openError)); }
+  };
+
+  const cancelReconnect = async () => {
+    setReconnectCode(null); setReconnectBusy(false); setReconnectError("");
+    try { await cancelMicrosoft365Connection(); } catch { /* The code expires automatically. */ }
+  };
 
   const refreshSyncConflicts = useCallback(async () => {
     try { setSyncConflicts(await listDocumentSyncConflicts()); }
@@ -260,6 +349,10 @@ export function DocumentsPage({ onNavigate }: DocumentsPageProps) {
 
   const openItem = async (item: DocumentItem) => {
     if (item.isFolder) { await openFolder(item); return; }
+    if (item.webUrl) {
+      const officeTarget = await openDocumentInOffice(item.name, item.webUrl);
+      if (officeTarget !== "unsupported") return;
+    }
     if (item.offlineAvailable && item.localPath) {
       await openPath(item.localPath);
       return;
@@ -318,13 +411,12 @@ export function DocumentsPage({ onNavigate }: DocumentsPageProps) {
     if (!source || transfer.items.length === 0) return;
     setBusy(true); setError(""); setMessage("");
     try {
-      const crossDriveCut = transfer.operation === "cut" && transfer.driveId !== destinationDriveId;
       const request = { sourceDriveId: transfer.driveId, itemIds: transfer.items.map((item) => item.id), destinationDriveId, destinationParentId };
-      const result = transfer.operation === "copy" || crossDriveCut ? await copyDocumentItems(request) : await moveDocumentItems(request);
+      const result = transfer.operation === "copy" ? await copyDocumentItems(request) : await moveDocumentItems(request);
       if (result.errors.length) setError(result.errors.join("\n"));
       const count = result.processed + result.queued;
-      if (count) setMessage(crossDriveCut ? `${count} Element(e) wurden kopiert. Das Original bleibt bestehen, da Microsoft 365 kein Verschieben zwischen Bibliotheken unterstützt.` : `${count} Element(e) ${result.queued ? "werden kopiert" : "wurden verschoben"}.`);
-      if (transfer.operation === "cut" && !crossDriveCut && !result.errors.length) setClipboard(null);
+      if (count) setMessage(transfer.operation === "copy" ? `${count} Element(e) ${result.queued ? "werden kopiert" : "wurden kopiert"}.` : `${count} Element(e) wurden verschoben.`);
+      if (transfer.operation === "cut" && !result.errors.length) setClipboard(null);
       if (result.queued) await new Promise((resolve) => window.setTimeout(resolve, 1400));
       if (source.id === destinationDriveId || source.id === transfer.driveId) await loadItems(source, parentId);
     } catch (actionError) { setError(String(actionError)); }
@@ -426,8 +518,6 @@ export function DocumentsPage({ onNavigate }: DocumentsPageProps) {
     cut: (item) => placeOnClipboard("cut", [item]), rename: renameItem, remove: (item) => removeItems([item])
   };
 
-  if (connected === false) return <div className="page documents-page documents-empty-state"><Cloud size={52} /><h2>Dokumente</h2><p>Verbinden Sie zuerst Ihr Microsoft-365-Konto. Danach erscheinen OneDrive und freigegebene SharePoint-Bibliotheken automatisch.</p><button className="primary large" type="button" onClick={() => onNavigate("m365")}>Microsoft 365 verbinden</button></div>;
-
   return <div className={`page documents-page ${externalDrag ? "external-drag-active" : ""}`} onClick={() => setContextMenu(null)}>
     <header className="documents-header">
       <h2>Dokumente</h2>
@@ -464,11 +554,32 @@ export function DocumentsPage({ onNavigate }: DocumentsPageProps) {
         </button>
       </div>
     </header>
-    {syncSummary && <div className="documents-sync-strip"><CheckCircle2 size={16} /><span>{syncing ? "Änderungen werden abgeglichen …" : syncConflicts.length ? `${syncConflicts.length} Konflikt(e) warten auf Ihre Entscheidung` : "Offline-Dateien werden automatisch synchronisiert"}</span><small>{syncSummary.uploaded} hochgeladen · {syncSummary.downloaded} aktualisiert</small></div>}
-    {error && <div className="status-message error documents-multiline-message">{error}</div>}
-    {message && <div className="status-message success">{message}</div>}
+    {connected === false && <section className="documents-reconnect-card" role="alert" aria-live="polite">
+      <div className="documents-reconnect-icon">{reconnectCode ? <KeyRound size={30} /> : <AlertTriangle size={30} />}</div>
+      <div className="documents-reconnect-content">
+        <h3>{reconnectCode ? "Microsoft-Anmeldung abschließen" : "Microsoft 365 ist nicht verbunden"}</h3>
+        {!reconnectCode ? <>
+          <p>Ihre gespeicherte Anmeldung ist nicht mehr gültig. Verbinden Sie das Konto erneut, damit OneDrive und SharePoint wieder angezeigt und synchronisiert werden.</p>
+          <button className="primary large documents-reconnect-button" type="button" onClick={startReconnect} disabled={reconnectBusy}>
+            {reconnectBusy ? <LoaderCircle className="spin" size={21} /> : <Cloud size={21} />} Jetzt wieder verbinden
+          </button>
+        </> : <>
+          <p>Die geschützte Microsoft-Anmeldung wurde geöffnet. Der einmalige Code wurde automatisch kopiert. Geben Sie ihn dort ein und melden Sie sich mit Ihrem Microsoft-Konto an.</p>
+          <div className="documents-reconnect-code"><span>Ihr Anmeldecode</span><strong>{reconnectCode.userCode}</strong><small>Bereits in die Zwischenablage kopiert</small></div>
+          <div className="documents-reconnect-actions">
+            <button className="primary" type="button" onClick={reopenMicrosoftSignIn}><ExternalLink size={18} /> Anmeldung erneut öffnen</button>
+            <button type="button" onClick={cancelReconnect}><X size={18} /> Abbrechen</button>
+          </div>
+          <p className="documents-reconnect-waiting"><LoaderCircle className="spin" size={18} /> Diese Seite verbindet sich danach automatisch.</p>
+        </>}
+        {reconnectError && <div className="status-message error">{reconnectError}</div>}
+      </div>
+    </section>}
+    {connected !== false && syncSummary && <div className="documents-sync-strip"><CheckCircle2 size={16} /><span>{syncing ? "Änderungen werden abgeglichen …" : syncConflicts.length ? `${syncConflicts.length} Konflikt(e) warten auf Ihre Entscheidung` : "Offline-Dateien werden automatisch synchronisiert"}</span><small>{syncSummary.uploaded} hochgeladen · {syncSummary.downloaded} aktualisiert</small></div>}
+    {connected !== false && error && <div className="status-message error documents-multiline-message">{error}</div>}
+    {connected !== false && message && <div className="status-message success">{message}</div>}
 
-    <div className="documents-layout">
+    {connected !== false && <div className="documents-layout">
       <aside className="documents-sources"><h3><HardDrive size={18} /> Speicherorte</h3>
         {groupedSources.oneDrive.map((item) => <SourceButton key={item.id} item={item} active={source?.id === item.id} onClick={() => selectSource(item)} onDrop={(event) => dropInternal(event, undefined, item.id)} />)}
         {sourcesLoading && <p className="documents-sources-loading"><LoaderCircle className="spin" size={17} /> SharePoint wird geladen …</p>}{sourcesError && <p className="documents-sources-error">{sourcesError}</p>}
@@ -495,14 +606,14 @@ export function DocumentsPage({ onNavigate }: DocumentsPageProps) {
         </div>
         {busy ? <div className="documents-loading"><LoaderCircle className="spin" size={30} /> Dokumente werden geladen …</div> : view === "list" ? <div className="documents-table" role="table">
           <div className="documents-row heading" role="row"><button className="documents-select-all" type="button" title="Alle auswählen" onClick={() => setSelectedIds(selectedIds.size === visibleItems.length ? new Set() : new Set(visibleItems.map((item) => item.id)))}><CheckSquare size={17} /></button><span>Name</span><span>Geändert</span><span>Geändert von</span><span>Größe</span><span /></div>
-          {visibleItems.map((item) => <DocumentRow key={item.id} item={item} selected={selectedIds.has(item.id)} cut={clipboard?.operation === "cut" && clipboard.driveId === source?.id && clipboard.items.some((entry) => entry.id === item.id)} menuOpen={menuItemId === item.id} dropTarget={dropTargetId === item.id} onSelect={selectItem} onToggle={toggleItem} onOpen={() => openItem(item)} onMenu={() => { setSelectedIds(new Set([item.id])); setMenuItemId((current) => current === item.id ? null : item.id); }} onContextMenu={openItemContextMenu} onDragStart={startInternalDrag} onDragOver={(event) => { if (item.isFolder) { event.preventDefault(); event.stopPropagation(); setDropTargetId(item.id); } }} onDragLeave={() => setDropTargetId(null)} onDrop={(event) => item.isFolder && dropInternal(event, item.id)} actions={actions} />)}
+          {visibleItems.map((item) => <DocumentRow key={item.id} item={item} fileIcon={fileIcons[fileExtensionKey(item.name)]} selected={selectedIds.has(item.id)} cut={clipboard?.operation === "cut" && clipboard.driveId === source?.id && clipboard.items.some((entry) => entry.id === item.id)} menuOpen={menuItemId === item.id} dropTarget={dropTargetId === item.id} onSelect={selectItem} onToggle={toggleItem} onOpen={() => openItem(item)} onMenu={() => { setSelectedIds(new Set([item.id])); setMenuItemId((current) => current === item.id ? null : item.id); }} onContextMenu={openItemContextMenu} onDragStart={startInternalDrag} onDragOver={(event) => { if (item.isFolder) { event.preventDefault(); event.stopPropagation(); setDropTargetId(item.id); } }} onDragLeave={() => setDropTargetId(null)} onDrop={(event) => item.isFolder && dropInternal(event, item.id)} actions={actions} />)}
           {items.length === 0 && <div className="documents-no-items">Dieser Ordner ist leer. Dateien oder Ordner können hierher gezogen werden.</div>}{items.length > 0 && visibleItems.length === 0 && <div className="documents-no-items">Keine passenden Dokumente gefunden.</div>}
-        </div> : <div className="documents-grid">{visibleItems.map((item) => <article key={item.id} className={`documents-tile ${selectedIds.has(item.id) ? "selected" : ""} ${dropTargetId === item.id ? "drop-target" : ""}`} role="button" tabIndex={0} draggable onClick={(event) => selectItem(event, item)} onDoubleClick={() => openItem(item)} onKeyDown={(event) => { if (event.key === "Enter") void openItem(item); }} onContextMenu={(event) => openItemContextMenu(event, item)} onDragStart={(event) => startInternalDrag(event, item)} onDragOver={(event) => { if (item.isFolder) { event.preventDefault(); event.stopPropagation(); setDropTargetId(item.id); } }} onDragLeave={() => setDropTargetId(null)} onDrop={(event) => item.isFolder && dropInternal(event, item.id)}>{item.isFolder ? <Folder size={42} /> : <File size={42} />}<strong>{item.name}</strong><small>{item.isFolder ? "Ordner" : item.offlineAvailable ? "Offline verfügbar" : formatSize(item.size)}</small>{menuItemId === item.id && <div className="documents-menu documents-grid-menu" onClick={(event) => event.stopPropagation()}><DocumentMenu item={item} actions={actions} /></div>}</article>)}</div>}
+        </div> : <div className="documents-grid">{visibleItems.map((item) => <article key={item.id} className={`documents-tile ${selectedIds.has(item.id) ? "selected" : ""} ${dropTargetId === item.id ? "drop-target" : ""}`} role="button" tabIndex={0} draggable onClick={(event) => selectItem(event, item)} onDoubleClick={() => openItem(item)} onKeyDown={(event) => { if (event.key === "Enter") void openItem(item); }} onContextMenu={(event) => openItemContextMenu(event, item)} onDragStart={(event) => startInternalDrag(event, item)} onDragOver={(event) => { if (item.isFolder) { event.preventDefault(); event.stopPropagation(); setDropTargetId(item.id); } }} onDragLeave={() => setDropTargetId(null)} onDrop={(event) => item.isFolder && dropInternal(event, item.id)}><DocumentItemIcon item={item} fileIcon={fileIcons[fileExtensionKey(item.name)]} size={42} /><strong>{item.name}</strong><small>{item.isFolder ? "Ordner" : item.offlineAvailable ? "Offline verfügbar" : formatSize(item.size)}</small>{menuItemId === item.id && <div className="documents-menu documents-grid-menu" onClick={(event) => event.stopPropagation()}><DocumentMenu item={item} actions={actions} /></div>}</article>)}</div>}
         <footer className="documents-statusbar"><span>{visibleItems.length} Element(e)</span><span>{selectedIds.size ? `${selectedIds.size} ausgewählt` : "Rechtsklick für Aktionen · Strg+A wählt alles aus"}</span>{clipboard && <span className="documents-clipboard-status">{clipboard.operation === "copy" ? <Copy size={14} /> : <Scissors size={14} />} {clipboard.items.length} vorgemerkt</span>}</footer>
       </section>
-    </div>
+    </div>}
 
-    {contextMenu && <div
+    {connected !== false && contextMenu && <div
       className="documents-menu documents-context-menu"
       role="menu"
       style={{
@@ -529,7 +640,7 @@ export function DocumentsPage({ onNavigate }: DocumentsPageProps) {
       </>}
     </div>}
 
-    {externalDrag && <div className="documents-drop-overlay"><UploadCloud size={52} /><strong>In „{currentBreadcrumb?.name}“ hochladen</strong><span>Dateien oder komplette Ordner loslassen</span></div>}
+    {connected !== false && externalDrag && <div className="documents-drop-overlay"><UploadCloud size={52} /><strong>In „{currentBreadcrumb?.name}“ hochladen</strong><span>Dateien oder komplette Ordner loslassen</span></div>}
     {versionsItem && <div className="modal-backdrop" onMouseDown={() => setVersionsItem(null)}><section className="modal-card documents-versions-dialog" onMouseDown={(event) => event.stopPropagation()}><header><div><History size={22} /><span><strong>Versionsverlauf</strong><small>{versionsItem.name}</small></span></div><button className="icon-only" type="button" onClick={() => setVersionsItem(null)}><X size={20} /></button></header>{versionsLoading ? <div className="documents-loading"><LoaderCircle className="spin" size={25} /> Versionen werden geladen …</div> : versions.length === 0 ? <p>Keine früheren Versionen verfügbar.</p> : <div className="documents-version-list">{versions.map((version, index) => <article key={version.id}><span><strong>Version {version.id}{index === 0 ? " · Aktuell" : ""}</strong><small>{formatDate(version.lastModifiedAt)} · {version.modifiedBy || "Unbekannt"} · {formatSize(version.size)}</small></span>{index > 0 && <button type="button" onClick={() => restoreVersion(version)}>Wiederherstellen</button>}</article>)}</div>}</section></div>}
     {showConflicts && <div className="modal-backdrop" onMouseDown={() => setShowConflicts(false)}><section className="modal-card documents-conflict-dialog" onMouseDown={(event) => event.stopPropagation()}><header><div><AlertTriangle size={24} /><span><strong>Synchronisierungskonflikte</strong><small>Keine Version wird ohne Ihre Entscheidung überschrieben.</small></span></div><button className="icon-only" type="button" onClick={() => setShowConflicts(false)}><X size={20} /></button></header>{syncConflicts.length === 0 ? <div className="documents-conflict-empty"><CheckCircle2 size={34} /><strong>Alles gelöst</strong><span>Es sind keine Konflikte mehr offen.</span></div> : <div className="documents-conflict-list">{syncConflicts.map((conflict) => <article key={conflict.id}><div className="documents-conflict-title"><File size={23} /><span><strong>{conflict.name}</strong><small>{conflict.kind === "remoteDeleted" ? "Online gelöscht, lokal noch vorhanden" : "Lokal und online geändert"}</small></span></div>{conflict.kind === "bothModified" && <div className="documents-conflict-comparison"><span><strong>Ihre Offline-Version</strong><small>Auf diesem PC geändert</small></span><span><strong>Online-Version</strong><small>{conflict.remoteModifiedBy || "Andere Person"} · {formatDate(conflict.remoteModifiedAt)}</small></span></div>}<div className="documents-conflict-actions">{conflict.kind === "remoteDeleted" ? <><button className="primary" type="button" disabled={resolvingConflictId === conflict.id} onClick={() => resolveSyncConflict(conflict, "useLocal")}>Lokale Datei wiederherstellen</button><button type="button" disabled={resolvingConflictId === conflict.id} onClick={() => resolveSyncConflict(conflict, "useOnline")}>Online-Löschung akzeptieren</button></> : <><button className="primary" type="button" disabled={resolvingConflictId === conflict.id} onClick={() => resolveSyncConflict(conflict, "keepBoth")}>Beide behalten <small>Empfohlen</small></button><button type="button" disabled={resolvingConflictId === conflict.id} onClick={() => resolveSyncConflict(conflict, "useLocal")}>Meine Version</button><button type="button" disabled={resolvingConflictId === conflict.id} onClick={() => resolveSyncConflict(conflict, "useOnline")}>Online-Version</button></>}<button type="button" onClick={() => resolveSyncConflict(conflict, "later")}>Später</button></div></article>)}</div>}</section></div>}
   </div>;
@@ -541,10 +652,16 @@ function SourceButton({ item, active, onClick, onDrop }: { item: DocumentSource;
   return <button className={active ? "active" : ""} type="button" onClick={onClick} onDragOver={(event) => event.preventDefault()} onDrop={onDrop} title={`${item.siteName} – ${item.name}`}>{item.kind === "onedrive" ? <Cloud size={18} /> : <Folder size={18} />}<span><strong>{item.kind === "onedrive" ? "Mein OneDrive" : item.siteName}</strong><small>{item.name}</small></span></button>;
 }
 
-function DocumentRow({ item, selected, cut, menuOpen, dropTarget, onSelect, onToggle, onOpen, onMenu, onContextMenu, onDragStart, onDragOver, onDragLeave, onDrop, actions }: { item: DocumentItem; selected: boolean; cut: boolean; menuOpen: boolean; dropTarget: boolean; onSelect: (event: MouseEvent, item: DocumentItem) => void; onToggle: (item: DocumentItem) => void; onOpen: () => void; onMenu: () => void; onContextMenu: (event: MouseEvent, item: DocumentItem) => void; onDragStart: (event: DragEvent, item: DocumentItem) => void; onDragOver: (event: DragEvent) => void; onDragLeave: () => void; onDrop: (event: DragEvent) => void; actions: DocumentActions }) {
+function DocumentItemIcon({ item, fileIcon, size }: { item: DocumentItem; fileIcon?: string; size: number }) {
+  if (item.isFolder) return <Folder size={size} />;
+  if (fileIcon) return <img className="documents-system-file-icon" src={fileIcon} width={size} height={size} alt="" aria-hidden="true" draggable={false} />;
+  return <File size={size} />;
+}
+
+function DocumentRow({ item, fileIcon, selected, cut, menuOpen, dropTarget, onSelect, onToggle, onOpen, onMenu, onContextMenu, onDragStart, onDragOver, onDragLeave, onDrop, actions }: { item: DocumentItem; fileIcon?: string; selected: boolean; cut: boolean; menuOpen: boolean; dropTarget: boolean; onSelect: (event: MouseEvent, item: DocumentItem) => void; onToggle: (item: DocumentItem) => void; onOpen: () => void; onMenu: () => void; onContextMenu: (event: MouseEvent, item: DocumentItem) => void; onDragStart: (event: DragEvent, item: DocumentItem) => void; onDragOver: (event: DragEvent) => void; onDragLeave: () => void; onDrop: (event: DragEvent) => void; actions: DocumentActions }) {
   return <div className={`documents-row ${selected ? "selected" : ""} ${cut ? "cut" : ""} ${dropTarget ? "drop-target" : ""}`} role="row" draggable onClick={(event) => onSelect(event, item)} onDoubleClick={onOpen} onContextMenu={(event) => onContextMenu(event, item)} onDragStart={(event) => onDragStart(event, item)} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
     <label className="documents-row-check" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={selected} onChange={() => onToggle(item)} aria-label={`${item.name} auswählen`} /></label>
-    <button className="documents-name" type="button" onClick={(event) => { event.stopPropagation(); onSelect(event, item); }} onDoubleClick={(event) => { event.stopPropagation(); onOpen(); }}>{item.isFolder ? <Folder size={21} /> : <File size={21} />}<span>{item.name}{item.offlineAvailable && <small className={item.offlineOutdated ? "outdated" : ""}>{item.offlineOutdated ? "Online-Version ist neuer" : "Offline verfügbar"}</small>}</span></button>
+    <button className="documents-name" type="button" onClick={(event) => { event.stopPropagation(); onSelect(event, item); }} onDoubleClick={(event) => { event.stopPropagation(); onOpen(); }}><DocumentItemIcon item={item} fileIcon={fileIcon} size={24} /><span>{item.name}{item.offlineAvailable && <small className={item.offlineOutdated ? "outdated" : ""}>{item.offlineOutdated ? "Online-Version ist neuer" : "Offline verfügbar"}</small>}</span></button>
     <span>{formatDate(item.lastModifiedAt)}</span><span>{item.modifiedBy || "–"}</span><span>{item.isFolder ? "–" : formatSize(item.size)}</span>
     <div className="documents-menu-wrap"><button className="icon-only compact" type="button" aria-label={`Aktionen für ${item.name}`} onClick={(event) => { event.stopPropagation(); onMenu(); }}><MoreHorizontal size={18} /></button>{menuOpen && <div className="documents-menu" onClick={(event) => event.stopPropagation()}><DocumentMenu item={item} actions={actions} /></div>}</div>
   </div>;

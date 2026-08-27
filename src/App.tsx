@@ -199,7 +199,7 @@ export default function App() {
           {(page === "import" || page === "export" || page === "m365") && <AdvancedSubtabs activePage={page} onNavigate={navigate} />}
           {page === "contacts" && <ContactsPage />}
           {page === "calendar" && <CalendarPage />}
-          {page === "documents" && <DocumentsPage onNavigate={navigate} />}
+          {page === "documents" && <DocumentsPage />}
           {page === "services" && <DienstleistungenPage />}
           {page === "passwords" && <PasswordsPage status={vaultStatus} onStatusChanged={setVaultStatus} />}
           {page === "authenticator" && <AuthenticatorPage />}

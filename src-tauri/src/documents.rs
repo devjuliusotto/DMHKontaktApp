@@ -9,11 +9,17 @@ use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "windows")]
+use std::process::Command;
+use std::time::Duration;
 use tauri::{AppHandle, Manager};
+use tauri_plugin_opener::OpenerExt;
 
 const GRAPH: &str = "https://graph.microsoft.com/v1.0";
 const SIMPLE_UPLOAD_LIMIT: u64 = 10 * 1024 * 1024;
 const UPLOAD_CHUNK_SIZE: usize = 10 * 1024 * 1024;
+const COPY_MONITOR_INTERVAL: Duration = Duration::from_secs(2);
+const COPY_MONITOR_MAX_POLLS: usize = 150;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -228,6 +234,66 @@ async fn graph_write(
     }
 }
 
+fn office_uri_scheme(file_name: &str) -> Option<&'static str> {
+    let extension = Path::new(file_name)
+        .extension()?
+        .to_str()?
+        .to_ascii_lowercase();
+    match extension.as_str() {
+        "doc" | "docx" | "docm" | "dot" | "dotx" | "dotm" | "odt" => Some("ms-word"),
+        "xls" | "xlsx" | "xlsm" | "xlsb" | "xlt" | "xltx" | "xltm" | "csv" => Some("ms-excel"),
+        "ppt" | "pptx" | "pptm" | "pps" | "ppsx" | "ppsm" | "pot" | "potx" | "potm" => {
+            Some("ms-powerpoint")
+        }
+        _ => None,
+    }
+}
+
+fn office_document_uri(file_name: &str, web_url: &str) -> Option<(String, String)> {
+    if !(web_url.starts_with("https://") || web_url.starts_with("http://")) {
+        return None;
+    }
+    let scheme = office_uri_scheme(file_name)?;
+    Some((scheme.to_string(), format!("{scheme}:ofe|u|{web_url}")))
+}
+
+#[cfg(target_os = "windows")]
+fn office_uri_scheme_available(scheme: &str) -> bool {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    Command::new("reg.exe")
+        .args(["query", &format!(r"HKCR\{scheme}")])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn office_uri_scheme_available(_scheme: &str) -> bool {
+    false
+}
+
+#[tauri::command]
+pub fn open_document_in_office(
+    app: AppHandle,
+    file_name: String,
+    web_url: String,
+) -> Result<String, String> {
+    let Some((scheme, office_uri)) = office_document_uri(&file_name, &web_url) else {
+        return Ok("unsupported".to_string());
+    };
+    if office_uri_scheme_available(&scheme)
+        && app.opener().open_url(&office_uri, None::<&str>).is_ok()
+    {
+        return Ok("desktop".to_string());
+    }
+    app.opener()
+        .open_url(&web_url, None::<&str>)
+        .map_err(|error| format!("Das Dokument konnte nicht geöffnet werden: {error}"))?;
+    Ok("web".to_string())
+}
+
 fn drive_source(value: &Value, kind: &str, site_name: &str) -> Option<DocumentSource> {
     let id = text(value, "id");
     if id.is_empty() {
@@ -439,21 +505,32 @@ fn save_offline_manifest(app: &AppHandle, manifest: &OfflineManifest) -> Result<
 }
 
 fn document_conflicts_path(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(app.path().app_data_dir().map_err(|error| error.to_string())?.join("documents-conflicts.json"))
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("documents-conflicts.json"))
 }
 
 fn load_document_conflicts(app: &AppHandle) -> Result<DocumentConflictStore, String> {
     let path = document_conflicts_path(app)?;
-    if !path.exists() { return Ok(DocumentConflictStore::default()); }
+    if !path.exists() {
+        return Ok(DocumentConflictStore::default());
+    }
     serde_json::from_slice(&fs::read(path).map_err(|error| error.to_string())?)
         .map_err(|error| error.to_string())
 }
 
 fn save_document_conflicts(app: &AppHandle, store: &DocumentConflictStore) -> Result<(), String> {
     let path = document_conflicts_path(app)?;
-    if let Some(parent) = path.parent() { fs::create_dir_all(parent).map_err(|error| error.to_string())?; }
-    fs::write(path, serde_json::to_vec_pretty(store).map_err(|error| error.to_string())?)
-        .map_err(|error| error.to_string())
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(store).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())
 }
 
 fn conflict_id(drive_id: &str, item_id: &str) -> String {
@@ -533,7 +610,11 @@ fn attach_offline_status(app: &AppHandle, items: &mut [DocumentItem]) -> Result<
     let manifest = load_offline_manifest(app)?;
     for item in items {
         if item.is_folder {
-            if let Some(folder) = manifest.folders.iter().find(|entry| entry.drive_id == item.drive_id && entry.item_id == item.id) {
+            if let Some(folder) = manifest
+                .folders
+                .iter()
+                .find(|entry| entry.drive_id == item.drive_id && entry.item_id == item.id)
+            {
                 item.offline_available = Path::new(&folder.local_path).is_dir();
                 item.local_path = folder.local_path.clone();
             }
@@ -653,14 +734,148 @@ pub async fn delete_document_item(
     Ok(())
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum CopyMonitorState {
+    Pending,
+    Completed,
+    Failed(String),
+}
+
+fn graph_error_detail(bytes: &[u8]) -> String {
+    serde_json::from_slice::<Value>(bytes)
+        .ok()
+        .and_then(|value| {
+            value
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| {
+            String::from_utf8_lossy(bytes)
+                .trim()
+                .chars()
+                .take(500)
+                .collect()
+        })
+}
+
+fn copy_monitor_state(value: &Value) -> CopyMonitorState {
+    match value
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "completed" => CopyMonitorState::Completed,
+        "failed" | "deletefailed" => CopyMonitorState::Failed(
+            value
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("Der Kopiervorgang ist fehlgeschlagen.")
+                .to_string(),
+        ),
+        _ => CopyMonitorState::Pending,
+    }
+}
+
+async fn start_document_copy(
+    token: &str,
+    source_drive_id: &str,
+    item_id: &str,
+    destination_drive_id: &str,
+    destination_id: &str,
+) -> Result<Option<String>, String> {
+    let endpoint = format!(
+        "{GRAPH}/drives/{}/items/{}/copy?@microsoft.graph.conflictBehavior=rename",
+        encode_segment(source_drive_id),
+        encode_segment(item_id)
+    );
+    let response = m365::http_client()
+        .post(&endpoint)
+        .bearer_auth(token)
+        .json(&json!({
+            "parentReference": {
+                "driveId": destination_drive_id,
+                "id": destination_id
+            }
+        }))
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    let status = response.status();
+    let monitor_url = response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let bytes = response.bytes().await.map_err(|error| error.to_string())?;
+    if !status.is_success() {
+        return Err(format!(
+            "Microsoft 365 ({status}): {}",
+            graph_error_detail(&bytes)
+        ));
+    }
+    if status == reqwest::StatusCode::ACCEPTED && monitor_url.is_none() {
+        return Err(
+            "Microsoft 365 hat keine Adresse zur Überwachung des Kopiervorgangs geliefert."
+                .to_string(),
+        );
+    }
+    Ok(monitor_url)
+}
+
+async fn wait_for_copy_completion(token: &str, monitor_url: &str) -> Result<(), String> {
+    for _ in 0..COPY_MONITOR_MAX_POLLS {
+        let response = m365::http_client()
+            .get(monitor_url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|error| error.to_string())?;
+        let status = response.status();
+        let bytes = response.bytes().await.map_err(|error| error.to_string())?;
+        if !status.is_success() {
+            return Err(format!(
+                "Microsoft 365 ({status}): {}",
+                graph_error_detail(&bytes)
+            ));
+        }
+        if !bytes.is_empty() {
+            let value = serde_json::from_slice::<Value>(&bytes).map_err(|error| {
+                format!("Der Kopierstatus konnte nicht gelesen werden: {error}")
+            })?;
+            match copy_monitor_state(&value) {
+                CopyMonitorState::Completed => return Ok(()),
+                CopyMonitorState::Failed(error) => return Err(error),
+                CopyMonitorState::Pending => {}
+            }
+        }
+        tokio::time::sleep(COPY_MONITOR_INTERVAL).await;
+    }
+    Err("Der Kopiervorgang dauert ungewöhnlich lange. Das Original wurde sicherheitshalber nicht gelöscht.".to_string())
+}
+
+fn remove_offline_manifest_items(
+    app: &AppHandle,
+    drive_id: &str,
+    item_ids: &HashSet<String>,
+) -> Result<(), String> {
+    let mut manifest = load_offline_manifest(app)?;
+    manifest
+        .entries
+        .retain(|entry| entry.drive_id != drive_id || !item_ids.contains(&entry.item_id));
+    manifest
+        .folders
+        .retain(|entry| entry.drive_id != drive_id || !item_ids.contains(&entry.item_id));
+    save_offline_manifest(app, &manifest)
+}
+
 #[tauri::command]
 pub async fn move_document_items(
     app: AppHandle,
     request: DocumentTransferRequest,
 ) -> Result<DocumentTransferResult, String> {
-    if request.source_drive_id != request.destination_drive_id {
-        return Err("Verschieben zwischen OneDrive- und SharePoint-Bibliotheken ist technisch nicht möglich. Verwenden Sie Kopieren und löschen Sie das Original anschließend bewusst.".to_string());
-    }
     let token = m365::refreshed_access_token(&app).await?;
     let destination_id = destination_folder_id(
         &token,
@@ -668,10 +883,63 @@ pub async fn move_document_items(
         request.destination_parent_id.as_deref(),
     )
     .await?;
-    let mut result = DocumentTransferResult { processed: 0, queued: 0, errors: Vec::new() };
+    let mut result = DocumentTransferResult {
+        processed: 0,
+        queued: 0,
+        errors: Vec::new(),
+    };
     for item_id in request.item_ids {
-        if item_id == destination_id {
-            result.errors.push("Ein Ordner kann nicht in sich selbst verschoben werden.".to_string());
+        if request.source_drive_id == request.destination_drive_id && item_id == destination_id {
+            result
+                .errors
+                .push("Ein Ordner kann nicht in sich selbst verschoben werden.".to_string());
+            continue;
+        }
+        if request.source_drive_id != request.destination_drive_id {
+            if let Err(error) =
+                ensure_local_file_can_be_replaced(&app, &request.source_drive_id, &item_id)
+            {
+                result.errors.push(error);
+                continue;
+            }
+            let copied = match start_document_copy(
+                &token,
+                &request.source_drive_id,
+                &item_id,
+                &request.destination_drive_id,
+                &destination_id,
+            )
+            .await
+            {
+                Ok(Some(monitor_url)) => wait_for_copy_completion(&token, &monitor_url).await,
+                Ok(None) => Ok(()),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = copied {
+                result.errors.push(format!(
+                    "Kopieren fehlgeschlagen; das Original bleibt erhalten: {error}"
+                ));
+                continue;
+            }
+            let endpoint = format!(
+                "{GRAPH}/drives/{}/items/{}",
+                encode_segment(&request.source_drive_id),
+                encode_segment(&item_id)
+            );
+            match graph_write(&token, Method::DELETE, &endpoint, None).await {
+                Ok(_) => {
+                    result.processed += 1;
+                    let moved_ids = HashSet::from([item_id]);
+                    if let Err(error) = remove_offline_manifest_items(
+                        &app,
+                        &request.source_drive_id,
+                        &moved_ids,
+                    ) {
+                        result.errors.push(format!("Das Element wurde verschoben, aber der Offline-Status konnte nicht bereinigt werden: {error}"));
+                    }
+                }
+                Err(error) => result.errors.push(format!("Die Kopie wurde erstellt, aber das Original konnte nicht in den Papierkorb verschoben werden: {error}")),
+            }
             continue;
         }
         let endpoint = format!(
@@ -706,31 +974,24 @@ pub async fn copy_document_items(
         request.destination_parent_id.as_deref(),
     )
     .await?;
-    let mut result = DocumentTransferResult { processed: 0, queued: 0, errors: Vec::new() };
+    let mut result = DocumentTransferResult {
+        processed: 0,
+        queued: 0,
+        errors: Vec::new(),
+    };
     for item_id in request.item_ids {
-        let endpoint = format!(
-            "{GRAPH}/drives/{}/items/{}/copy?@microsoft.graph.conflictBehavior=rename",
-            encode_segment(&request.source_drive_id),
-            encode_segment(&item_id)
-        );
-        let response = m365::http_client()
-            .post(&endpoint)
-            .bearer_auth(&token)
-            .json(&json!({
-                "parentReference": {
-                    "driveId": &request.destination_drive_id,
-                    "id": &destination_id
-                }
-            }))
-            .send()
-            .await
-            .map_err(|error| error.to_string())?;
-        if response.status().is_success() {
-            result.queued += 1;
-        } else {
-            let status = response.status();
-            let detail = response.text().await.unwrap_or_default();
-            result.errors.push(format!("Microsoft 365 ({status}): {detail}"));
+        match start_document_copy(
+            &token,
+            &request.source_drive_id,
+            &item_id,
+            &request.destination_drive_id,
+            &destination_id,
+        )
+        .await
+        {
+            Ok(Some(_)) => result.queued += 1,
+            Ok(None) => result.processed += 1,
+            Err(error) => result.errors.push(error),
         }
     }
     Ok(result)
@@ -748,9 +1009,16 @@ pub async fn create_document_text_file(
     if name.is_empty() || name.contains('/') || name.contains('\\') {
         return Err("Bitte geben Sie einen gültigen Dateinamen ein.".to_string());
     }
-    let file_name = if name.contains('.') { name.to_string() } else { format!("{name}.txt") };
+    let file_name = if name.contains('.') {
+        name.to_string()
+    } else {
+        format!("{name}.txt")
+    };
     let token = m365::refreshed_access_token(&app).await?;
-    let endpoint = match parent_id.as_deref().filter(|value| !value.trim().is_empty()) {
+    let endpoint = match parent_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
         Some(parent) => format!(
             "{GRAPH}/drives/{}/items/{}:/{}/content?@microsoft.graph.conflictBehavior=fail",
             encode_segment(&drive_id),
@@ -763,7 +1031,8 @@ pub async fn create_document_text_file(
             encode_segment(&file_name)
         ),
     };
-    let value = graph_upload_bytes(&token, &endpoint, content.unwrap_or_default().into_bytes()).await?;
+    let value =
+        graph_upload_bytes(&token, &endpoint, content.unwrap_or_default().into_bytes()).await?;
     item_from_value(value, &drive_id)
         .ok_or_else(|| "Die neue Datei konnte nicht ausgewertet werden.".to_string())
 }
@@ -791,7 +1060,8 @@ pub async fn create_document_share_link(
         })),
     )
     .await?;
-    value.pointer("/link/webUrl")
+    value
+        .pointer("/link/webUrl")
         .and_then(Value::as_str)
         .map(str::to_string)
         .ok_or_else(|| "Microsoft 365 hat keinen Freigabelink zurückgegeben.".to_string())
@@ -810,12 +1080,19 @@ pub async fn list_document_versions(
         encode_segment(&item_id)
     );
     let values = m365::graph_collection(&token, &endpoint).await?;
-    Ok(values.into_iter().map(|value| DocumentVersion {
-        id: text(&value, "id"),
-        last_modified_at: text(&value, "lastModifiedDateTime"),
-        modified_by: value.pointer("/lastModifiedBy/user/displayName").and_then(Value::as_str).unwrap_or("").to_string(),
-        size: value.get("size").and_then(Value::as_u64).unwrap_or(0),
-    }).collect())
+    Ok(values
+        .into_iter()
+        .map(|value| DocumentVersion {
+            id: text(&value, "id"),
+            last_modified_at: text(&value, "lastModifiedDateTime"),
+            modified_by: value
+                .pointer("/lastModifiedBy/user/displayName")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            size: value.get("size").and_then(Value::as_u64).unwrap_or(0),
+        })
+        .collect())
 }
 
 #[tauri::command]
@@ -874,23 +1151,45 @@ fn local_document_folder(app: &AppHandle, relative_path: Vec<String>) -> Result<
 }
 
 async fn graph_upload_bytes(token: &str, url: &str, bytes: Vec<u8>) -> Result<Value, String> {
-    let response = m365::http_client()
-        .put(url)
-        .bearer_auth(token)
-        .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
-        .body(bytes)
+    let response = graph_upload_request(token, url, bytes)
         .send()
         .await
         .map_err(|error| error.to_string())?;
     let status = response.status();
     let bytes = response.bytes().await.map_err(|error| error.to_string())?;
     if !status.is_success() {
-        return Err(format!(
-            "Upload fehlgeschlagen ({status}): {}",
-            String::from_utf8_lossy(&bytes)
-        ));
+        let detail = upload_error_detail(status, &bytes);
+        return Err(format!("Upload fehlgeschlagen ({status}): {detail}"));
     }
     serde_json::from_slice(&bytes).map_err(|error| error.to_string())
+}
+
+fn graph_upload_request(token: &str, url: &str, bytes: Vec<u8>) -> reqwest::RequestBuilder {
+    let content_length = bytes.len();
+    m365::http_client()
+        .put(url)
+        .bearer_auth(token)
+        .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+        .header(reqwest::header::CONTENT_LENGTH, content_length)
+        .body(bytes)
+}
+
+fn upload_error_detail(status: reqwest::StatusCode, bytes: &[u8]) -> String {
+    if let Ok(value) = serde_json::from_slice::<Value>(bytes) {
+        if let Some(message) = value.pointer("/error/message").and_then(Value::as_str) {
+            return message.trim().chars().take(500).collect();
+        }
+    }
+    let detail = String::from_utf8_lossy(bytes);
+    let detail = detail.trim();
+    if status == reqwest::StatusCode::LENGTH_REQUIRED {
+        return "Microsoft 365 benötigt eine feste Dateigröße für diesen Upload.".to_string();
+    }
+    if detail.starts_with("<!DOCTYPE") || detail.starts_with("<HTML") || detail.starts_with("<html")
+    {
+        return "Microsoft 365 hat keine lesbare Fehlerbeschreibung geliefert.".to_string();
+    }
+    detail.chars().take(500).collect()
 }
 
 async fn upload_large_file(
@@ -985,14 +1284,26 @@ async fn remote_document_metadata(
         encode_segment(drive_id),
         encode_segment(item_id)
     );
-    let response = m365::http_client().get(url).bearer_auth(token).send().await.map_err(|error| error.to_string())?;
-    if response.status() == reqwest::StatusCode::NOT_FOUND { return Ok(None); }
+    let response = m365::http_client()
+        .get(url)
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
     let status = response.status();
     let bytes = response.bytes().await.map_err(|error| error.to_string())?;
     if !status.is_success() {
-        return Err(format!("Microsoft 365 ({status}): {}", String::from_utf8_lossy(&bytes)));
+        return Err(format!(
+            "Microsoft 365 ({status}): {}",
+            String::from_utf8_lossy(&bytes)
+        ));
     }
-    serde_json::from_slice(&bytes).map(Some).map_err(|error| error.to_string())
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|error| error.to_string())
 }
 
 async fn download_remote_to_path(
@@ -1006,10 +1317,23 @@ async fn download_remote_to_path(
         encode_segment(drive_id),
         encode_segment(item_id)
     );
-    let response = m365::http_client().get(url).bearer_auth(token).send().await.map_err(|error| error.to_string())?;
-    if !response.status().is_success() { return Err(format!("Download fehlgeschlagen: {}", response.status())); }
-    if let Some(parent) = path.parent() { fs::create_dir_all(parent).map_err(|error| error.to_string())?; }
-    fs::write(path, response.bytes().await.map_err(|error| error.to_string())?).map_err(|error| error.to_string())
+    let response = m365::http_client()
+        .get(url)
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("Download fehlgeschlagen: {}", response.status()));
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    fs::write(
+        path,
+        response.bytes().await.map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())
 }
 
 async fn replace_remote_content(
@@ -1025,19 +1349,33 @@ async fn replace_remote_content(
             encode_segment(drive_id),
             encode_segment(item_id)
         );
-        graph_upload_bytes(token, &endpoint, fs::read(file_path).map_err(|error| error.to_string())?).await?
+        graph_upload_bytes(
+            token,
+            &endpoint,
+            fs::read(file_path).map_err(|error| error.to_string())?,
+        )
+        .await?
     } else {
         let endpoint = format!(
             "{GRAPH}/drives/{}/items/{}/createUploadSession",
             encode_segment(drive_id),
             encode_segment(item_id)
         );
-        let session = graph_write(token, Method::POST, &endpoint, Some(json!({"item": {"@microsoft.graph.conflictBehavior": "replace"}}))).await?;
-        let upload_url = session.get("uploadUrl").and_then(Value::as_str)
+        let session = graph_write(
+            token,
+            Method::POST,
+            &endpoint,
+            Some(json!({"item": {"@microsoft.graph.conflictBehavior": "replace"}})),
+        )
+        .await?;
+        let upload_url = session
+            .get("uploadUrl")
+            .and_then(Value::as_str)
             .ok_or_else(|| "Microsoft 365 hat keine Upload-Adresse zurückgegeben.".to_string())?;
         upload_file_chunks(upload_url, file_path, metadata.len()).await?
     };
-    item_from_value(value, drive_id).ok_or_else(|| "Die aktualisierte Datei konnte nicht ausgewertet werden.".to_string())
+    item_from_value(value, drive_id)
+        .ok_or_else(|| "Die aktualisierte Datei konnte nicht ausgewertet werden.".to_string())
 }
 
 #[tauri::command]
@@ -1092,7 +1430,11 @@ async fn download_offline_folder_tree(
 ) -> Result<DocumentOfflineFolderResult, String> {
     let root = PathBuf::from(&folder.local_path);
     fs::create_dir_all(&root).map_err(|error| error.to_string())?;
-    let mut result = DocumentOfflineFolderResult { files: 0, folders: 1, skipped_local_changes: 0 };
+    let mut result = DocumentOfflineFolderResult {
+        files: 0,
+        folders: 1,
+        skipped_local_changes: 0,
+    };
     let mut pending = vec![(folder.item_id.clone(), root)];
     while let Some((remote_folder_id, local_folder)) = pending.pop() {
         let url = format!(
@@ -1103,7 +1445,9 @@ async fn download_offline_folder_tree(
         for value in m365::graph_collection(token, &url).await? {
             let item_id = text(&value, "id");
             let name = text(&value, "name");
-            if item_id.is_empty() || name.is_empty() { continue; }
+            if item_id.is_empty() || name.is_empty() {
+                continue;
+            }
             let local_path = local_folder.join(safe_file_name(&name));
             if value.get("folder").is_some() {
                 fs::create_dir_all(&local_path).map_err(|error| error.to_string())?;
@@ -1111,10 +1455,14 @@ async fn download_offline_folder_tree(
                 pending.push((item_id, local_path));
                 continue;
             }
-            let existing = load_offline_manifest(app)?.entries.into_iter()
+            let existing = load_offline_manifest(app)?
+                .entries
+                .into_iter()
                 .find(|entry| entry.drive_id == folder.drive_id && entry.item_id == item_id);
             if local_path.is_file()
-                && existing.as_ref().is_some_and(|entry| entry.e_tag == text(&value, "eTag"))
+                && existing
+                    .as_ref()
+                    .is_some_and(|entry| entry.e_tag == text(&value, "eTag"))
             {
                 continue;
             }
@@ -1138,7 +1486,10 @@ async fn download_offline_folder_tree(
     Ok(result)
 }
 
-async fn refresh_pinned_offline_folders(app: &AppHandle, token: &str) -> Result<DocumentOfflineFolderResult, String> {
+async fn refresh_pinned_offline_folders(
+    app: &AppHandle,
+    token: &str,
+) -> Result<DocumentOfflineFolderResult, String> {
     let folders = load_offline_manifest(app)?.folders;
     let mut total = DocumentOfflineFolderResult::default();
     for folder in folders {
@@ -1166,7 +1517,9 @@ pub async fn make_document_folder_offline(
         name,
     };
     let mut manifest = load_offline_manifest(&app)?;
-    manifest.folders.retain(|entry| entry.drive_id != drive_id || entry.item_id != folder_id);
+    manifest
+        .folders
+        .retain(|entry| entry.drive_id != drive_id || entry.item_id != folder_id);
     manifest.folders.push(folder.clone());
     save_offline_manifest(&app, &manifest)?;
     let token = m365::refreshed_access_token(&app).await?;
@@ -1185,8 +1538,13 @@ async fn upload_document_file_as_with_token(
     if !metadata.is_file() {
         return Err("Bitte wählen Sie eine Datei aus.".to_string());
     }
-    let file_name = remote_name.map(|value| safe_file_name(&value)).or_else(|| path.file_name()
-        .and_then(|value| value.to_str()).map(safe_file_name))
+    let file_name = remote_name
+        .map(|value| safe_file_name(&value))
+        .or_else(|| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .map(safe_file_name)
+        })
         .ok_or_else(|| "Der Dateiname konnte nicht gelesen werden.".to_string())?;
     let parent = parent_id.filter(|value| !value.trim().is_empty());
     let value = if metadata.len() <= SIMPLE_UPLOAD_LIMIT {
@@ -1260,10 +1618,14 @@ pub async fn upload_document_path(
             path.to_string_lossy().to_string(),
         )
         .await?;
-        return Ok(DocumentUploadResult { files: 1, folders: 0 });
+        return Ok(DocumentUploadResult {
+            files: 1,
+            folders: 0,
+        });
     }
 
-    let root_name = path.file_name()
+    let root_name = path
+        .file_name()
         .and_then(|value| value.to_str())
         .map(safe_file_name)
         .ok_or_else(|| "Der Ordnername konnte nicht gelesen werden.".to_string())?;
@@ -1275,7 +1637,10 @@ pub async fn upload_document_path(
         "rename",
     )
     .await?;
-    let mut result = DocumentUploadResult { files: 0, folders: 1 };
+    let mut result = DocumentUploadResult {
+        files: 0,
+        folders: 1,
+    };
     let mut pending = vec![(path, root_folder.id)];
     while let Some((local_folder, remote_parent_id)) = pending.pop() {
         let mut entries = fs::read_dir(&local_folder)
@@ -1326,7 +1691,8 @@ pub async fn upload_document_revision(
         return Err("Die lokale Datei wurde nicht gefunden.".to_string());
     }
     let token = m365::refreshed_access_token(&app).await?;
-    let remote = remote_document_metadata(&token, &drive_id, &item_id).await?
+    let remote = remote_document_metadata(&token, &drive_id, &item_id)
+        .await?
         .ok_or_else(|| "Die Online-Datei wurde gelöscht.".to_string())?;
     let current_e_tag = text(&remote, "eTag");
     if !expected_e_tag.is_empty() && current_e_tag != expected_e_tag {
@@ -1334,7 +1700,9 @@ pub async fn upload_document_revision(
     }
 
     let item = replace_remote_content(&token, &drive_id, &item_id, &path).await?;
-    let parent_id = remote.pointer("/parentReference/id").and_then(Value::as_str);
+    let parent_id = remote
+        .pointer("/parentReference/id")
+        .and_then(Value::as_str);
     record_offline_file(
         &app,
         &drive_id,
@@ -1349,34 +1717,69 @@ pub async fn upload_document_revision(
 
 fn remove_offline_entry(app: &AppHandle, drive_id: &str, item_id: &str) -> Result<(), String> {
     let mut manifest = load_offline_manifest(app)?;
-    manifest.entries.retain(|entry| entry.drive_id != drive_id || entry.item_id != item_id);
+    manifest
+        .entries
+        .retain(|entry| entry.drive_id != drive_id || entry.item_id != item_id);
     save_offline_manifest(app, &manifest)
 }
 
 fn conflict_copy_name(name: &str, user_name: &str) -> String {
     let path = Path::new(name);
-    let stem = path.file_stem().and_then(|value| value.to_str()).unwrap_or(name);
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(name);
     let extension = path.extension().and_then(|value| value.to_str());
-    let suffix = format!(" - Konflikt von {} - {}", safe_file_name(user_name), Utc::now().format("%Y-%m-%d %H%M"));
+    let suffix = format!(
+        " - Konflikt von {} - {}",
+        safe_file_name(user_name),
+        Utc::now().format("%Y-%m-%d %H%M")
+    );
     match extension {
         Some(extension) if !extension.is_empty() => format!("{stem}{suffix}.{extension}"),
         _ => format!("{stem}{suffix}"),
     }
 }
 
-fn conflict_from_entry(entry: &OfflineDocumentEntry, remote: Option<&Value>, kind: &str) -> DocumentSyncConflict {
+fn conflict_from_entry(
+    entry: &OfflineDocumentEntry,
+    remote: Option<&Value>,
+    kind: &str,
+) -> DocumentSyncConflict {
     let remote_name = remote.map(|value| text(value, "name")).unwrap_or_default();
     DocumentSyncConflict {
         id: conflict_id(&entry.drive_id, &entry.item_id),
         drive_id: entry.drive_id.clone(),
         item_id: entry.item_id.clone(),
-        name: if remote_name.is_empty() { if entry.name.is_empty() { Path::new(&entry.local_path).file_name().and_then(|value| value.to_str()).unwrap_or("Dokument").to_string() } else { entry.name.clone() } } else { remote_name },
+        name: if remote_name.is_empty() {
+            if entry.name.is_empty() {
+                Path::new(&entry.local_path)
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("Dokument")
+                    .to_string()
+            } else {
+                entry.name.clone()
+            }
+        } else {
+            remote_name
+        },
         local_path: entry.local_path.clone(),
-        parent_id: remote.and_then(|value| value.pointer("/parentReference/id")).and_then(Value::as_str).unwrap_or(&entry.parent_id).to_string(),
+        parent_id: remote
+            .and_then(|value| value.pointer("/parentReference/id"))
+            .and_then(Value::as_str)
+            .unwrap_or(&entry.parent_id)
+            .to_string(),
         base_e_tag: entry.e_tag.clone(),
         remote_e_tag: remote.map(|value| text(value, "eTag")).unwrap_or_default(),
-        remote_modified_at: remote.map(|value| text(value, "lastModifiedDateTime")).unwrap_or_default(),
-        remote_modified_by: remote.and_then(|value| value.pointer("/lastModifiedBy/user/displayName")).and_then(Value::as_str).unwrap_or("").to_string(),
+        remote_modified_at: remote
+            .map(|value| text(value, "lastModifiedDateTime"))
+            .unwrap_or_default(),
+        remote_modified_by: remote
+            .and_then(|value| value.pointer("/lastModifiedBy/user/displayName"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
         kind: kind.to_string(),
         detected_at: Utc::now().to_rfc3339(),
     }
@@ -1384,16 +1787,28 @@ fn conflict_from_entry(entry: &OfflineDocumentEntry, remote: Option<&Value>, kin
 
 #[tauri::command]
 pub async fn sync_offline_documents(app: AppHandle) -> Result<DocumentSyncSummary, String> {
-    let mut summary = DocumentSyncSummary { checked: 0, uploaded: 0, downloaded: 0, conflicts: 0, errors: Vec::new() };
+    let mut summary = DocumentSyncSummary {
+        checked: 0,
+        uploaded: 0,
+        downloaded: 0,
+        conflicts: 0,
+        errors: Vec::new(),
+    };
     let initial_manifest = load_offline_manifest(&app)?;
-    if initial_manifest.entries.is_empty() && initial_manifest.folders.is_empty() { return Ok(summary); }
+    if initial_manifest.entries.is_empty() && initial_manifest.folders.is_empty() {
+        return Ok(summary);
+    }
     let token = m365::refreshed_access_token(&app).await?;
     match refresh_pinned_offline_folders(&app, &token).await {
         Ok(result) => summary.downloaded += result.files,
         Err(error) => summary.errors.push(format!("Offline-Ordner: {error}")),
     }
     let manifest = load_offline_manifest(&app)?;
-    let existing_conflicts = load_document_conflicts(&app)?.conflicts.into_iter().map(|item| item.id).collect::<HashSet<_>>();
+    let existing_conflicts = load_document_conflicts(&app)?
+        .conflicts
+        .into_iter()
+        .map(|item| item.id)
+        .collect::<HashSet<_>>();
 
     for entry in manifest.entries {
         summary.checked += 1;
@@ -1403,46 +1818,88 @@ pub async fn sync_offline_documents(app: AppHandle) -> Result<DocumentSyncSummar
         }
         let path = PathBuf::from(&entry.local_path);
         if !path.is_file() {
-            summary.errors.push(format!("Lokale Datei fehlt: {}", entry.local_path));
+            summary
+                .errors
+                .push(format!("Lokale Datei fehlt: {}", entry.local_path));
             continue;
         }
         let local_hash = match file_sha256(&path) {
             Ok(hash) => hash,
-            Err(error) => { summary.errors.push(error); continue; }
+            Err(error) => {
+                summary.errors.push(error);
+                continue;
+            }
         };
         let local_changed = !entry.content_sha256.is_empty() && local_hash != entry.content_sha256;
         let remote = match remote_document_metadata(&token, &entry.drive_id, &entry.item_id).await {
             Ok(value) => value,
-            Err(error) => { summary.errors.push(format!("{}: {error}", entry.name)); continue; }
+            Err(error) => {
+                summary.errors.push(format!("{}: {error}", entry.name));
+                continue;
+            }
         };
         let Some(remote) = remote else {
-            if let Err(error) = upsert_document_conflict(&app, conflict_from_entry(&entry, None, "remoteDeleted")) { summary.errors.push(error); }
-            else { summary.conflicts += 1; }
+            if let Err(error) =
+                upsert_document_conflict(&app, conflict_from_entry(&entry, None, "remoteDeleted"))
+            {
+                summary.errors.push(error);
+            } else {
+                summary.conflicts += 1;
+            }
             continue;
         };
         let remote_e_tag = text(&remote, "eTag");
         let remote_changed = !entry.e_tag.is_empty() && remote_e_tag != entry.e_tag;
         let name = text(&remote, "name");
-        let parent_id = remote.pointer("/parentReference/id").and_then(Value::as_str);
+        let parent_id = remote
+            .pointer("/parentReference/id")
+            .and_then(Value::as_str);
         match offline_sync_action(local_changed, remote_changed) {
             OfflineSyncAction::Conflict => {
-                if let Err(error) = upsert_document_conflict(&app, conflict_from_entry(&entry, Some(&remote), "bothModified")) { summary.errors.push(error); }
-                else { summary.conflicts += 1; }
+                if let Err(error) = upsert_document_conflict(
+                    &app,
+                    conflict_from_entry(&entry, Some(&remote), "bothModified"),
+                ) {
+                    summary.errors.push(error);
+                } else {
+                    summary.conflicts += 1;
+                }
             }
-            OfflineSyncAction::UploadLocal => match replace_remote_content(&token, &entry.drive_id, &entry.item_id, &path).await {
-                Ok(item) => match record_offline_file(&app, &entry.drive_id, &entry.item_id, &item.e_tag, &path, &item.name, parent_id) {
-                    Ok(()) => summary.uploaded += 1,
-                    Err(error) => summary.errors.push(error),
-                },
-                Err(error) => summary.errors.push(format!("{}: {error}", name)),
-            },
-            OfflineSyncAction::DownloadRemote => match download_remote_to_path(&token, &entry.drive_id, &entry.item_id, &path).await {
-                Ok(()) => match record_offline_file(&app, &entry.drive_id, &entry.item_id, &remote_e_tag, &path, &name, parent_id) {
-                    Ok(()) => summary.downloaded += 1,
-                    Err(error) => summary.errors.push(error),
-                },
-                Err(error) => summary.errors.push(format!("{}: {error}", name)),
-            },
+            OfflineSyncAction::UploadLocal => {
+                match replace_remote_content(&token, &entry.drive_id, &entry.item_id, &path).await {
+                    Ok(item) => match record_offline_file(
+                        &app,
+                        &entry.drive_id,
+                        &entry.item_id,
+                        &item.e_tag,
+                        &path,
+                        &item.name,
+                        parent_id,
+                    ) {
+                        Ok(()) => summary.uploaded += 1,
+                        Err(error) => summary.errors.push(error),
+                    },
+                    Err(error) => summary.errors.push(format!("{}: {error}", name)),
+                }
+            }
+            OfflineSyncAction::DownloadRemote => {
+                match download_remote_to_path(&token, &entry.drive_id, &entry.item_id, &path).await
+                {
+                    Ok(()) => match record_offline_file(
+                        &app,
+                        &entry.drive_id,
+                        &entry.item_id,
+                        &remote_e_tag,
+                        &path,
+                        &name,
+                        parent_id,
+                    ) {
+                        Ok(()) => summary.downloaded += 1,
+                        Err(error) => summary.errors.push(error),
+                    },
+                    Err(error) => summary.errors.push(format!("{}: {error}", name)),
+                }
+            }
             OfflineSyncAction::Nothing => {}
         }
     }
@@ -1462,47 +1919,132 @@ pub async fn resolve_document_sync_conflict(
     conflict_id_value: String,
     decision: String,
 ) -> Result<(), String> {
-    if decision == "later" { return Ok(()); }
+    if decision == "later" {
+        return Ok(());
+    }
     let mut store = load_document_conflicts(&app)?;
-    let conflict = store.conflicts.iter().find(|item| item.id == conflict_id_value).cloned()
+    let conflict = store
+        .conflicts
+        .iter()
+        .find(|item| item.id == conflict_id_value)
+        .cloned()
         .ok_or_else(|| "Der Konflikt wurde bereits gelöst oder nicht gefunden.".to_string())?;
     let path = PathBuf::from(&conflict.local_path);
-    if !path.is_file() { return Err("Die lokale Konfliktdatei wurde nicht gefunden.".to_string()); }
+    if !path.is_file() {
+        return Err("Die lokale Konfliktdatei wurde nicht gefunden.".to_string());
+    }
     let token = m365::refreshed_access_token(&app).await?;
     let remote = remote_document_metadata(&token, &conflict.drive_id, &conflict.item_id).await?;
-    let account = m365::graph_json(&token, &format!("{GRAPH}/me?$select=displayName")).await.unwrap_or(Value::Null);
-    let user_name = account.get("displayName").and_then(Value::as_str).unwrap_or("Offline");
+    let account = m365::graph_json(&token, &format!("{GRAPH}/me?$select=displayName"))
+        .await
+        .unwrap_or(Value::Null);
+    let user_name = account
+        .get("displayName")
+        .and_then(Value::as_str)
+        .unwrap_or("Offline");
 
     match decision.as_str() {
         "keepBoth" => {
             if let Some(remote) = remote.as_ref() {
-                let parent_id = remote.pointer("/parentReference/id").and_then(Value::as_str).unwrap_or(&conflict.parent_id);
+                let parent_id = remote
+                    .pointer("/parentReference/id")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&conflict.parent_id);
                 let conflict_name = conflict_copy_name(&conflict.name, user_name);
-                upload_document_file_as_with_token(&token, conflict.drive_id.clone(), Some(parent_id.to_string()), conflict.local_path.clone(), Some(conflict_name)).await?;
-                download_remote_to_path(&token, &conflict.drive_id, &conflict.item_id, &path).await?;
-                record_offline_file(&app, &conflict.drive_id, &conflict.item_id, &text(remote, "eTag"), &path, &text(remote, "name"), Some(parent_id))?;
+                upload_document_file_as_with_token(
+                    &token,
+                    conflict.drive_id.clone(),
+                    Some(parent_id.to_string()),
+                    conflict.local_path.clone(),
+                    Some(conflict_name),
+                )
+                .await?;
+                download_remote_to_path(&token, &conflict.drive_id, &conflict.item_id, &path)
+                    .await?;
+                record_offline_file(
+                    &app,
+                    &conflict.drive_id,
+                    &conflict.item_id,
+                    &text(remote, "eTag"),
+                    &path,
+                    &text(remote, "name"),
+                    Some(parent_id),
+                )?;
             } else {
-                let item = upload_document_file_as_with_token(&token, conflict.drive_id.clone(), non_empty(&conflict.parent_id), conflict.local_path.clone(), Some(conflict.name.clone())).await?;
+                let item = upload_document_file_as_with_token(
+                    &token,
+                    conflict.drive_id.clone(),
+                    non_empty(&conflict.parent_id),
+                    conflict.local_path.clone(),
+                    Some(conflict.name.clone()),
+                )
+                .await?;
                 remove_offline_entry(&app, &conflict.drive_id, &conflict.item_id)?;
-                record_offline_file(&app, &conflict.drive_id, &item.id, &item.e_tag, &path, &item.name, non_empty_ref(&conflict.parent_id))?;
+                record_offline_file(
+                    &app,
+                    &conflict.drive_id,
+                    &item.id,
+                    &item.e_tag,
+                    &path,
+                    &item.name,
+                    non_empty_ref(&conflict.parent_id),
+                )?;
             }
         }
         "useLocal" => {
             if let Some(remote) = remote.as_ref() {
-                let item = replace_remote_content(&token, &conflict.drive_id, &conflict.item_id, &path).await?;
-                let parent_id = remote.pointer("/parentReference/id").and_then(Value::as_str);
-                record_offline_file(&app, &conflict.drive_id, &conflict.item_id, &item.e_tag, &path, &item.name, parent_id)?;
+                let item =
+                    replace_remote_content(&token, &conflict.drive_id, &conflict.item_id, &path)
+                        .await?;
+                let parent_id = remote
+                    .pointer("/parentReference/id")
+                    .and_then(Value::as_str);
+                record_offline_file(
+                    &app,
+                    &conflict.drive_id,
+                    &conflict.item_id,
+                    &item.e_tag,
+                    &path,
+                    &item.name,
+                    parent_id,
+                )?;
             } else {
-                let item = upload_document_file_as_with_token(&token, conflict.drive_id.clone(), non_empty(&conflict.parent_id), conflict.local_path.clone(), Some(conflict.name.clone())).await?;
+                let item = upload_document_file_as_with_token(
+                    &token,
+                    conflict.drive_id.clone(),
+                    non_empty(&conflict.parent_id),
+                    conflict.local_path.clone(),
+                    Some(conflict.name.clone()),
+                )
+                .await?;
                 remove_offline_entry(&app, &conflict.drive_id, &conflict.item_id)?;
-                record_offline_file(&app, &conflict.drive_id, &item.id, &item.e_tag, &path, &item.name, non_empty_ref(&conflict.parent_id))?;
+                record_offline_file(
+                    &app,
+                    &conflict.drive_id,
+                    &item.id,
+                    &item.e_tag,
+                    &path,
+                    &item.name,
+                    non_empty_ref(&conflict.parent_id),
+                )?;
             }
         }
         "useOnline" => {
             if let Some(remote) = remote.as_ref() {
-                download_remote_to_path(&token, &conflict.drive_id, &conflict.item_id, &path).await?;
-                let parent_id = remote.pointer("/parentReference/id").and_then(Value::as_str);
-                record_offline_file(&app, &conflict.drive_id, &conflict.item_id, &text(remote, "eTag"), &path, &text(remote, "name"), parent_id)?;
+                download_remote_to_path(&token, &conflict.drive_id, &conflict.item_id, &path)
+                    .await?;
+                let parent_id = remote
+                    .pointer("/parentReference/id")
+                    .and_then(Value::as_str);
+                record_offline_file(
+                    &app,
+                    &conflict.drive_id,
+                    &conflict.item_id,
+                    &text(remote, "eTag"),
+                    &path,
+                    &text(remote, "name"),
+                    parent_id,
+                )?;
             } else {
                 let recovered = documents_root(&app)?.join("Gelöschte Elemente");
                 fs::create_dir_all(&recovered).map_err(|error| error.to_string())?;
@@ -1518,11 +2060,19 @@ pub async fn resolve_document_sync_conflict(
 }
 
 fn non_empty(value: &str) -> Option<String> {
-    if value.trim().is_empty() { None } else { Some(value.to_string()) }
+    if value.trim().is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
 }
 
 fn non_empty_ref(value: &str) -> Option<&str> {
-    if value.trim().is_empty() { None } else { Some(value) }
+    if value.trim().is_empty() {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 #[tauri::command]
@@ -1545,9 +2095,18 @@ mod tests {
 
     #[test]
     fn classifies_offline_sync_without_overwriting_conflicts() {
-        assert_eq!(offline_sync_action(false, false), OfflineSyncAction::Nothing);
-        assert_eq!(offline_sync_action(true, false), OfflineSyncAction::UploadLocal);
-        assert_eq!(offline_sync_action(false, true), OfflineSyncAction::DownloadRemote);
+        assert_eq!(
+            offline_sync_action(false, false),
+            OfflineSyncAction::Nothing
+        );
+        assert_eq!(
+            offline_sync_action(true, false),
+            OfflineSyncAction::UploadLocal
+        );
+        assert_eq!(
+            offline_sync_action(false, true),
+            OfflineSyncAction::DownloadRemote
+        );
         assert_eq!(offline_sync_action(true, true), OfflineSyncAction::Conflict);
     }
 
@@ -1556,6 +2115,88 @@ mod tests {
         let name = conflict_copy_name("Bericht.docx", "Maria");
         assert!(name.starts_with("Bericht - Konflikt von Maria - "));
         assert!(name.ends_with(".docx"));
+    }
+
+    #[test]
+    fn simple_upload_declares_content_length_even_for_empty_files() {
+        let empty_request = graph_upload_request(
+            "test-token",
+            "https://graph.microsoft.com/v1.0/test/content",
+            Vec::new(),
+        )
+        .build()
+        .expect("empty upload request");
+        let content_request = graph_upload_request(
+            "test-token",
+            "https://graph.microsoft.com/v1.0/test/content",
+            b"DMH".to_vec(),
+        )
+        .build()
+        .expect("content upload request");
+
+        assert_eq!(
+            empty_request.headers().get(reqwest::header::CONTENT_LENGTH),
+            Some(&reqwest::header::HeaderValue::from_static("0"))
+        );
+        assert_eq!(
+            content_request
+                .headers()
+                .get(reqwest::header::CONTENT_LENGTH),
+            Some(&reqwest::header::HeaderValue::from_static("3"))
+        );
+    }
+
+    #[test]
+    fn upload_errors_do_not_expose_raw_html() {
+        let detail = upload_error_detail(
+            reqwest::StatusCode::LENGTH_REQUIRED,
+            b"<!DOCTYPE HTML><HTML><BODY>Length Required</BODY></HTML>",
+        );
+
+        assert_eq!(
+            detail,
+            "Microsoft 365 benötigt eine feste Dateigröße für diesen Upload."
+        );
+    }
+
+    #[test]
+    fn office_documents_use_the_correct_desktop_protocol() {
+        assert_eq!(
+            office_document_uri(
+                "Bericht.docx",
+                "https://example.sharepoint.com/Bericht.docx"
+            ),
+            Some((
+                "ms-word".to_string(),
+                "ms-word:ofe|u|https://example.sharepoint.com/Bericht.docx".to_string()
+            ))
+        );
+        assert_eq!(office_uri_scheme("Budget.XLSX"), Some("ms-excel"));
+        assert_eq!(
+            office_uri_scheme("Präsentation.pptx"),
+            Some("ms-powerpoint")
+        );
+        assert_eq!(office_uri_scheme("Notiz.txt"), None);
+        assert_eq!(
+            office_document_uri("Bericht.docx", "file:///Bericht.docx"),
+            None
+        );
+    }
+
+    #[test]
+    fn asynchronous_copy_status_is_interpreted_safely() {
+        assert_eq!(
+            copy_monitor_state(&json!({"status": "inProgress", "percentageComplete": 64})),
+            CopyMonitorState::Pending
+        );
+        assert_eq!(
+            copy_monitor_state(&json!({"status": "completed", "percentageComplete": 100})),
+            CopyMonitorState::Completed
+        );
+        assert_eq!(
+            copy_monitor_state(&json!({"status": "failed", "error": {"message": "Kein Zugriff"}})),
+            CopyMonitorState::Failed("Kein Zugriff".to_string())
+        );
     }
 
     #[test]

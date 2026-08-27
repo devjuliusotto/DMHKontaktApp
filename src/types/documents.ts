@@ -47,6 +47,12 @@ export interface DocumentUploadResult {
   folders: number;
 }
 
+export interface SystemFileIcon {
+  width: number;
+  height: number;
+  rgbaBase64: string;
+}
+
 export interface DocumentOfflineFolderResult {
   files: number;
   folders: number;

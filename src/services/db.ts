@@ -34,7 +34,7 @@ import type {
   Microsoft365SyncPreview,
   Microsoft365SyncSources
 } from "../types/m365";
-import type { DocumentConflictDecision, DocumentItem, DocumentMutationRequest, DocumentOfflineFolderResult, DocumentSource, DocumentSyncConflict, DocumentSyncSummary, DocumentTransferRequest, DocumentTransferResult, DocumentUploadResult, DocumentVersion } from "../types/documents";
+import type { DocumentConflictDecision, DocumentItem, DocumentMutationRequest, DocumentOfflineFolderResult, DocumentSource, DocumentSyncConflict, DocumentSyncSummary, DocumentTransferRequest, DocumentTransferResult, DocumentUploadResult, DocumentVersion, SystemFileIcon } from "../types/documents";
 
 export function listContacts(search = "", groupId?: number): Promise<Contact[]> {
   return invoke("list_contacts", { search, groupId });
@@ -243,6 +243,14 @@ export function moveDocumentItems(request: DocumentTransferRequest): Promise<Doc
 
 export function copyDocumentItems(request: DocumentTransferRequest): Promise<DocumentTransferResult> {
   return invoke("copy_document_items", { request });
+}
+
+export function openDocumentInOffice(fileName: string, webUrl: string): Promise<"desktop" | "web" | "unsupported"> {
+  return invoke("open_document_in_office", { fileName, webUrl });
+}
+
+export function getDocumentFileIcons(fileNames: string[]): Promise<Record<string, SystemFileIcon>> {
+  return invoke("get_document_file_icons", { fileNames });
 }
 
 export function createDocumentTextFile(driveId: string, parentId: string | undefined, name: string, content = ""): Promise<DocumentItem> {

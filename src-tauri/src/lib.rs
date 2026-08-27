@@ -16,6 +16,7 @@ use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 mod documents;
+mod file_icons;
 mod m365;
 mod mail_accounts;
 mod outlook_autocomplete;
@@ -4375,6 +4376,8 @@ pub fn run() {
             documents::delete_document_item,
             documents::move_document_items,
             documents::copy_document_items,
+            documents::open_document_in_office,
+            file_icons::get_document_file_icons,
             documents::create_document_text_file,
             documents::create_document_share_link,
             documents::list_document_versions,

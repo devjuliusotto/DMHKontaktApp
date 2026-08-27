@@ -349,6 +349,14 @@ fn oauth_error_message(error: &OAuthErrorResponse) -> String {
     }
 }
 
+fn microsoft_session_requires_reconnect(error: &str) -> bool {
+    error.contains("Microsoft-Sitzung ist abgelaufen")
+        || error.contains("Microsoft-365-Konto ist nicht verbunden")
+        || error.contains("gespeicherte Microsoft-Anmeldung ist ungültig")
+        || error.contains("gespeicherte Microsoft-Anmeldung konnte nicht gelesen werden")
+        || error.contains("Microsoft-365-Kontoprofil fehlt")
+}
+
 fn get_setting(app: &AppHandle, key: &str) -> Result<Option<String>, String> {
     let conn = open_db(app)?;
     conn.query_row(
@@ -2000,11 +2008,26 @@ fn clear_pending_flow(state: &State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn get_m365_connection_status(app: AppHandle) -> Result<Microsoft365ConnectionStatus, String> {
+pub async fn get_m365_connection_status(
+    app: AppHandle,
+) -> Result<Microsoft365ConnectionStatus, String> {
     let account = read_account(&app)?;
+    let locally_connected = account.is_some() && get_setting(&app, TOKEN_SETTING_KEY)?.is_some();
+    let connected = if locally_connected && client_id().is_some() {
+        match refreshed_access_token(&app).await {
+            Ok(mut access_token) => {
+                access_token.zeroize();
+                true
+            }
+            Err(error) if microsoft_session_requires_reconnect(&error) => false,
+            Err(_) => true,
+        }
+    } else {
+        false
+    };
     Ok(Microsoft365ConnectionStatus {
         configured: client_id().is_some(),
-        connected: account.is_some() && get_setting(&app, TOKEN_SETTING_KEY)?.is_some(),
+        connected,
         account,
     })
 }
@@ -2347,6 +2370,16 @@ mod tests {
             }),
             "Die Microsoft-Anmeldung wurde abgelehnt."
         );
+    }
+
+    #[test]
+    fn distinguishes_expired_sessions_from_temporary_connection_errors() {
+        assert!(microsoft_session_requires_reconnect(
+            "Die Microsoft-Sitzung ist abgelaufen. Verbinden Sie das Konto erneut."
+        ));
+        assert!(!microsoft_session_requires_reconnect(
+            "Microsoft Graph ist derzeit nicht erreichbar. Internetverbindung prüfen."
+        ));
     }
 
     #[test]

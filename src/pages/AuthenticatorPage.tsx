@@ -1,9 +1,9 @@
 import { isTauri } from "@tauri-apps/api/core";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Copy, Edit3, ExternalLink, FileUp, KeyRound, Plus, QrCode, Search, ShieldCheck, Smartphone, Trash2, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-import type { DragEvent, FormEvent, KeyboardEvent } from "react";
+import { Copy, Edit3, ExternalLink, FileUp, GripVertical, KeyRound, Plus, QrCode, Search, ShieldCheck, Smartphone, Trash2, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { FormEvent, KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { StatusMessage } from "../components/StatusMessage";
 import { deleteVaultEntry, getAppSetting, listVaultEntries, saveVaultEntry, setAppSetting } from "../services/db";
@@ -30,6 +30,16 @@ const authenticatorOrderSettingKey = "authenticator-entry-order-v1";
 const microsoftSecurityInfoUrl = "https://mysignins.microsoft.com/security-info";
 
 type DropPosition = "before" | "after";
+
+interface AuthenticatorPointerDrag {
+  sourceId: number;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  active: boolean;
+  targetId: number | null;
+  position: DropPosition;
+}
 
 function parseAuthenticatorOrder(value: string | null): number[] {
   if (!value) return [];
@@ -94,6 +104,7 @@ export function AuthenticatorPage() {
   const [dropTarget, setDropTarget] = useState<{ id: number; position: DropPosition } | null>(null);
   const [savingOrder, setSavingOrder] = useState(false);
   const [orderAnnouncement, setOrderAnnouncement] = useState("");
+  const pointerDragRef = useRef<AuthenticatorPointerDrag | null>(null);
 
   const refresh = async () => {
     const [result, savedOrder] = await Promise.all([
@@ -289,7 +300,13 @@ export function AuthenticatorPage() {
   };
 
   const copyCode = async (code: string) => {
-    await writeText(code);
+    try {
+      await writeText(code);
+    } catch (error) {
+      showMessage(`Der 2FA-Code konnte nicht kopiert werden: ${error}`, "error");
+      return;
+    }
+
     showMessage("Der aktuelle 2FA-Code wurde kopiert. Die Zwischenablage wird nach 30 Sekunden geleert.", "success");
     window.setTimeout(async () => {
       try {
@@ -323,41 +340,76 @@ export function AuthenticatorPage() {
     }
   };
 
-  const startRowDrag = (event: DragEvent<HTMLTableRowElement>, entryId: number) => {
+  const startRowPointerDrag = (event: ReactPointerEvent<HTMLTableRowElement>, entryId: number) => {
     const target = event.target as HTMLElement;
-    if (savingOrder || target.closest("button, input, textarea, select, a")) {
-      event.preventDefault();
-      return;
-    }
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData("text/plain", String(entryId));
-    setDraggedEntryId(entryId);
+    if (savingOrder || event.button !== 0 || target.closest("button, input, textarea, select, a")) return;
+    pointerDragRef.current = {
+      sourceId: entryId,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      active: false,
+      targetId: null,
+      position: "after"
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.currentTarget.focus({ preventScroll: true });
     setDropTarget(null);
   };
 
-  const updateDropTarget = (event: DragEvent<HTMLTableRowElement>, entryId: number) => {
-    if (draggedEntryId === null || draggedEntryId === entryId) return;
+  const updatePointerDrag = (event: ReactPointerEvent<HTMLTableRowElement>) => {
+    const drag = pointerDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!drag.active && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 6) return;
+    if (!drag.active) {
+      drag.active = true;
+      setDraggedEntryId(drag.sourceId);
+    }
     event.preventDefault();
-    event.dataTransfer.dropEffect = "move";
-    const bounds = event.currentTarget.getBoundingClientRect();
+    const targetRow = document
+      .elementFromPoint(event.clientX, event.clientY)
+      ?.closest("tr[data-authenticator-entry-id]") as HTMLTableRowElement | null;
+    const targetId = Number(targetRow?.dataset.authenticatorEntryId);
+    if (!targetRow || !Number.isInteger(targetId) || targetId === drag.sourceId) {
+      drag.targetId = null;
+      setDropTarget(null);
+      return;
+    }
+    const bounds = targetRow.getBoundingClientRect();
     const position: DropPosition = event.clientY < bounds.top + bounds.height / 2 ? "before" : "after";
-    setDropTarget((current) => current?.id === entryId && current.position === position
+    drag.targetId = targetId;
+    drag.position = position;
+    setDropTarget((current) => current?.id === targetId && current.position === position
       ? current
-      : { id: entryId, position });
+      : { id: targetId, position });
+
+    const scrollContainer = targetRow.closest(".table-wrap") as HTMLElement | null;
+    if (scrollContainer) {
+      const scrollBounds = scrollContainer.getBoundingClientRect();
+      if (event.clientY < scrollBounds.top + 36) scrollContainer.scrollTop -= 18;
+      else if (event.clientY > scrollBounds.bottom - 36) scrollContainer.scrollTop += 18;
+    }
   };
 
   const finishRowDrag = () => {
+    pointerDragRef.current = null;
     setDraggedEntryId(null);
     setDropTarget(null);
   };
 
-  const dropRow = (event: DragEvent<HTMLTableRowElement>, targetId: number) => {
-    event.preventDefault();
-    const sourceId = draggedEntryId ?? Number(event.dataTransfer.getData("text/plain"));
-    const bounds = event.currentTarget.getBoundingClientRect();
-    const position: DropPosition = event.clientY < bounds.top + bounds.height / 2 ? "before" : "after";
+  const finishPointerDrag = (event: ReactPointerEvent<HTMLTableRowElement>, save: boolean) => {
+    const drag = pointerDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    const destination = drag.active && drag.targetId !== null
+      ? { sourceId: drag.sourceId, targetId: drag.targetId, position: drag.position }
+      : null;
     finishRowDrag();
-    if (Number.isInteger(sourceId)) void saveReorderedEntries(sourceId, targetId, position);
+    if (save && destination) {
+      void saveReorderedEntries(destination.sourceId, destination.targetId, destination.position);
+    }
   };
 
   const visibleEntries = useMemo(() => {
@@ -463,20 +515,20 @@ export function AuthenticatorPage() {
                     key={entry.id}
                     className={rowClassName}
                     data-authenticator-entry-id={entry.id}
-                    draggable={!savingOrder}
                     tabIndex={0}
                     aria-describedby="authenticator-reorder-help"
                     aria-rowindex={visibleIndex + 2}
                     title="Zeile ziehen, um ihre Position zu ändern"
                     onDoubleClick={() => openEditEntry(entry)}
-                    onDragStart={(event) => startRowDrag(event, entry.id)}
-                    onDragOver={(event) => updateDropTarget(event, entry.id)}
-                    onDrop={(event) => dropRow(event, entry.id)}
-                    onDragEnd={finishRowDrag}
+                    onPointerDown={(event) => startRowPointerDrag(event, entry.id)}
+                    onPointerMove={updatePointerDrag}
+                    onPointerUp={(event) => finishPointerDrag(event, true)}
+                    onPointerCancel={(event) => finishPointerDrag(event, false)}
                     onKeyDown={(event) => moveRowWithKeyboard(event, entry.id)}
                   >
                     <td>
                       <div className="authenticator-service">
+                        <span className="authenticator-reorder-grip" aria-hidden="true"><GripVertical size={18} /></span>
                         <span className="authenticator-service-icon"><KeyRound size={18} aria-hidden="true" /></span>
                         <span>
                           <strong>{entry.platform}</strong>
