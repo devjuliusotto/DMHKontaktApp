@@ -249,12 +249,20 @@ fn office_uri_scheme(file_name: &str) -> Option<&'static str> {
     }
 }
 
-fn office_document_uri(file_name: &str, web_url: &str) -> Option<(String, String)> {
-    if !(web_url.starts_with("https://") || web_url.starts_with("http://")) {
+fn office_document_uri(file_name: &str, parent_web_url: &str) -> Option<(String, String)> {
+    let scheme = office_uri_scheme(file_name)?;
+    let mut document_url = reqwest::Url::parse(parent_web_url).ok()?;
+    if !matches!(document_url.scheme(), "https" | "http") {
         return None;
     }
-    let scheme = office_uri_scheme(file_name)?;
-    Some((scheme.to_string(), format!("{scheme}:ofe|u|{web_url}")))
+    document_url.set_query(None);
+    document_url.set_fragment(None);
+    document_url
+        .path_segments_mut()
+        .ok()?
+        .pop_if_empty()
+        .push(file_name);
+    Some((scheme.to_string(), format!("{scheme}:ofe|u|{document_url}")))
 }
 
 #[cfg(target_os = "windows")]
@@ -278,9 +286,10 @@ fn office_uri_scheme_available(_scheme: &str) -> bool {
 pub fn open_document_in_office(
     app: AppHandle,
     file_name: String,
+    parent_web_url: String,
     web_url: String,
 ) -> Result<String, String> {
-    let Some((scheme, office_uri)) = office_document_uri(&file_name, &web_url) else {
+    let Some((scheme, office_uri)) = office_document_uri(&file_name, &parent_web_url) else {
         return Ok("unsupported".to_string());
     };
     if office_uri_scheme_available(&scheme)
@@ -2164,11 +2173,22 @@ mod tests {
         assert_eq!(
             office_document_uri(
                 "Bericht.docx",
-                "https://example.sharepoint.com/Bericht.docx"
+                "https://example.sharepoint.com/Projekte/Berichte"
             ),
             Some((
                 "ms-word".to_string(),
-                "ms-word:ofe|u|https://example.sharepoint.com/Bericht.docx".to_string()
+                "ms-word:ofe|u|https://example.sharepoint.com/Projekte/Berichte/Bericht.docx"
+                    .to_string()
+            ))
+        );
+        assert_eq!(
+            office_document_uri(
+                "Präsentation 2026.pptx",
+                "https://example.sharepoint.com/Team/Dokumente/?web=1#section"
+            ),
+            Some((
+                "ms-powerpoint".to_string(),
+                "ms-powerpoint:ofe|u|https://example.sharepoint.com/Team/Dokumente/Pr%C3%A4sentation%202026.pptx".to_string()
             ))
         );
         assert_eq!(office_uri_scheme("Budget.XLSX"), Some("ms-excel"));
@@ -2178,7 +2198,7 @@ mod tests {
         );
         assert_eq!(office_uri_scheme("Notiz.txt"), None);
         assert_eq!(
-            office_document_uri("Bericht.docx", "file:///Bericht.docx"),
+            office_document_uri("Bericht.docx", "file:///Berichte"),
             None
         );
     }

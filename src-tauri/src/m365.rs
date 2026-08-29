@@ -115,6 +115,8 @@ pub struct Microsoft365SyncPreviewRequest {
     pub direction: String,
     pub base: String,
     pub contacts: bool,
+    #[serde(default)]
+    pub contact_groups: bool,
     pub calendars: bool,
     pub shared_calendars: bool,
     pub shared_mailboxes: bool,
@@ -163,6 +165,8 @@ pub struct Microsoft365SyncApplyRequest {
     pub direction: String,
     pub base: String,
     pub contacts: bool,
+    #[serde(default)]
+    pub contact_groups: bool,
     pub calendars: bool,
     pub shared_calendars: bool,
     pub shared_mailboxes: bool,
@@ -186,11 +190,13 @@ pub struct Microsoft365SyncResult {
     pub finished_at: String,
     pub created: usize,
     pub updated: usize,
+    pub deleted: usize,
     pub ignored: usize,
     pub conflicts: usize,
     pub errors: usize,
     pub error_messages: Vec<String>,
     pub calendar_upserts: Vec<crate::CalendarEvent>,
+    pub calendar_deletes: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -919,6 +925,21 @@ fn remote_contact_input(value: &Value, existing: Option<&crate::Contact>) -> cra
     }
 }
 
+fn remote_contact_input_for_source(
+    value: &Value,
+    existing: Option<&crate::Contact>,
+    backup: &crate::BackupData,
+    source: &Microsoft365SyncSource,
+) -> crate::ContactInput {
+    let mut input = remote_contact_input(value, existing);
+    if let Some(group_id) = source_group_id(backup, source) {
+        if !input.group_ids.contains(&group_id) {
+            input.group_ids.push(group_id);
+        }
+    }
+    input
+}
+
 fn graph_contact_payload(contact: &crate::Contact) -> Value {
     let display_name = if contact.display_name.trim().is_empty() {
         format!("{} {}", contact.first_name, contact.last_name)
@@ -1027,6 +1048,21 @@ fn local_calendar_events(backup: &crate::BackupData) -> Vec<crate::CalendarEvent
         .unwrap_or_default()
 }
 
+fn deleted_calendar_events(backup: &crate::BackupData) -> Vec<crate::CalendarEvent> {
+    backup
+        .browser_storage
+        .get("agendakontakte.deletedCalendarEvents")
+        .and_then(|raw| serde_json::from_str::<Vec<crate::CalendarEvent>>(raw).ok())
+        .unwrap_or_default()
+}
+
+fn linked_calendar_remote_id<'a>(
+    event: &'a crate::CalendarEvent,
+    source_id: &str,
+) -> Option<&'a str> {
+    event.id.strip_prefix(&format!("m365:{source_id}:"))
+}
+
 fn remote_event_key(value: &Value) -> String {
     let subject = value_text(value, "subject").trim().to_lowercase();
     let start = value
@@ -1118,8 +1154,10 @@ fn remote_event_to_local(
     let imported_color = value_text(value, "_dmhCategoryColor");
     crate::CalendarEvent {
         id: existing
+            .filter(|event| linked_calendar_remote_id(event, &source.id).is_some())
             .map(|event| event.id.clone())
             .unwrap_or_else(|| format!("m365:{}:{remote_id}", source.id)),
+        updated_at: value_text(value, "lastModifiedDateTime").to_string(),
         title: value_text(value, "subject").to_string(),
         starts_at: value
             .get("start")
@@ -1276,6 +1314,176 @@ fn source_direction(request: &Microsoft365SyncPreviewRequest, source_id: &str) -
         .unwrap_or_else(|| request.direction.clone())
 }
 
+fn source_group_id(backup: &crate::BackupData, source: &Microsoft365SyncSource) -> Option<i64> {
+    if source.shared || source.id == "me:default-contacts" {
+        return None;
+    }
+    backup
+        .groups
+        .iter()
+        .find(|group| {
+            group.deleted_at.is_none() && group.name.trim().eq_ignore_ascii_case(source.name.trim())
+        })
+        .and_then(|group| group.id)
+}
+
+fn contact_source_selected(
+    request: &Microsoft365SyncPreviewRequest,
+    selected: &HashSet<&str>,
+    source: &Microsoft365SyncSource,
+) -> bool {
+    selected.contains(source.id.as_str())
+        || (request.contact_groups && source_group_id(&request.backup, source).is_some())
+}
+
+fn local_contacts_for_source(
+    contacts: &[crate::Contact],
+    request: &Microsoft365SyncPreviewRequest,
+    source: &Microsoft365SyncSource,
+) -> Vec<crate::Contact> {
+    if !request.contact_groups || source.shared {
+        return contacts.to_vec();
+    }
+    if source.id == "me:default-contacts" {
+        return contacts
+            .iter()
+            .filter(|contact| contact.groups.is_empty())
+            .cloned()
+            .collect();
+    }
+    let Some(group_id) = source_group_id(&request.backup, source) else {
+        return Vec::new();
+    };
+    contacts
+        .iter()
+        .filter(|contact| {
+            contact
+                .groups
+                .iter()
+                .any(|group| group.id == Some(group_id))
+        })
+        .cloned()
+        .collect()
+}
+
+fn load_contact_links(
+    app: &AppHandle,
+    source_id: &str,
+) -> Result<(HashMap<i64, String>, HashMap<String, i64>), String> {
+    let conn = open_db(app)?;
+    let mut statement = conn
+        .prepare("SELECT local_contact_id, remote_id FROM m365_contact_links WHERE source_id = ?")
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params![source_id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| error.to_string())?;
+    let mut by_local = HashMap::new();
+    let mut by_remote = HashMap::new();
+    for row in rows {
+        let (local_id, remote_id) = row.map_err(|error| error.to_string())?;
+        by_remote.insert(remote_id.clone(), local_id);
+        by_local.insert(local_id, remote_id);
+    }
+    Ok((by_local, by_remote))
+}
+
+fn save_contact_link(
+    app: &AppHandle,
+    local_contact_id: i64,
+    source_id: &str,
+    remote_id: &str,
+) -> Result<(), String> {
+    let conn = open_db(app)?;
+    conn.execute(
+        "INSERT INTO m365_contact_links (local_contact_id, source_id, remote_id, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(local_contact_id, source_id) DO UPDATE SET
+           remote_id = excluded.remote_id, updated_at = excluded.updated_at",
+        params![
+            local_contact_id,
+            source_id,
+            remote_id,
+            Utc::now().to_rfc3339()
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn delete_contact_link(
+    app: &AppHandle,
+    local_contact_id: i64,
+    source_id: &str,
+) -> Result<(), String> {
+    let conn = open_db(app)?;
+    conn.execute(
+        "DELETE FROM m365_contact_links WHERE local_contact_id = ? AND source_id = ?",
+        params![local_contact_id, source_id],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn remove_contact_from_group(
+    app: &AppHandle,
+    local_contact_id: i64,
+    group_id: i64,
+) -> Result<(), String> {
+    let conn = open_db(app)?;
+    conn.execute(
+        "DELETE FROM contact_groups WHERE contact_id = ? AND group_id = ?",
+        params![local_contact_id, group_id],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn local_changed_after_remote(local_updated_at: &str, remote: &Value) -> bool {
+    let remote_updated_at = value_text(remote, "lastModifiedDateTime");
+    match (
+        chrono::DateTime::parse_from_rfc3339(local_updated_at),
+        chrono::DateTime::parse_from_rfc3339(remote_updated_at),
+    ) {
+        (Ok(local), Ok(remote)) => local > remote,
+        _ => !local_updated_at.trim().is_empty() && local_updated_at > remote_updated_at,
+    }
+}
+
+async fn ensure_contact_group_folders(
+    access_token: &str,
+    backup: &crate::BackupData,
+) -> Result<(), String> {
+    let folders = graph_collection(
+        access_token,
+        "https://graph.microsoft.com/v1.0/me/contactFolders?$select=id,displayName&$top=100",
+    )
+    .await?;
+    let existing: HashSet<String> = folders
+        .iter()
+        .map(|folder| value_text(folder, "displayName").trim().to_lowercase())
+        .collect();
+    for group in backup
+        .groups
+        .iter()
+        .filter(|group| group.deleted_at.is_none())
+    {
+        let name = group.name.trim();
+        if name.is_empty() || existing.contains(&name.to_lowercase()) {
+            continue;
+        }
+        graph_write(
+            access_token,
+            reqwest::Method::POST,
+            "https://graph.microsoft.com/v1.0/me/contactFolders",
+            &json!({ "displayName": name }),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 enum PlannedPayload {
     Contact {
@@ -1330,6 +1538,10 @@ async fn build_m365_sync_plan(
         .filter(|contact| contact.deleted_at.is_none())
         .cloned()
         .collect();
+    let local_contacts_by_key: HashMap<String, &crate::Contact> = local_contacts
+        .iter()
+        .map(|contact| (local_contact_key(contact), contact))
+        .collect();
     let local_events: Vec<crate::CalendarEvent> = local_calendar_events(&request.backup)
         .into_iter()
         .filter(|event| event.deleted_at.is_none())
@@ -1345,7 +1557,7 @@ async fn build_m365_sync_plan(
 
     if request.contacts {
         for source in sources.contacts.iter().filter(|source| {
-            selected_contacts.contains(source.id.as_str())
+            contact_source_selected(request, &selected_contacts, source)
                 && (!source.shared || request.shared_mailboxes)
         }) {
             let direction = source_direction(request, &source.id);
@@ -1356,21 +1568,46 @@ async fn build_m365_sync_plan(
                 .iter()
                 .map(|value| (normalized_contact_key(value), value))
                 .collect();
+            let remote_by_id: HashMap<String, &Value> = values
+                .iter()
+                .map(|value| (value_text(value, "id").to_string(), value))
+                .collect();
+            let source_contacts = local_contacts_for_source(&local_contacts, request, source);
+            let source_contact_ids: HashSet<i64> = source_contacts
+                .iter()
+                .filter_map(|contact| contact.id)
+                .collect();
             let local_keys: HashSet<String> =
-                local_contacts.iter().map(local_contact_key).collect();
+                source_contacts.iter().map(local_contact_key).collect();
+            let (links_by_local, links_by_remote) = load_contact_links(app, &source.id)?;
+            let mut matched_remote_ids = HashSet::new();
 
-            for local in &local_contacts {
-                let key = local_contact_key(local);
-                if let Some(remote) = remote_by_key.get(&key) {
-                    if contact_equivalent(local, remote) {
+            for local in &source_contacts {
+                let local_id = local.id.unwrap_or_default();
+                let linked_remote_id = links_by_local.get(&local_id);
+                let linked_remote = links_by_local
+                    .get(&local_id)
+                    .and_then(|remote_id| remote_by_id.get(remote_id).copied());
+                let remote =
+                    linked_remote.or_else(|| remote_by_key.get(&local_contact_key(local)).copied());
+                if let Some(remote) = remote {
+                    let remote_id = value_text(remote, "id");
+                    matched_remote_ids.insert(remote_id.to_string());
+                    let equivalent = contact_equivalent(local, remote);
+                    let is_linked =
+                        linked_remote_id.is_some_and(|linked_id| linked_id == remote_id);
+                    if equivalent && is_linked {
                         continue;
                     }
                     let action = match direction.as_str() {
                         "export" => "updateRemote",
                         "import" => "updateLocal",
-                        _ => "conflict",
+                        _ if equivalent => "updateLocal",
+                        _ if local_changed_after_remote(&local.updated_at, remote) => {
+                            "updateRemote"
+                        }
+                        _ => "updateLocal",
                     };
-                    let remote_id = value_text(remote, "id");
                     push_operation(
                         &mut operations,
                         PlannedOperation {
@@ -1378,7 +1615,7 @@ async fn build_m365_sync_plan(
                                 id: operation_id(
                                     "contact",
                                     &source.id,
-                                    &local.id.unwrap_or_default().to_string(),
+                                    &local_id.to_string(),
                                     remote_id,
                                 ),
                                 kind: "Kontakt".to_string(),
@@ -1386,17 +1623,46 @@ async fn build_m365_sync_plan(
                                 source_id: source.id.clone(),
                                 source_name: source.name.clone(),
                                 title: local.display_name.clone(),
-                                detail: format!(
-                                    "Unterschiedliche Angaben. Gewählte Basis: {}.",
-                                    request.base
-                                ),
+                                detail: if equivalent {
+                                    "Kontakt wird dauerhaft mit Microsoft 365 verknüpft."
+                                        .to_string()
+                                } else {
+                                    "Neueste Änderung wird übernommen.".to_string()
+                                },
                                 local_summary: Some(contact_summary(local)),
                                 remote_summary: Some(remote_contact_summary(remote)),
                             },
                             source: source.clone(),
                             payload: PlannedPayload::Contact {
                                 local: Some(local.clone()),
-                                remote: Some((*remote).clone()),
+                                remote: Some(remote.clone()),
+                            },
+                        },
+                    );
+                } else if links_by_local.contains_key(&local_id) && direction != "export" {
+                    push_operation(
+                        &mut operations,
+                        PlannedOperation {
+                            change: Microsoft365SyncChange {
+                                id: operation_id(
+                                    "contact",
+                                    &source.id,
+                                    &local_id.to_string(),
+                                    "deleted",
+                                ),
+                                kind: "Kontakt".to_string(),
+                                action: "deleteLocal".to_string(),
+                                source_id: source.id.clone(),
+                                source_name: source.name.clone(),
+                                title: local.display_name.clone(),
+                                detail: "In Microsoft 365 gelöscht → App-Papierkorb".to_string(),
+                                local_summary: Some(contact_summary(local)),
+                                remote_summary: None,
+                            },
+                            source: source.clone(),
+                            payload: PlannedPayload::Contact {
+                                local: Some(local.clone()),
+                                remote: None,
                             },
                         },
                     );
@@ -1408,7 +1674,7 @@ async fn build_m365_sync_plan(
                                 id: operation_id(
                                     "contact",
                                     &source.id,
-                                    &local.id.unwrap_or_default().to_string(),
+                                    &local_id.to_string(),
                                     "new",
                                 ),
                                 kind: "Kontakt".to_string(),
@@ -1429,11 +1695,20 @@ async fn build_m365_sync_plan(
                     );
                 }
             }
-            if direction != "export" {
-                for remote in &values {
-                    if local_keys.contains(&normalized_contact_key(remote)) {
+
+            if direction != "import" {
+                for local in local_contacts.iter().filter(|contact| {
+                    contact.id.is_some_and(|id| {
+                        links_by_local.contains_key(&id) && !source_contact_ids.contains(&id)
+                    })
+                }) {
+                    let local_id = local.id.unwrap_or_default();
+                    let Some(remote_id) = links_by_local.get(&local_id) else {
                         continue;
-                    }
+                    };
+                    let Some(remote) = remote_by_id.get(remote_id).copied() else {
+                        continue;
+                    };
                     push_operation(
                         &mut operations,
                         PlannedOperation {
@@ -1441,9 +1716,122 @@ async fn build_m365_sync_plan(
                                 id: operation_id(
                                     "contact",
                                     &source.id,
-                                    "new",
-                                    value_text(remote, "id"),
+                                    &local_id.to_string(),
+                                    remote_id,
                                 ),
+                                kind: "Kontakt".to_string(),
+                                action: "deleteRemote".to_string(),
+                                source_id: source.id.clone(),
+                                source_name: source.name.clone(),
+                                title: local.display_name.clone(),
+                                detail: "Kontakt wurde aus diesem App-Ordner verschoben."
+                                    .to_string(),
+                                local_summary: Some(contact_summary(local)),
+                                remote_summary: Some(remote_contact_summary(remote)),
+                            },
+                            source: source.clone(),
+                            payload: PlannedPayload::Contact {
+                                local: Some(local.clone()),
+                                remote: Some(remote.clone()),
+                            },
+                        },
+                    );
+                }
+            }
+
+            for deleted in request
+                .backup
+                .contacts
+                .iter()
+                .filter(|contact| contact.deleted_at.is_some())
+            {
+                let Some(local_id) = deleted.id else {
+                    continue;
+                };
+                let Some(remote_id) = links_by_local.get(&local_id) else {
+                    continue;
+                };
+                let Some(remote) = remote_by_id.get(remote_id).copied() else {
+                    continue;
+                };
+                if direction == "import" {
+                    continue;
+                }
+                push_operation(
+                    &mut operations,
+                    PlannedOperation {
+                        change: Microsoft365SyncChange {
+                            id: operation_id(
+                                "contact",
+                                &source.id,
+                                &local_id.to_string(),
+                                remote_id,
+                            ),
+                            kind: "Kontakt".to_string(),
+                            action: "deleteRemote".to_string(),
+                            source_id: source.id.clone(),
+                            source_name: source.name.clone(),
+                            title: deleted.display_name.clone(),
+                            detail: "App-Papierkorb → in Microsoft 365 löschen".to_string(),
+                            local_summary: Some(contact_summary(deleted)),
+                            remote_summary: Some(remote_contact_summary(remote)),
+                        },
+                        source: source.clone(),
+                        payload: PlannedPayload::Contact {
+                            local: Some(deleted.clone()),
+                            remote: Some(remote.clone()),
+                        },
+                    },
+                );
+            }
+
+            if direction != "export" {
+                for remote in &values {
+                    let remote_id = value_text(remote, "id");
+                    if matched_remote_ids.contains(remote_id)
+                        || links_by_remote.contains_key(remote_id)
+                        || local_keys.contains(&normalized_contact_key(remote))
+                    {
+                        continue;
+                    }
+                    if let Some(local) = local_contacts_by_key.get(&normalized_contact_key(remote))
+                    {
+                        if request.contact_groups && direction != "import" {
+                            push_operation(
+                                &mut operations,
+                                PlannedOperation {
+                                    change: Microsoft365SyncChange {
+                                        id: operation_id(
+                                            "contact",
+                                            &source.id,
+                                            &local.id.unwrap_or_default().to_string(),
+                                            remote_id,
+                                        ),
+                                        kind: "Kontakt".to_string(),
+                                        action: "deleteRemote".to_string(),
+                                        source_id: source.id.clone(),
+                                        source_name: source.name.clone(),
+                                        title: local.display_name.clone(),
+                                        detail: "Kontakt gehört im App zu einem anderen Ordner."
+                                            .to_string(),
+                                        local_summary: Some(contact_summary(local)),
+                                        remote_summary: Some(remote_contact_summary(remote)),
+                                    },
+                                    source: source.clone(),
+                                    payload: PlannedPayload::Contact {
+                                        local: Some((*local).clone()),
+                                        remote: Some(remote.clone()),
+                                    },
+                                },
+                            );
+                        }
+                        continue;
+                    }
+                    push_operation(
+                        &mut operations,
+                        PlannedOperation {
+                            change: Microsoft365SyncChange {
+                                id: operation_id("contact", &source.id, "new", remote_id),
                                 kind: "Kontakt".to_string(),
                                 action: "createLocal".to_string(),
                                 source_id: source.id.clone(),
@@ -1486,18 +1874,33 @@ async fn build_m365_sync_plan(
                 .iter()
                 .map(|value| (remote_event_key(value), value))
                 .collect();
+            let remote_by_id: HashMap<String, &Value> = values
+                .iter()
+                .map(|value| (value_text(value, "id").to_string(), value))
+                .collect();
             let local_keys: HashSet<String> = local_events.iter().map(local_event_key).collect();
+            let mut matched_remote_ids = HashSet::new();
 
             for local in &local_events {
-                let key = local_event_key(local);
-                if let Some(remote) = remote_by_key.get(&key) {
-                    if event_equivalent(local, remote, source) {
+                let linked_id = linked_calendar_remote_id(local, &source.id);
+                let remote = linked_id
+                    .and_then(|remote_id| remote_by_id.get(remote_id).copied())
+                    .or_else(|| remote_by_key.get(&local_event_key(local)).copied());
+                if let Some(remote) = remote {
+                    let remote_id = value_text(remote, "id");
+                    matched_remote_ids.insert(remote_id.to_string());
+                    let equivalent = event_equivalent(local, remote, source);
+                    if equivalent && linked_id.is_some() {
                         continue;
                     }
                     let action = match direction.as_str() {
                         "export" => "updateRemote",
                         "import" => "updateLocal",
-                        _ => "conflict",
+                        _ if equivalent => "updateLocal",
+                        _ if local_changed_after_remote(&local.updated_at, remote) => {
+                            "updateRemote"
+                        }
+                        _ => "updateLocal",
                     };
                     push_operation(
                         &mut operations,
@@ -1514,17 +1917,40 @@ async fn build_m365_sync_plan(
                                 source_id: source.id.clone(),
                                 source_name: source.name.clone(),
                                 title: local.title.clone(),
-                                detail: format!(
-                                    "Unterschiedliche Angaben. Gewählte Basis: {}.",
-                                    request.base
-                                ),
+                                detail: if equivalent {
+                                    "Termin wird dauerhaft mit Microsoft 365 verknüpft.".to_string()
+                                } else {
+                                    "Neueste Änderung wird übernommen.".to_string()
+                                },
                                 local_summary: Some(event_summary(local)),
                                 remote_summary: Some(remote_event_summary(remote)),
                             },
                             source: source.clone(),
                             payload: PlannedPayload::Calendar {
                                 local: Some(local.clone()),
-                                remote: Some((*remote).clone()),
+                                remote: Some(remote.clone()),
+                            },
+                        },
+                    );
+                } else if linked_id.is_some() && direction != "export" {
+                    push_operation(
+                        &mut operations,
+                        PlannedOperation {
+                            change: Microsoft365SyncChange {
+                                id: operation_id("calendar", &source.id, &local.id, "deleted"),
+                                kind: "Kalender".to_string(),
+                                action: "deleteLocal".to_string(),
+                                source_id: source.id.clone(),
+                                source_name: source.name.clone(),
+                                title: local.title.clone(),
+                                detail: "In Microsoft 365 gelöscht → App-Papierkorb".to_string(),
+                                local_summary: Some(event_summary(local)),
+                                remote_summary: None,
+                            },
+                            source: source.clone(),
+                            payload: PlannedPayload::Calendar {
+                                local: Some(local.clone()),
+                                remote: None,
                             },
                         },
                     );
@@ -1552,9 +1978,44 @@ async fn build_m365_sync_plan(
                     );
                 }
             }
+
+            for deleted in deleted_calendar_events(&request.backup) {
+                let Some(remote_id) = linked_calendar_remote_id(&deleted, &source.id) else {
+                    continue;
+                };
+                let Some(remote) = remote_by_id.get(remote_id).copied() else {
+                    continue;
+                };
+                if direction == "import" {
+                    continue;
+                }
+                push_operation(
+                    &mut operations,
+                    PlannedOperation {
+                        change: Microsoft365SyncChange {
+                            id: operation_id("calendar", &source.id, &deleted.id, remote_id),
+                            kind: "Kalender".to_string(),
+                            action: "deleteRemote".to_string(),
+                            source_id: source.id.clone(),
+                            source_name: source.name.clone(),
+                            title: deleted.title.clone(),
+                            detail: "App-Papierkorb → in Microsoft 365 löschen".to_string(),
+                            local_summary: Some(event_summary(&deleted)),
+                            remote_summary: Some(remote_event_summary(remote)),
+                        },
+                        source: source.clone(),
+                        payload: PlannedPayload::Calendar {
+                            local: Some(deleted),
+                            remote: Some(remote.clone()),
+                        },
+                    },
+                );
+            }
             if direction != "export" {
                 for remote in &values {
-                    if local_keys.contains(&remote_event_key(remote)) {
+                    if matched_remote_ids.contains(value_text(remote, "id"))
+                        || local_keys.contains(&remote_event_key(remote))
+                    {
                         continue;
                     }
                     push_operation(
@@ -1593,7 +2054,7 @@ async fn build_m365_sync_plan(
         .filter(|operation| {
             matches!(
                 operation.change.action.as_str(),
-                "createRemote" | "updateRemote"
+                "createRemote" | "updateRemote" | "deleteRemote"
             )
         })
         .count();
@@ -1602,7 +2063,7 @@ async fn build_m365_sync_plan(
         .filter(|operation| {
             matches!(
                 operation.change.action.as_str(),
-                "createLocal" | "updateLocal"
+                "createLocal" | "updateLocal" | "deleteLocal"
             )
         })
         .count();
@@ -1699,10 +2160,14 @@ pub async fn apply_m365_sync(
 ) -> Result<Microsoft365SyncResult, String> {
     let started_at = Utc::now().to_rfc3339();
     let access_token = refreshed_access_token(&app).await?;
+    if request.contacts && request.contact_groups {
+        ensure_contact_group_folders(&access_token, &request.backup).await?;
+    }
     let preview_request = Microsoft365SyncPreviewRequest {
         direction: request.direction,
         base: request.base,
         contacts: request.contacts,
+        contact_groups: request.contact_groups,
         calendars: request.calendars,
         shared_calendars: request.shared_calendars,
         shared_mailboxes: request.shared_mailboxes,
@@ -1718,11 +2183,13 @@ pub async fn apply_m365_sync(
         finished_at: String::new(),
         created: 0,
         updated: 0,
+        deleted: 0,
         ignored: 0,
         conflicts: plan.preview.conflicts,
         errors: 0,
         error_messages: Vec::new(),
         calendar_upserts: Vec::new(),
+        calendar_deletes: Vec::new(),
     };
 
     for operation in plan.operations {
@@ -1746,25 +2213,55 @@ pub async fn apply_m365_sync(
                     remote: None,
                 },
                 "createRemote",
-            ) => graph_write(
-                &access_token,
-                reqwest::Method::POST,
-                &operation.source.resource_path,
-                &graph_contact_payload(local),
-            )
-            .await
-            .map(|_| {
-                result.created += 1;
-            }),
+            ) => {
+                match graph_write(
+                    &access_token,
+                    reqwest::Method::POST,
+                    &operation.source.resource_path,
+                    &graph_contact_payload(local),
+                )
+                .await
+                {
+                    Ok(remote) => {
+                        let local_id = local
+                            .id
+                            .ok_or_else(|| "Lokaler Kontakt hat keine ID.".to_string())?;
+                        let remote_id = value_text(&remote, "id");
+                        if remote_id.is_empty() {
+                            Err("Microsoft 365 hat keine Kontakt-ID zurückgegeben.".to_string())
+                        } else {
+                            save_contact_link(&app, local_id, &operation.source.id, remote_id)?;
+                            result.created += 1;
+                            Ok(())
+                        }
+                    }
+                    Err(error) => Err(error),
+                }
+            }
             (
                 PlannedPayload::Contact {
                     local: None,
                     remote: Some(remote),
                 },
                 "createLocal",
-            ) => crate::save_contact(app.clone(), remote_contact_input(remote, None)).map(|_| {
-                result.created += 1;
-            }),
+            ) => {
+                let input = remote_contact_input_for_source(
+                    remote,
+                    None,
+                    &preview_request.backup,
+                    &operation.source,
+                );
+                crate::save_contact(app.clone(), input).and_then(|local_id| {
+                    save_contact_link(
+                        &app,
+                        local_id,
+                        &operation.source.id,
+                        value_text(remote, "id"),
+                    )?;
+                    result.created += 1;
+                    Ok(())
+                })
+            }
             (
                 PlannedPayload::Contact {
                     local: Some(local),
@@ -1785,6 +2282,14 @@ pub async fn apply_m365_sync(
                 )
                 .await
                 .map(|_| {
+                    if let Some(local_id) = local.id {
+                        let _ = save_contact_link(
+                            &app,
+                            local_id,
+                            &operation.source.id,
+                            value_text(remote, "id"),
+                        );
+                    }
                     result.updated += 1;
                 })
             }
@@ -1794,11 +2299,25 @@ pub async fn apply_m365_sync(
                     remote: Some(remote),
                 },
                 "updateLocal" | "keepM365",
-            ) => crate::save_contact(app.clone(), remote_contact_input(remote, Some(local))).map(
-                |_| {
-                    result.updated += 1;
-                },
-            ),
+            ) => crate::save_contact(
+                app.clone(),
+                remote_contact_input_for_source(
+                    remote,
+                    Some(local),
+                    &preview_request.backup,
+                    &operation.source,
+                ),
+            )
+            .and_then(|local_id| {
+                save_contact_link(
+                    &app,
+                    local_id,
+                    &operation.source.id,
+                    value_text(remote, "id"),
+                )?;
+                result.updated += 1;
+                Ok(())
+            }),
             (
                 PlannedPayload::Contact {
                     local: Some(local),
@@ -1828,6 +2347,48 @@ pub async fn apply_m365_sync(
                 }
             }
             (
+                PlannedPayload::Contact {
+                    local: Some(local),
+                    remote: Some(remote),
+                },
+                "deleteRemote",
+            ) => {
+                let url = format!(
+                    "{}/{}",
+                    operation.source.resource_path,
+                    encode_graph_path_segment(value_text(remote, "id"))
+                );
+                graph_write(&access_token, reqwest::Method::DELETE, &url, &Value::Null)
+                    .await
+                    .and_then(|_| {
+                        if let Some(local_id) = local.id {
+                            delete_contact_link(&app, local_id, &operation.source.id)?;
+                        }
+                        result.deleted += 1;
+                        Ok(())
+                    })
+            }
+            (
+                PlannedPayload::Contact {
+                    local: Some(local),
+                    remote: None,
+                },
+                "deleteLocal",
+            ) => {
+                let local_id = local
+                    .id
+                    .ok_or_else(|| "Lokaler Kontakt hat keine ID.".to_string())?;
+                if let Some(group_id) = source_group_id(&preview_request.backup, &operation.source)
+                {
+                    remove_contact_from_group(&app, local_id, group_id)?;
+                } else {
+                    crate::delete_contact(app.clone(), local_id)?;
+                }
+                delete_contact_link(&app, local_id, &operation.source.id)?;
+                result.deleted += 1;
+                Ok(())
+            }
+            (
                 PlannedPayload::Calendar {
                     local: Some(local),
                     remote: None,
@@ -1835,16 +2396,30 @@ pub async fn apply_m365_sync(
                 "createRemote",
             ) => {
                 let url = format!("{}/events", operation.source.resource_path);
-                graph_write(
+                match graph_write(
                     &access_token,
                     reqwest::Method::POST,
                     &url,
                     &graph_event_payload(local),
                 )
                 .await
-                .map(|_| {
-                    result.created += 1;
-                })
+                {
+                    Ok(remote) => {
+                        if value_text(&remote, "id").is_empty() {
+                            Err("Microsoft 365 hat keine Termin-ID zurückgegeben.".to_string())
+                        } else {
+                            let linked =
+                                remote_event_to_local(&remote, &operation.source, Some(local));
+                            if linked.id != local.id {
+                                result.calendar_deletes.push(local.id.clone());
+                            }
+                            result.calendar_upserts.push(linked);
+                            result.created += 1;
+                            Ok(())
+                        }
+                    }
+                    Err(error) => Err(error),
+                }
             }
             (
                 PlannedPayload::Calendar {
@@ -1891,11 +2466,11 @@ pub async fn apply_m365_sync(
                 },
                 "updateLocal" | "keepM365",
             ) => {
-                result.calendar_upserts.push(remote_event_to_local(
-                    remote,
-                    &operation.source,
-                    Some(local),
-                ));
+                let linked = remote_event_to_local(remote, &operation.source, Some(local));
+                if linked.id != local.id {
+                    result.calendar_deletes.push(local.id.clone());
+                }
+                result.calendar_upserts.push(linked);
                 result.updated += 1;
                 Ok(())
             }
@@ -1927,6 +2502,35 @@ pub async fn apply_m365_sync(
                     }
                     Err(error) => Err(error),
                 }
+            }
+            (
+                PlannedPayload::Calendar {
+                    local: Some(_local),
+                    remote: Some(remote),
+                },
+                "deleteRemote",
+            ) => {
+                let url = format!(
+                    "{}/events/{}",
+                    operation.source.resource_path,
+                    encode_graph_path_segment(value_text(remote, "id"))
+                );
+                graph_write(&access_token, reqwest::Method::DELETE, &url, &Value::Null)
+                    .await
+                    .map(|_| {
+                        result.deleted += 1;
+                    })
+            }
+            (
+                PlannedPayload::Calendar {
+                    local: Some(local),
+                    remote: None,
+                },
+                "deleteLocal",
+            ) => {
+                result.calendar_deletes.push(local.id.clone());
+                result.deleted += 1;
+                Ok(())
             }
             _ => {
                 result.ignored += 1;
@@ -2441,6 +3045,37 @@ mod tests {
         assert_eq!(event.category, "Wichtig");
         assert_eq!(event.color, "red");
         assert_eq!(event.source, "Microsoft 365 · Teamkalender");
+        assert_eq!(
+            linked_calendar_remote_id(&event, &source.id),
+            Some("event-42")
+        );
+    }
+
+    #[test]
+    fn relinks_legacy_local_calendar_ids_to_the_graph_event() {
+        let source = Microsoft365SyncSource {
+            id: "me:calendar:team".to_string(),
+            name: "Teamkalender".to_string(),
+            kind: "calendar".to_string(),
+            editable: true,
+            shared: false,
+            resource_path: "/me/calendars/team/events".to_string(),
+            mailbox: None,
+        };
+        let remote = json!({
+            "id": "event-99",
+            "lastModifiedDateTime": "2026-08-27T10:00:00Z",
+            "subject": "Arzttermin",
+            "start": { "dateTime": "2026-08-28T09:00:00" },
+            "end": { "dateTime": "2026-08-28T10:00:00" }
+        });
+        let mut legacy = remote_event_to_local(&remote, &source, None);
+        legacy.id = "local-before-link".to_string();
+
+        let linked = remote_event_to_local(&remote, &source, Some(&legacy));
+
+        assert_eq!(linked.id, "m365:me:calendar:team:event-99");
+        assert_eq!(linked.updated_at, "2026-08-27T10:00:00Z");
     }
 
     #[test]

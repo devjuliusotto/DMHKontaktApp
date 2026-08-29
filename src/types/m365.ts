@@ -63,7 +63,7 @@ export interface Microsoft365SyncPreview {
   changes: Array<{
     id: string;
     kind: string;
-    action: "createRemote" | "createLocal" | "updateRemote" | "updateLocal" | "conflict";
+    action: "createRemote" | "createLocal" | "updateRemote" | "updateLocal" | "deleteRemote" | "deleteLocal" | "conflict";
     sourceId: string;
     sourceName: string;
     title: string;
@@ -80,13 +80,16 @@ export interface Microsoft365SyncResult {
   finishedAt: string;
   created: number;
   updated: number;
+  deleted: number;
   ignored: number;
   conflicts: number;
   errors: number;
   errorMessages: string[];
   calendarUpserts: import("./calendar").CalendarEvent[];
+  calendarDeletes: string[];
 }
 
-export interface Microsoft365SyncHistoryEntry extends Omit<Microsoft365SyncResult, "calendarUpserts"> {
+export interface Microsoft365SyncHistoryEntry extends Omit<Microsoft365SyncResult, "calendarUpserts" | "calendarDeletes" | "deleted"> {
   id: string;
+  deleted?: number;
 }

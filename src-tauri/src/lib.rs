@@ -20,6 +20,7 @@ mod file_icons;
 mod m365;
 mod mail_accounts;
 mod outlook_autocomplete;
+mod phone_transfer;
 mod thunderbird;
 mod vault;
 
@@ -207,6 +208,8 @@ where
 #[serde(rename_all = "camelCase")]
 pub struct CalendarEvent {
     pub id: String,
+    #[serde(default)]
+    pub updated_at: String,
     pub title: String,
     pub starts_at: String,
     pub ends_at: String,
@@ -581,6 +584,10 @@ fn open_db(app: &AppHandle) -> Result<Connection, String> {
     Ok(conn)
 }
 
+fn initial_onboarding_completion(database_already_existed: bool) -> &'static str {
+    if database_already_existed { "true" } else { "false" }
+}
+
 fn init_db(app: &AppHandle) -> Result<(), String> {
     let app_dir = app
         .path()
@@ -588,6 +595,7 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
         .map_err(|err| format!("App-Datenverzeichnis konnte nicht erstellt werden: {err}"))?;
     fs::create_dir_all(&app_dir).map_err(|err| err.to_string())?;
     let db_path = app_dir.join("agendakontakte.sqlite");
+    let database_already_existed = db_path.exists();
 
     {
         let state = app.state::<AppState>();
@@ -635,6 +643,15 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
             PRIMARY KEY (contact_id, group_id),
             FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE CASCADE,
             FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS m365_contact_links (
+            local_contact_id INTEGER NOT NULL,
+            source_id TEXT NOT NULL,
+            remote_id TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (local_contact_id, source_id),
+            UNIQUE (source_id, remote_id),
+            FOREIGN KEY (local_contact_id) REFERENCES contacts(id) ON DELETE CASCADE
         );
         CREATE TABLE IF NOT EXISTS import_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -697,6 +714,16 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
     )
     .map_err(|err| err.to_string())?;
 
+    conn.execute(
+        "INSERT OR IGNORE INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)",
+        params![
+            "onboarding_completed",
+            initial_onboarding_completion(database_already_existed),
+            now()
+        ],
+    )
+    .map_err(|err| err.to_string())?;
+
     ensure_column(&conn, "contacts", "deleted_at", "TEXT")?;
     ensure_column(&conn, "contacts", "short_info", "TEXT NOT NULL DEFAULT ''")?;
     ensure_column(&conn, "contacts", "outlook_entry_id", "TEXT")?;
@@ -715,6 +742,8 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_contacts_import_batch ON contacts(import_batch_id);
         CREATE INDEX IF NOT EXISTS idx_contact_groups_group_contact
             ON contact_groups(group_id, contact_id);
+        CREATE INDEX IF NOT EXISTS idx_m365_contact_links_remote
+            ON m365_contact_links(source_id, remote_id);
         ",
     )
     .map_err(|err| err.to_string())?;
@@ -4256,6 +4285,7 @@ fn import_outlook_classic_appointments_once() -> Result<OutlookOneTimeCalendarIm
         .join(" · ");
         events.push(CalendarEvent {
             id,
+            updated_at: now(),
             title,
             starts_at: starts_at.clone(),
             ends_at: if record.ends_at.trim().is_empty() {
@@ -4515,6 +4545,9 @@ pub fn run() {
             documents::list_document_sync_conflicts,
             documents::resolve_document_sync_conflict,
             documents::get_documents_local_root,
+            phone_transfer::start_phone_photo_transfer,
+            phone_transfer::get_phone_photo_transfer_status,
+            phone_transfer::stop_phone_photo_transfer,
             import_outlook_store,
             preview_outlook_classic_contacts,
             import_selected_outlook_classic_contacts,
@@ -4522,6 +4555,7 @@ pub fn run() {
             import_outlook_classic_appointments_once,
             thunderbird::import_thunderbird_contacts_once,
             thunderbird::import_thunderbird_calendars_once,
+            thunderbird::preview_thunderbird_data,
             mail_accounts::scan_outlook_accounts,
             mail_accounts::list_mail_accounts,
             mail_accounts::import_outlook_account,
@@ -4554,6 +4588,12 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn onboarding_runs_only_for_a_new_local_database() {
+        assert_eq!(initial_onboarding_completion(false), "false");
+        assert_eq!(initial_onboarding_completion(true), "true");
+    }
 
     fn sample_contact(name: &str, email: &str, phone: &str) -> ContactInput {
         ContactInput {
@@ -4975,6 +5015,7 @@ mod tests {
         };
         let previous_event = CalendarEvent {
             id: "event-7".to_string(),
+            updated_at: "2026-08-18T10:00:00Z".to_string(),
             title: "Besprechung".to_string(),
             starts_at: "2026-08-18T10:00:00".to_string(),
             ends_at: "2026-08-18T11:00:00".to_string(),

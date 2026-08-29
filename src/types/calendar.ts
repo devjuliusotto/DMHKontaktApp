@@ -13,6 +13,7 @@ export interface CalendarRecurrence {
 
 export interface CalendarEvent {
   id: string;
+  updatedAt?: string;
   title: string;
   startsAt: string;
   endsAt: string;

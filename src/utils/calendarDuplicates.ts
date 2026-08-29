@@ -1,6 +1,6 @@
 import type { CalendarEvent } from "../types/calendar";
 
-type CalendarEventContentField = Exclude<keyof CalendarEvent, "id">;
+type CalendarEventContentField = Exclude<keyof CalendarEvent, "id" | "updatedAt">;
 
 const exactContentFieldMap: Record<CalendarEventContentField, true> = {
   title: true,

@@ -350,7 +350,7 @@ export function DocumentsPage() {
   const openItem = async (item: DocumentItem) => {
     if (item.isFolder) { await openFolder(item); return; }
     if (item.webUrl) {
-      const officeTarget = await openDocumentInOffice(item.name, item.webUrl);
+      const officeTarget = await openDocumentInOffice(item.name, currentBreadcrumb?.webUrl || "", item.webUrl);
       if (officeTarget !== "unsupported") return;
     }
     if (item.offlineAvailable && item.localPath) {

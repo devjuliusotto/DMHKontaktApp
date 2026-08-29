@@ -24,7 +24,11 @@ const calendarTargetNames: Record<CalendarExportTarget, string> = {
   universal: "Universelle ICS-Datei"
 };
 
-export function ExportPage() {
+interface ExportPageProps {
+  embedded?: boolean;
+}
+
+export function ExportPage({ embedded = false }: ExportPageProps) {
   const [message, setMessage] = useState("");
   const [groups, setGroups] = useState<Group[]>([]);
   const [selectedGroupIds, setSelectedGroupIds] = useState<number[]>([]);
@@ -33,6 +37,7 @@ export function ExportPage() {
   const [calendarExportTarget, setCalendarExportTarget] = useState<CalendarExportTarget>("universal");
 
   useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
     listGroups().then(setGroups).catch((error) => setMessage(`Gruppen konnten nicht geladen werden: ${error}`));
   }, []);
 
@@ -128,12 +133,14 @@ export function ExportPage() {
 
   return (
     <div className="page export-page">
-      <header className="page-header">
-        <div>
-          <h2>{t.exportContacts}</h2>
-          <p>Wählen Sie zuerst aus, was gespeichert werden soll.</p>
-        </div>
-      </header>
+      {!embedded && (
+        <header className="page-header">
+          <div>
+            <h2>{t.exportContacts}</h2>
+            <p>Wählen Sie zuerst aus, was gespeichert werden soll.</p>
+          </div>
+        </header>
+      )}
       <StatusMessage message={message} />
 
       {!choice && (

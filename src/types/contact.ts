@@ -116,6 +116,19 @@ export interface ThunderbirdContactImportResult {
   skippedInvalid: number;
   addressBooks: number;
   groupsUsed: number;
+  autocompleteFound: number;
+  autocompleteImported: number;
+  autocompleteLinkedExisting: number;
+}
+
+export interface ThunderbirdDataPreview {
+  available: boolean;
+  addressBooks: number;
+  contacts: number;
+  autocompleteContacts: number;
+  calendars: number;
+  events: number;
+  warnings: string[];
 }
 
 export interface BackupData {

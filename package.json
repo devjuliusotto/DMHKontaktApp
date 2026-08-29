@@ -8,6 +8,7 @@
     "@tauri-apps/plugin-updater": "^2.10.1",
     "lucide-react": "^0.468.0",
     "papaparse": "^5.4.1",
+    "qrcode": "^1.5.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "xlsx": "^0.18.5"
@@ -15,6 +16,7 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2.5.0",
     "@types/papaparse": "^5.3.14",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
@@ -31,9 +33,9 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:build": "set CARGO_TARGET_DIR=%TEMP%\\agendakontakte-cargo-target&& tauri build",
-    "tauri:build:admin-test": "set CARGO_TARGET_DIR=%TEMP%\\agendakontakte-admin-test-cargo-target&& set VITE_APP_CHANNEL=admin-test&& set VITE_SOURCE_COMMIT=local&& set DMH_RELEASE_CHANNEL=admin-test&& tauri build --config src-tauri/tauri.admin-test.conf.json",
+    "tauri:build:admin-test": "set CARGO_TARGET_DIR=%TEMP%\\agendakontakte-admin-test-cargo-target&& set VITE_APP_CHANNEL=admin-test&& set VITE_FEATURE_AUTHENTICATOR_DEFAULT=false&& set VITE_FEATURE_SERVICES_DEFAULT=false&& set VITE_SOURCE_COMMIT=local&& set DMH_RELEASE_CHANNEL=admin-test&& tauri build --config src-tauri/tauri.admin-test.conf.json",
     "tauri:dev": "set CARGO_TARGET_DIR=%TEMP%\\agendakontakte-cargo-target&& tauri dev",
-    "tauri:dev:admin-test": "set CARGO_TARGET_DIR=%TEMP%\\agendakontakte-admin-test-cargo-target&& set VITE_APP_CHANNEL=admin-test&& set VITE_SOURCE_COMMIT=local&& set DMH_RELEASE_CHANNEL=admin-test&& tauri dev --config src-tauri/tauri.admin-test.conf.json",
+    "tauri:dev:admin-test": "set CARGO_TARGET_DIR=%TEMP%\\agendakontakte-admin-test-cargo-target&& set VITE_APP_CHANNEL=admin-test&& set VITE_FEATURE_AUTHENTICATOR_DEFAULT=false&& set VITE_FEATURE_SERVICES_DEFAULT=false&& set VITE_SOURCE_COMMIT=local&& set DMH_RELEASE_CHANNEL=admin-test&& tauri dev --config src-tauri/tauri.admin-test.conf.json",
     "tauri:open": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/open-tauri-dev.ps1",
     "theme:check": "node scripts/check-theme-css.mjs",
     "version:check": "node scripts/check-version.mjs",

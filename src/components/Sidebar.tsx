@@ -1,7 +1,7 @@
 import { CalendarDays, Files, KeyRound, Settings, ShieldCheck, UserRound, Wrench } from "lucide-react";
 import { t } from "../i18n";
 
-export type Page = "contacts" | "calendar" | "documents" | "passwords" | "authenticator" | "services" | "import" | "export" | "m365" | "trash" | "settings" | "appearance" | "simple-import" | "backup" | "synchronizations";
+export type Page = "contacts" | "calendar" | "documents" | "passwords" | "authenticator" | "services" | "import" | "export" | "feature-development" | "m365" | "trash" | "settings" | "appearance" | "simple-import" | "backup" | "synchronizations";
 
 const items: Array<{ page: Page; label: string; icon: typeof UserRound; group: "main" | "tools" }> = [
   { page: "contacts", label: t.contacts, icon: UserRound, group: "main" },
@@ -12,15 +12,22 @@ const items: Array<{ page: Page; label: string; icon: typeof UserRound; group: "
   { page: "services", label: "Dienstleistungen", icon: Wrench, group: "tools" }
 ];
 
-const settingsPages = new Set<Page>(["settings", "appearance", "simple-import", "import", "export", "m365", "trash", "backup", "synchronizations"]);
+const settingsPages = new Set<Page>(["settings", "appearance", "simple-import", "import", "export", "feature-development", "m365", "trash", "backup", "synchronizations"]);
 
 interface SidebarProps {
   activePage: Page;
   onNavigate: (page: Page) => void;
   compact?: boolean;
+  authenticatorEnabled: boolean;
+  servicesEnabled: boolean;
 }
 
-export function Sidebar({ activePage, onNavigate, compact = false }: SidebarProps) {
+export function Sidebar({ activePage, onNavigate, compact = false, authenticatorEnabled, servicesEnabled }: SidebarProps) {
+  const visibleItems = items.filter((item) => (
+    (item.page !== "authenticator" || authenticatorEnabled)
+    && (item.page !== "services" || servicesEnabled)
+  ));
+
   return (
     <aside className={compact ? "sidebar compact" : "sidebar"}>
       <div className="brand">
@@ -31,9 +38,9 @@ export function Sidebar({ activePage, onNavigate, compact = false }: SidebarProp
         </div>
       </div>
       <nav className="nav-list" aria-label="Hauptmenü">
-        {items.map((item, index) => {
+        {visibleItems.map((item, index) => {
           const Icon = item.icon;
-          const startsGroup = index > 0 && items[index - 1].group !== item.group;
+          const startsGroup = index > 0 && visibleItems[index - 1].group !== item.group;
           return (
             <button
               className={`${activePage === item.page ? "nav-button active" : "nav-button"}${startsGroup ? " nav-group-start" : ""}`}

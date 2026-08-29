@@ -17,9 +17,9 @@ import type { SettingsSection } from "../components/SettingsSubtabs";
 import type { Page } from "../components/Sidebar";
 import { applyMicrosoft365Sync, createAutomaticBackup, createAutomaticPasswordBackup, getAppSetting, getBackupData, getMicrosoft365ConnectionStatus, listMicrosoft365SyncSources, previewMicrosoft365Sync, setAppSetting } from "../services/db";
 import type { Microsoft365ConflictDecision, Microsoft365ConnectionStatus, Microsoft365SyncHistoryEntry, Microsoft365SyncPreview, Microsoft365SyncSource, Microsoft365SyncSources } from "../types/m365";
-import { defaultSyncConfig, parseSyncConfig, type SyncBase, type SyncConfig, type SyncDirection } from "../types/sync";
+import { defaultSyncConfig, parseSyncConfig, type SyncConfig, type SyncDirection } from "../types/sync";
 import { addBrowserDataToBackup } from "../utils/backup";
-import { calendarStorageKey, mergeImportedCalendarCategories } from "../utils/calendar";
+import { calendarStorageKey, calendarTrashStorageKey, mergeImportedCalendarCategories } from "../utils/calendar";
 import { synchronizationConfigKey as syncConfigKey, synchronizationHistoryKey as syncHistoryKey } from "../utils/automaticCalendarSync";
 import type { CalendarEvent } from "../types/calendar";
 
@@ -87,7 +87,11 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
         if (status.connected) {
           return listMicrosoft365SyncSources(nextConfig.sharedMailboxAddresses).then((sources) => {
             setM365Sources(sources);
-            setConfig(initializeSourceSelection(nextConfig, sources));
+            const initialized = initializeSourceSelection(nextConfig, sources);
+            setConfig(initialized);
+            if (JSON.stringify(initialized) !== JSON.stringify(nextConfig)) {
+              void setAppSetting(syncConfigKey, JSON.stringify(initialized));
+            }
           }).catch(() => setM365Sources(null));
         }
         return undefined;
@@ -149,6 +153,7 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
         direction: config.direction,
         base: config.base,
         contacts: config.contacts,
+        contactGroups: config.contactGroups,
         calendars: config.calendars,
         sharedCalendars: config.sharedCalendars,
         sharedMailboxes: config.sharedMailboxes,
@@ -245,6 +250,7 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
         direction: config.direction,
         base: config.base,
         contacts: config.contacts,
+        contactGroups: config.contactGroups,
         calendars: config.calendars,
         sharedCalendars: config.sharedCalendars,
         sharedMailboxes: config.sharedMailboxes,
@@ -255,9 +261,16 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
         decisions: conflictDecisions,
         backup
       });
-      if (result.calendarUpserts.length > 0) {
+      if (result.calendarUpserts.length > 0 || result.calendarDeletes.length > 0) {
         const current = JSON.parse(localStorage.getItem(calendarStorageKey) ?? "[]") as CalendarEvent[];
-        const byId = new Map(current.map((event) => [event.id, event]));
+        const deletedIds = new Set(result.calendarDeletes);
+        const removed = current.filter((event) => deletedIds.has(event.id)).map((event) => ({ ...event, deletedAt: new Date().toISOString() }));
+        if (removed.length > 0) {
+          const trash = JSON.parse(localStorage.getItem(calendarTrashStorageKey) ?? "[]") as CalendarEvent[];
+          const removedIds = new Set(removed.map((event) => event.id));
+          localStorage.setItem(calendarTrashStorageKey, JSON.stringify([...removed, ...trash.filter((event) => !removedIds.has(event.id))]));
+        }
+        const byId = new Map(current.filter((event) => !deletedIds.has(event.id)).map((event) => [event.id, event]));
         for (const event of result.calendarUpserts) byId.set(event.id, event);
         localStorage.setItem(calendarStorageKey, JSON.stringify(Array.from(byId.values())));
         mergeImportedCalendarCategories(result.calendarUpserts);
@@ -266,7 +279,7 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
       setPreview(null);
       setConflictDecisions({});
       setMessageType(result.errors > 0 ? "error" : "success");
-      setMessage(`${result.created} erstellt, ${result.updated} aktualisiert, ${result.ignored} ignoriert, ${result.errors} Fehler.`);
+      setMessage(`${result.created} erstellt, ${result.updated} aktualisiert, ${result.deleted} gelöscht, ${result.ignored} ignoriert, ${result.errors} Fehler.`);
     } catch (error) {
       setMessageType("error");
       setMessage(`Synchronisierung konnte nicht abgeschlossen werden: ${error}`);
@@ -313,7 +326,7 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
             ) : (
               <>
                 <section className="sync-quick-settings" aria-label="Grundlegende Einstellungen">
-                  <label title="Neue und bearbeitete Termine nach dem Speichern automatisch übertragen."><span><strong>Automatisch</strong><small>Änderungen direkt übertragen</small></span><input type="checkbox" checked={config.enabled} onChange={(event) => updateConfig("enabled", event.target.checked)} /></label>
+                  <label title="Lokale Änderungen werden direkt gesendet. Änderungen aus Microsoft 365 werden im Vordergrund spätestens nach etwa 30 Sekunden gelesen."><span><strong>Automatisch</strong><small>Lokal sofort · M365 alle 30 Sek.</small></span><input type="checkbox" checked={config.enabled} onChange={(event) => updateConfig("enabled", event.target.checked)} /></label>
                   <label title="Kontakte zwischen der App und Microsoft 365 berücksichtigen."><ContactRound size={19} /><span><strong>Kontakte</strong></span><input type="checkbox" checked={config.contacts} onChange={(event) => updateConfig("contacts", event.target.checked)} /></label>
                   <label title="Termine zwischen der App und Microsoft 365 berücksichtigen."><CalendarDays size={19} /><span><strong>Kalender</strong></span><input type="checkbox" checked={config.calendars} onChange={(event) => updateConfig("calendars", event.target.checked)} /></label>
                 </section>
@@ -366,9 +379,6 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
 
                 <details className="sync-card-details">
                   <summary>Weitere Optionen</summary>
-                  <div className="synchronization-choice-grid">
-                    <label><span>Bevorzugte Version</span><select value={config.base} onChange={(event) => updateConfig("base", event.target.value as SyncBase)}><option value="app">App</option><option value="m365">Microsoft 365</option><option value="outlook-classic">Outlook Classic</option><option value="thunderbird">Thunderbird</option></select></label>
-                  </div>
                   <div className="synchronization-option-grid">
                     <label><input type="checkbox" checked={config.contactGroups} onChange={(event) => updateConfig("contactGroups", event.target.checked)} /> Kontaktgruppen</label>
                     <label><input type="checkbox" checked={config.recurringEvents} onChange={(event) => updateConfig("recurringEvents", event.target.checked)} /> Terminserien</label>
@@ -392,7 +402,7 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
                   <summary>Verlauf <small>{history.length}</small></summary>
                   <div className="synchronization-history-list">
                     {history.length === 0 && <p>Noch keine Synchronisierung ausgeführt.</p>}
-                    {history.map((entry) => <article key={entry.id}><div><strong>{new Date(entry.finishedAt).toLocaleString("de-DE")}</strong><small>{entry.errors > 0 ? "Mit Fehlern" : "Erfolgreich"}</small></div><span>{entry.created} erstellt</span><span>{entry.updated} aktualisiert</span><span>{entry.conflicts} Konflikte</span><span className={entry.errors > 0 ? "has-errors" : ""}>{entry.errors} Fehler</span></article>)}
+                    {history.map((entry) => <article key={entry.id}><div><strong>{new Date(entry.finishedAt).toLocaleString("de-DE")}</strong><small>{entry.errors > 0 ? "Mit Fehlern" : "Erfolgreich"}</small></div><span>{entry.created} erstellt</span><span>{entry.updated} aktualisiert</span><span>{entry.deleted ?? 0} gelöscht</span><span>{entry.conflicts} Konflikte</span><span className={entry.errors > 0 ? "has-errors" : ""}>{entry.errors} Fehler</span></article>)}
                   </div>
                 </details>
               </>

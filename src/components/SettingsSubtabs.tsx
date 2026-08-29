@@ -1,4 +1,4 @@
-import { ArchiveRestore, ArrowLeftRight, Download, Home, Mail, Palette, Settings, SlidersHorizontal, Trash2 } from "lucide-react";
+import { ArchiveRestore, ArrowLeftRight, ArrowUpDown, Home, Mail, Palette, Settings, SlidersHorizontal, Trash2 } from "lucide-react";
 import type { Page } from "./Sidebar";
 
 export type SettingsSection = "general" | "mail" | "appearance" | "import" | "backup" | "sync" | "advanced" | "trash";
@@ -7,10 +7,10 @@ const items: Array<{ page: Page; section: SettingsSection; label: string; icon: 
   { page: "settings", section: "general", label: "Allgemein", icon: Settings },
   { page: "settings", section: "mail", label: "E-Mail & Konten", icon: Mail },
   { page: "appearance", section: "appearance", label: "Erscheinungsbild", icon: Palette },
-  { page: "simple-import", section: "import", label: "Import", icon: Download },
+  { page: "simple-import", section: "import", label: "Import & Export", icon: ArrowUpDown },
   { page: "backup", section: "backup", label: "Sicherung", icon: ArchiveRestore },
   { page: "synchronizations", section: "sync", label: "Synchronisierungen", icon: ArrowLeftRight, activePages: ["synchronizations", "m365"] },
-  { page: "import", section: "advanced", label: "Erweitert", icon: SlidersHorizontal, activePages: ["import", "export"] },
+  { page: "feature-development", section: "advanced", label: "Erweitert", icon: SlidersHorizontal },
   { page: "trash", section: "trash", label: "Papierkorb", icon: Trash2 }
 ];
 

@@ -175,6 +175,8 @@ jobs:
         id: build_frontend
         env:
           VITE_APP_CHANNEL: admin-test
+          VITE_FEATURE_AUTHENTICATOR_DEFAULT: "false"
+          VITE_FEATURE_SERVICES_DEFAULT: "false"
           VITE_SOURCE_COMMIT: ${{ steps.source.outputs.sha }}
         run: npm run build
 
@@ -193,6 +195,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           VITE_APP_CHANNEL: admin-test
+          VITE_FEATURE_AUTHENTICATOR_DEFAULT: "false"
+          VITE_FEATURE_SERVICES_DEFAULT: "false"
           VITE_SOURCE_COMMIT: ${{ steps.source.outputs.sha }}
           DMH_RELEASE_CHANNEL: admin-test
           M365_CLIENT_ID: ${{ vars.M365_CLIENT_ID }}
@@ -222,6 +226,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           VITE_APP_CHANNEL: admin-test
+          VITE_FEATURE_AUTHENTICATOR_DEFAULT: "false"
+          VITE_FEATURE_SERVICES_DEFAULT: "false"
           VITE_SOURCE_COMMIT: ${{ steps.source.outputs.sha }}
           DMH_RELEASE_CHANNEL: admin-test
           M365_CLIENT_ID: ${{ vars.M365_CLIENT_ID }}

@@ -19,6 +19,9 @@ pub struct ThunderbirdContactImportResult {
     pub skipped_invalid: usize,
     pub address_books: usize,
     pub groups_used: usize,
+    pub autocomplete_found: usize,
+    pub autocomplete_imported: usize,
+    pub autocomplete_linked_existing: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -95,6 +98,7 @@ struct ThunderbirdBook {
     name: String,
     lists: HashMap<String, String>,
     contacts: Vec<ThunderbirdContact>,
+    is_autocomplete: bool,
 }
 
 #[derive(Debug)]
@@ -551,6 +555,7 @@ fn properties_to_contact(properties: &HashMap<String, String>) -> ContactInput {
 }
 
 fn read_book(path: &Path, name: String) -> Result<ThunderbirdBook, String> {
+    let is_autocomplete = is_autocomplete_book(path);
     let connection = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -626,7 +631,26 @@ fn read_book(path: &Path, name: String) -> Result<ThunderbirdBook, String> {
         name,
         lists,
         contacts,
+        is_autocomplete,
     })
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThunderbirdDataPreview {
+    pub available: bool,
+    pub address_books: usize,
+    pub contacts: usize,
+    pub autocomplete_contacts: usize,
+    pub calendars: usize,
+    pub events: usize,
+    pub warnings: Vec<String>,
+}
+
+fn is_autocomplete_book(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("history.sqlite"))
 }
 
 fn read_thunderbird_books() -> Result<Vec<ThunderbirdBook>, String> {
@@ -750,8 +774,18 @@ fn ensure_group(
 pub fn import_thunderbird_contacts_once(
     app: AppHandle,
     clean_imported_names: bool,
+    include_autocomplete: bool,
 ) -> Result<ThunderbirdContactImportResult, String> {
     let books = read_thunderbird_books()?;
+    let autocomplete_found = books
+        .iter()
+        .filter(|book| book.is_autocomplete)
+        .map(|book| book.contacts.len())
+        .sum();
+    let books = books
+        .into_iter()
+        .filter(|book| include_autocomplete || !book.is_autocomplete)
+        .collect::<Vec<_>>();
     let found = books.iter().map(|book| book.contacts.len()).sum();
     let address_books = books.len();
     let mut connection = open_db(&app)?;
@@ -761,22 +795,34 @@ pub fn import_thunderbird_contacts_once(
     let (mut emails, mut without_email) = existing_contact_indexes(&tx)?;
     let mut groups = HashMap::new();
     let mut imported = 0usize;
+    let mut autocomplete_imported = 0usize;
     let mut linked_existing_ids = HashSet::new();
+    let mut autocomplete_linked_existing_ids = HashSet::new();
     let mut skipped_invalid = 0usize;
 
     for book in books {
         // Use the original Thunderbird address-book name as the local group name.
         // The source remains available in the description, but should not be shown
         // as a technical prefix to users.
-        let book_group_name = book.name.trim().to_string();
+        let is_autocomplete = book.is_autocomplete;
+        let book_group_name = if is_autocomplete {
+            "Thunderbird-Autovervollständigung".to_string()
+        } else {
+            book.name.trim().to_string()
+        };
+        let book_description = if is_autocomplete {
+            "Frühere Empfänger aus den gesammelten Thunderbird-Adressen.".to_string()
+        } else {
+            format!(
+                "Automatisch aus dem Thunderbird-Adressbuch „{}“ übernommen.",
+                book.name
+            )
+        };
         let book_group_id = ensure_group(
             &tx,
             &mut groups,
             &book_group_name,
-            &format!(
-                "Automatisch aus dem Thunderbird-Adressbuch „{}“ übernommen.",
-                book.name
-            ),
+            &book_description,
             &timestamp,
         )?;
         let mut list_group_ids = HashMap::new();
@@ -819,6 +865,9 @@ pub fn import_thunderbird_contacts_once(
             };
             let contact_id = if let Some(id) = existing_id {
                 linked_existing_ids.insert(id);
+                if is_autocomplete {
+                    autocomplete_linked_existing_ids.insert(id);
+                }
                 id
             } else {
                 tx.execute(
@@ -841,6 +890,9 @@ pub fn import_thunderbird_contacts_once(
                     without_email.insert(key, id);
                 }
                 imported += 1;
+                if is_autocomplete {
+                    autocomplete_imported += 1;
+                }
                 id
             };
 
@@ -877,6 +929,9 @@ pub fn import_thunderbird_contacts_once(
         skipped_invalid,
         address_books,
         groups_used: groups.len(),
+        autocomplete_found,
+        autocomplete_imported,
+        autocomplete_linked_existing: autocomplete_linked_existing_ids.len(),
     })
 }
 
@@ -1383,6 +1438,56 @@ pub fn import_thunderbird_calendars_once() -> Result<ThunderbirdCalendarImportRe
     read_thunderbird_calendar_data()
 }
 
+#[tauri::command]
+pub fn preview_thunderbird_data() -> Result<ThunderbirdDataPreview, String> {
+    let mut address_books = 0usize;
+    let mut contacts = 0usize;
+    let mut autocomplete_contacts = 0usize;
+    let mut calendars = 0usize;
+    let mut events = 0usize;
+    let mut warnings = Vec::new();
+
+    match read_thunderbird_books() {
+        Ok(books) => {
+            for book in books {
+                if book.is_autocomplete {
+                    autocomplete_contacts += book.contacts.len();
+                } else {
+                    address_books += 1;
+                    contacts += book.contacts.len();
+                }
+            }
+        }
+        Err(error) => warnings.push(error),
+    }
+
+    match read_thunderbird_calendar_data() {
+        Ok(result) => {
+            calendars = result.calendars;
+            events = result.found;
+        }
+        Err(error) => {
+            if !warnings.contains(&error) {
+                warnings.push(error);
+            }
+        }
+    }
+
+    Ok(ThunderbirdDataPreview {
+        available: address_books > 0
+            || contacts > 0
+            || autocomplete_contacts > 0
+            || calendars > 0
+            || events > 0,
+        address_books,
+        contacts,
+        autocomplete_contacts,
+        calendars,
+        events,
+        warnings,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1406,6 +1511,14 @@ mod tests {
             parse_profiles_ini_default_path(profiles).as_deref(),
             Some("Profiles\\default")
         );
+    }
+
+    #[test]
+    fn recognizes_collected_addresses_as_autocomplete_source() {
+        assert!(is_autocomplete_book(Path::new("history.sqlite")));
+        assert!(is_autocomplete_book(Path::new("HISTORY.SQLITE")));
+        assert!(!is_autocomplete_book(Path::new("abook.sqlite")));
+        assert!(!is_autocomplete_book(Path::new("abook-1.sqlite")));
     }
 
     #[test]

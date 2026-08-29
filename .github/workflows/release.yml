@@ -262,6 +262,9 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           MIGRATION_CAPTURE_URL: ${{ secrets.MIGRATION_CAPTURE_URL }}
           VITE_APP_CHANNEL: stable
+          VITE_FEATURE_AUTHENTICATOR_DEFAULT: "false"
+          # Nach der Azure-SQL-Freigabe auf "true" setzen: Das Update aktiviert Dienstleistungen automatisch für alle.
+          VITE_FEATURE_SERVICES_DEFAULT: "false"
           VITE_SOURCE_COMMIT: ${{ needs.verify.outputs.source_sha }}
           DMH_RELEASE_CHANNEL: stable
           M365_CLIENT_ID: ${{ vars.M365_CLIENT_ID }}

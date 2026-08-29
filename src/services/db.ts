@@ -10,7 +10,8 @@ import type {
   OutlookContactImportPreview,
   OutlookContactImportRequest,
   OutlookContactImportResult,
-  ThunderbirdContactImportResult
+  ThunderbirdContactImportResult,
+  ThunderbirdDataPreview
 } from "../types/contact";
 import type {
   MailAccount,
@@ -35,6 +36,19 @@ import type {
   Microsoft365SyncSources
 } from "../types/m365";
 import type { DocumentConflictDecision, DocumentItem, DocumentMutationRequest, DocumentOfflineFolderResult, DocumentSource, DocumentSyncConflict, DocumentSyncSummary, DocumentTransferRequest, DocumentTransferResult, DocumentUploadResult, DocumentVersion, SystemFileIcon } from "../types/documents";
+import type { PhoneTransferStatus } from "../types/phoneTransfer";
+
+export function startPhonePhotoTransfer(): Promise<PhoneTransferStatus> {
+  return invoke("start_phone_photo_transfer");
+}
+
+export function getPhonePhotoTransferStatus(): Promise<PhoneTransferStatus | null> {
+  return invoke("get_phone_photo_transfer_status");
+}
+
+export function stopPhonePhotoTransfer(): Promise<void> {
+  return invoke("stop_phone_photo_transfer");
+}
 
 export function listContacts(search = "", groupId?: number): Promise<Contact[]> {
   return invoke("list_contacts", { search, groupId });
@@ -188,6 +202,7 @@ export function previewMicrosoft365Sync(request: {
   direction: string;
   base: string;
   contacts: boolean;
+  contactGroups: boolean;
   calendars: boolean;
   sharedCalendars: boolean;
   sharedMailboxes: boolean;
@@ -204,6 +219,7 @@ export function applyMicrosoft365Sync(request: {
   direction: string;
   base: string;
   contacts: boolean;
+  contactGroups: boolean;
   calendars: boolean;
   sharedCalendars: boolean;
   sharedMailboxes: boolean;
@@ -245,8 +261,8 @@ export function copyDocumentItems(request: DocumentTransferRequest): Promise<Doc
   return invoke("copy_document_items", { request });
 }
 
-export function openDocumentInOffice(fileName: string, webUrl: string): Promise<"desktop" | "web" | "unsupported"> {
-  return invoke("open_document_in_office", { fileName, webUrl });
+export function openDocumentInOffice(fileName: string, parentWebUrl: string, webUrl: string): Promise<"desktop" | "web" | "unsupported"> {
+  return invoke("open_document_in_office", { fileName, parentWebUrl, webUrl });
 }
 
 export function getDocumentFileIcons(fileNames: string[]): Promise<Record<string, SystemFileIcon>> {
@@ -329,12 +345,16 @@ export function previewOutlookClassicAppointments(): Promise<OutlookCalendarPrev
   return invoke("preview_outlook_classic_appointments");
 }
 
-export function importThunderbirdContactsOnce(cleanImportedNames = true): Promise<ThunderbirdContactImportResult> {
-  return invoke("import_thunderbird_contacts_once", { cleanImportedNames });
+export function importThunderbirdContactsOnce(cleanImportedNames = true, includeAutocomplete = true): Promise<ThunderbirdContactImportResult> {
+  return invoke("import_thunderbird_contacts_once", { cleanImportedNames, includeAutocomplete });
 }
 
 export function importThunderbirdCalendarsOnce(): Promise<ThunderbirdCalendarImportResult> {
   return invoke("import_thunderbird_calendars_once");
+}
+
+export function previewThunderbirdData(): Promise<ThunderbirdDataPreview> {
+  return invoke("preview_thunderbird_data");
 }
 
 export function scanOutlookAccounts(): Promise<OutlookAccountCandidate[]> {

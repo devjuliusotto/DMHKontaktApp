@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { AlertTriangle, ArchiveRestore, CheckCircle2, ChevronDown, Download, Eye, EyeOff, Mail, RefreshCw, Search, Send, ShieldCheck, Trash2, X } from "lucide-react";
+import { AlertTriangle, ArchiveRestore, CheckCircle2, ChevronDown, Download, Eye, EyeOff, Mail, RefreshCw, Search, Send, ShieldCheck, Sparkles, Trash2, X } from "lucide-react";
 import { MigrationCaptureDialog } from "../components/MigrationCaptureDialog";
 import { StatusMessage } from "../components/StatusMessage";
 import type { SettingsSection } from "../components/SettingsSubtabs";
@@ -27,6 +27,7 @@ import { deletionConfirmationSettingKey } from "../utils/settings";
 interface SettingsPageProps {
   section?: SettingsSection;
   onNavigate?: (page: Page, section?: SettingsSection) => void;
+  onStartOnboarding?: () => void;
 }
 
 interface SettingsSearchItem {
@@ -45,12 +46,12 @@ const settingsSearchItems: SettingsSearchItem[] = [
   { id: "appearance", label: "Erscheinungsbild öffnen", description: "Erscheinungsbild → Darstellung", keywords: "erscheinungsbild thema farbe dunkel hell akzent", page: "appearance", section: "appearance" },
   { id: "import", label: "Import öffnen", description: "Import → Kontakte und Termine", keywords: "import outlook thunderbird kontakte termine", page: "simple-import", section: "import" },
   { id: "sync", label: "Synchronisierungen öffnen", description: "Synchronisierungen → Microsoft 365 und Datenbereiche", keywords: "synchronisierung sync microsoft 365 exchange kontakte kalender verbundene apps", page: "synchronizations", section: "sync" },
-  { id: "advanced", label: "Erweiterte Funktionen öffnen", description: "Erweitert → Import und Export", keywords: "erweitert advanced import export", page: "import", section: "advanced" },
+  { id: "advanced", label: "Funktionen in Entwicklung", description: "Erweitert → noch nicht aktive Funktionen", keywords: "erweitert advanced entwicklung funktionen", page: "feature-development", section: "advanced" },
   { id: "trash", label: "Papierkorb öffnen", description: "Papierkorb → Gelöschte Daten", keywords: "papierkorb gelöscht wiederherstellen löschen", page: "trash", section: "trash" },
   { id: "edv", label: "Sicher an EDV senden", description: "Allgemein → Status", keywords: "edv umstellung migration sicher senden", page: "settings", section: "general", targetId: "settings-migration-status" }
 ];
 
-export function SettingsPage({ section = "general", onNavigate = () => undefined }: SettingsPageProps) {
+export function SettingsPage({ section = "general", onNavigate = () => undefined, onStartOnboarding = () => undefined }: SettingsPageProps) {
   const [accounts, setAccounts] = useState<MailAccount[]>([]);
   const [candidates, setCandidates] = useState<OutlookAccountCandidate[]>([]);
   const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -456,6 +457,14 @@ export function SettingsPage({ section = "general", onNavigate = () => undefined
                 />
                 <span>{confirmDeletions ? "Ein" : "Aus"}</span>
               </label>
+            </article>
+            <article className="settings-overview-card settings-preference-card">
+              <span className="settings-overview-icon"><Sparkles size={27} aria-hidden="true" /></span>
+              <div>
+                <h3>Einführung und Datenübernahme</h3>
+                <p>Die kurze Einführung erneut ansehen oder vorhandene Daten automatisch suchen.</p>
+              </div>
+              <button type="button" onClick={onStartOnboarding}><Sparkles size={18} /> Einführung starten</button>
             </article>
           </section>
 

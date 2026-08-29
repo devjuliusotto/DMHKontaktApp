@@ -1,19 +1,15 @@
 import { LoaderCircle, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AppLockScreen } from "./components/AppLockScreen";
 import { Sidebar, type Page } from "./components/Sidebar";
 import { SettingsSubtabs, type SettingsSection } from "./components/SettingsSubtabs";
-import { AdvancedSubtabs } from "./components/AdvancedSubtabs";
 import { ContactsPage } from "./pages/ContactsPage";
-import { ExportPage } from "./pages/ExportPage";
-import { ImportPage } from "./pages/ImportPage";
 import { CalendarPage } from "./pages/CalendarPage";
 import { TrashPage } from "./pages/TrashPage";
 import { UpdateNotifier } from "./components/UpdateNotifier";
 import { SettingsPage } from "./pages/SettingsPage";
 import { AppearancePage } from "./pages/AppearancePage";
-import { SimpleImportPage } from "./pages/SimpleImportPage";
 import { PasswordsPage } from "./pages/PasswordsPage";
 import { AuthenticatorPage } from "./pages/AuthenticatorPage";
 import { BackupPage } from "./pages/BackupPage";
@@ -21,15 +17,31 @@ import { Microsoft365Page } from "./pages/Microsoft365Page";
 import { SynchronizationsPage } from "./pages/SynchronizationsPage";
 import { DocumentsPage } from "./pages/DocumentsPage";
 import { DienstleistungenPage } from "./pages/DienstleistungenPage";
-import { createAutomaticBackup, createAutomaticPasswordBackup, getBackupData, getVaultStatus, syncOfflineDocuments } from "./services/db";
+import { FeatureDevelopmentPage } from "./pages/FeatureDevelopmentPage";
+import { createAutomaticBackup, createAutomaticPasswordBackup, getAppSetting, getBackupData, getVaultStatus, setAppSetting, syncOfflineDocuments } from "./services/db";
 import type { VaultStatus } from "./types/vault";
 import { addBrowserDataToBackup } from "./utils/backup";
+import {
+  canManageDevelopmentFeatures,
+  clearFeatureOverrides,
+  readFeatureAvailability,
+  setFeatureOverride,
+  type AppFeature
+} from "./utils/featureFlags";
 import {
   calendarAutomaticSyncStatusEventName,
   calendarChangedEventName,
   runAutomaticCalendarSync as performAutomaticCalendarSync,
   type CalendarAutomaticSyncStatus
 } from "./utils/automaticCalendarSync";
+import { onboardingCompletedSettingKey } from "./utils/settings";
+
+const OnboardingDialog = lazy(() =>
+  import("./components/OnboardingDialog").then((module) => ({ default: module.OnboardingDialog }))
+);
+const DataTransferPage = lazy(() =>
+  import("./pages/DataTransferPage").then((module) => ({ default: module.DataTransferPage }))
+);
 
 const browserPreviewStatus: VaultStatus = {
   protectionEnabled: false,
@@ -43,18 +55,24 @@ const browserPreviewStatus: VaultStatus = {
 
 export default function App() {
   const isAdminTest = import.meta.env.VITE_APP_CHANNEL === "admin-test";
+  const developmentControlsVisible = canManageDevelopmentFeatures();
   const sourceCommit = import.meta.env.VITE_SOURCE_COMMIT?.slice(0, 8);
   const [page, setPage] = useState<Page>("contacts");
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
+  const [featureAvailability, setFeatureAvailability] = useState(readFeatureAvailability);
   const [vaultStatus, setVaultStatus] = useState<VaultStatus | null>(null);
   const [startupError, setStartupError] = useState("");
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
   const automaticBackupPromise = useRef<Promise<void> | null>(null);
   const documentSyncPromise = useRef<Promise<void> | null>(null);
-  const calendarSyncPromise = useRef<Promise<CalendarAutomaticSyncStatus | null> | null>(null);
+  const calendarSyncPromise = useRef<Promise<void> | null>(null);
+  const queuedCalendarSyncTrigger = useRef<"open" | "change" | "poll" | null>(null);
   const closing = useRef(false);
-  const settingsAreaOpen = page === "settings" || page === "appearance" || page === "simple-import" || page === "import" || page === "export" || page === "m365" || page === "trash" || page === "backup" || page === "synchronizations";
+  const settingsAreaOpen = page === "settings" || page === "appearance" || page === "simple-import" || page === "import" || page === "export" || page === "feature-development" || page === "m365" || page === "trash" || page === "backup" || page === "synchronizations";
 
   const navigate = (nextPage: Page, nextSection?: SettingsSection) => {
+    if (nextPage === "services" && !featureAvailability.services) return;
+    if (nextPage === "authenticator" && !featureAvailability.authenticator) return;
     setPage(nextPage);
     if (nextSection) {
       setSettingsSection(nextSection);
@@ -66,7 +84,11 @@ export default function App() {
     else if (nextPage === "backup") setSettingsSection("backup");
     else if (nextPage === "synchronizations" || nextPage === "m365") setSettingsSection("sync");
     else if (nextPage === "trash") setSettingsSection("trash");
-    else if (nextPage === "import" || nextPage === "export") setSettingsSection("advanced");
+    else if (nextPage === "import" || nextPage === "export" || nextPage === "feature-development") setSettingsSection("advanced");
+  };
+
+  const changeFeatureAvailability = (feature: AppFeature, enabled: boolean) => {
+    setFeatureAvailability(setFeatureOverride(feature, enabled));
   };
 
   const runAutomaticBackup = useCallback(async (snapshot = false): Promise<void> => {
@@ -99,22 +121,36 @@ export default function App() {
     finally { if (documentSyncPromise.current === promise) documentSyncPromise.current = null; }
   }, []);
 
-  const runCalendarSync = useCallback(async (trigger: "open" | "change"): Promise<void> => {
-    if (!("__TAURI_INTERNALS__" in window) || calendarSyncPromise.current) return;
-    const promise = performAutomaticCalendarSync(trigger);
+  const runCalendarSync = useCallback(async (trigger: "open" | "change" | "poll"): Promise<void> => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    if (calendarSyncPromise.current) {
+      if (trigger === "change" || queuedCalendarSyncTrigger.current === null) queuedCalendarSyncTrigger.current = trigger;
+      return;
+    }
+    const promise = (async () => {
+      let nextTrigger: "open" | "change" | "poll" | null = trigger;
+      while (nextTrigger) {
+        const currentTrigger = nextTrigger;
+        queuedCalendarSyncTrigger.current = null;
+        try {
+          const status = await performAutomaticCalendarSync(currentTrigger);
+          if (status) {
+            window.dispatchEvent(new CustomEvent<CalendarAutomaticSyncStatus>(calendarAutomaticSyncStatusEventName, { detail: status }));
+          }
+        } catch (error) {
+          window.dispatchEvent(new CustomEvent<CalendarAutomaticSyncStatus>(calendarAutomaticSyncStatusEventName, {
+            detail: {
+              state: "error",
+              message: `Automatische Microsoft-365-Synchronisierung fehlgeschlagen: ${error}`
+            }
+          }));
+        }
+        nextTrigger = queuedCalendarSyncTrigger.current;
+      }
+    })();
     calendarSyncPromise.current = promise;
     try {
-      const status = await promise;
-      if (status) {
-        window.dispatchEvent(new CustomEvent<CalendarAutomaticSyncStatus>(calendarAutomaticSyncStatusEventName, { detail: status }));
-      }
-    } catch (error) {
-      window.dispatchEvent(new CustomEvent<CalendarAutomaticSyncStatus>(calendarAutomaticSyncStatusEventName, {
-        detail: {
-          state: "error",
-          message: `Automatische Microsoft-365-Synchronisierung fehlgeschlagen: ${error}`
-        }
-      }));
+      await promise;
     } finally {
       if (calendarSyncPromise.current === promise) calendarSyncPromise.current = null;
     }
@@ -138,6 +174,29 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!vaultStatus || (vaultStatus.protectionEnabled && !vaultStatus.unlocked)) return;
+    let cancelled = false;
+    const localBrowserPreview = !("__TAURI_INTERNALS__" in window)
+      && (window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost");
+    if (localBrowserPreview) {
+      setOnboardingOpen(localStorage.getItem(onboardingCompletedSettingKey) !== "true");
+      return;
+    }
+    getAppSetting(onboardingCompletedSettingKey)
+      .then((value) => { if (!cancelled) setOnboardingOpen(value !== "true"); })
+      .catch(() => { if (!cancelled) setOnboardingOpen(false); });
+    return () => { cancelled = true; };
+  }, [vaultStatus]);
+
+  const completeOnboarding = async () => {
+    const localBrowserPreview = !("__TAURI_INTERNALS__" in window)
+      && (window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost");
+    if (localBrowserPreview) localStorage.setItem(onboardingCompletedSettingKey, "true");
+    else await setAppSetting(onboardingCompletedSettingKey, "true");
+    setOnboardingOpen(false);
+  };
+
+  useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window) || !vaultStatus || (vaultStatus.protectionEnabled && !vaultStatus.unlocked)) return;
     let debounceTimer: number | undefined;
     const queueChangedCalendarSync = () => {
@@ -145,10 +204,19 @@ export default function App() {
       debounceTimer = window.setTimeout(() => void runCalendarSync("change"), 1_200);
     };
     const startupTimer = window.setTimeout(() => void runCalendarSync("open"), 2_500);
+    const pollingTimer = window.setInterval(() => {
+      if (!document.hidden) void runCalendarSync("poll");
+    }, 30_000);
+    const syncWhenVisible = () => {
+      if (!document.hidden) void runCalendarSync("poll");
+    };
     window.addEventListener(calendarChangedEventName, queueChangedCalendarSync);
+    document.addEventListener("visibilitychange", syncWhenVisible);
     return () => {
       window.removeEventListener(calendarChangedEventName, queueChangedCalendarSync);
+      document.removeEventListener("visibilitychange", syncWhenVisible);
       window.clearTimeout(startupTimer);
+      window.clearInterval(pollingTimer);
       if (debounceTimer !== undefined) window.clearTimeout(debounceTimer);
     };
   }, [runCalendarSync, vaultStatus]);
@@ -231,28 +299,52 @@ export default function App() {
         </div>
       )}
       <div className={settingsAreaOpen ? "app-shell settings-app-shell" : "app-shell"}>
-        <Sidebar activePage={page} onNavigate={navigate} compact={settingsAreaOpen} />
+        <Sidebar
+          activePage={page}
+          authenticatorEnabled={featureAvailability.authenticator}
+          compact={settingsAreaOpen}
+          onNavigate={navigate}
+          servicesEnabled={featureAvailability.services}
+        />
         {settingsAreaOpen && <SettingsSubtabs activePage={page} activeSection={settingsSection} onNavigate={navigate} />}
         <main className="content">
-          {(page === "import" || page === "export") && <AdvancedSubtabs activePage={page} onNavigate={navigate} />}
           {page === "contacts" && <ContactsPage />}
           {page === "calendar" && <CalendarPage />}
           {page === "documents" && <DocumentsPage />}
-          {page === "services" && <DienstleistungenPage />}
+          {page === "services" && featureAvailability.services && <DienstleistungenPage />}
           {page === "passwords" && <PasswordsPage status={vaultStatus} onStatusChanged={setVaultStatus} />}
-          {page === "authenticator" && <AuthenticatorPage />}
-          {page === "import" && <ImportPage />}
-          {page === "export" && <ExportPage />}
+          {page === "authenticator" && featureAvailability.authenticator && <AuthenticatorPage />}
+          {page === "feature-development" && (
+            <FeatureDevelopmentPage
+              availability={featureAvailability}
+              onFeatureChange={changeFeatureAvailability}
+              onReset={() => setFeatureAvailability(clearFeatureOverrides())}
+              showAdminFeatures={developmentControlsVisible}
+            />
+          )}
           {page === "m365" && <Microsoft365Page />}
           {page === "trash" && <TrashPage />}
-          {page === "settings" && <SettingsPage section={settingsSection} onNavigate={navigate} />}
+          {page === "settings" && <SettingsPage section={settingsSection} onNavigate={navigate} onStartOnboarding={() => setOnboardingOpen(true)} />}
           {page === "appearance" && <AppearancePage />}
-          {page === "simple-import" && <SimpleImportPage />}
+          {page === "simple-import" && (
+            <Suspense fallback={<div className="page-loading"><LoaderCircle className="spin" size={28} /> Datenbereich wird geöffnet …</div>}>
+              <DataTransferPage />
+            </Suspense>
+          )}
           {page === "backup" && <BackupPage />}
           {page === "synchronizations" && <SynchronizationsPage onNavigate={navigate} />}
         </main>
         <UpdateNotifier />
       </div>
+      {onboardingOpen && (
+        <Suspense fallback={null}>
+          <OnboardingDialog
+            authenticatorEnabled={featureAvailability.authenticator}
+            servicesEnabled={featureAvailability.services}
+            onComplete={completeOnboarding}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }

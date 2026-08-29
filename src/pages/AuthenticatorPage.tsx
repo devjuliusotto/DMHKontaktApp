@@ -36,9 +36,19 @@ interface AuthenticatorPointerDrag {
   pointerId: number;
   startX: number;
   startY: number;
+  rowLeft: number;
+  rowWidth: number;
+  pointerOffsetY: number;
   active: boolean;
   targetId: number | null;
   position: DropPosition;
+  previewOrder: number[];
+}
+
+interface AuthenticatorDragPreview {
+  left: number;
+  top: number;
+  width: number;
 }
 
 function parseAuthenticatorOrder(value: string | null): number[] {
@@ -87,6 +97,24 @@ function reorderAuthenticatorEntries(
   return reordered.every((entry, index) => entry.id === entries[index]?.id) ? entries : reordered;
 }
 
+function animateAuthenticatorRowShift(previousTops: Map<number, number>, draggedId: number) {
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  window.requestAnimationFrame(() => {
+    for (const row of document.querySelectorAll<HTMLTableRowElement>("tr[data-authenticator-entry-id]")) {
+      const rowId = Number(row.dataset.authenticatorEntryId);
+      if (rowId === draggedId) continue;
+      const previousTop = previousTops.get(rowId);
+      if (previousTop === undefined) continue;
+      const distance = previousTop - row.getBoundingClientRect().top;
+      if (Math.abs(distance) < 1) continue;
+      row.animate(
+        [{ transform: `translateY(${distance}px)` }, { transform: "translateY(0)" }],
+        { duration: 170, easing: "cubic-bezier(.2,.8,.2,1)" }
+      );
+    }
+  });
+}
+
 export function AuthenticatorPage() {
   const [entries, setEntries] = useState<VaultEntry[]>([]);
   const [codes, setCodes] = useState<Record<number, LiveCode>>({});
@@ -102,6 +130,8 @@ export function AuthenticatorPage() {
   const [pendingDelete, setPendingDelete] = useState<VaultEntry | null>(null);
   const [draggedEntryId, setDraggedEntryId] = useState<number | null>(null);
   const [dropTarget, setDropTarget] = useState<{ id: number; position: DropPosition } | null>(null);
+  const [dragPreviewOrder, setDragPreviewOrder] = useState<number[] | null>(null);
+  const [dragPreview, setDragPreview] = useState<AuthenticatorDragPreview | null>(null);
   const [savingOrder, setSavingOrder] = useState(false);
   const [orderAnnouncement, setOrderAnnouncement] = useState("");
   const pointerDragRef = useRef<AuthenticatorPointerDrag | null>(null);
@@ -317,14 +347,7 @@ export function AuthenticatorPage() {
     }, 30_000);
   };
 
-  const saveReorderedEntries = async (
-    sourceId: number,
-    targetId: number,
-    position: DropPosition
-  ) => {
-    const reordered = reorderAuthenticatorEntries(entries, sourceId, targetId, position);
-    if (reordered === entries) return;
-
+  const persistReorderedEntries = async (reordered: VaultEntry[], sourceId: number) => {
     setEntries(reordered);
     setSavingOrder(true);
     try {
@@ -340,17 +363,32 @@ export function AuthenticatorPage() {
     }
   };
 
+  const saveReorderedEntries = async (
+    sourceId: number,
+    targetId: number,
+    position: DropPosition
+  ) => {
+    const reordered = reorderAuthenticatorEntries(entries, sourceId, targetId, position);
+    if (reordered === entries) return;
+    await persistReorderedEntries(reordered, sourceId);
+  };
+
   const startRowPointerDrag = (event: ReactPointerEvent<HTMLTableRowElement>, entryId: number) => {
     const target = event.target as HTMLElement;
     if (savingOrder || event.button !== 0 || target.closest("button, input, textarea, select, a")) return;
+    const rowBounds = event.currentTarget.getBoundingClientRect();
     pointerDragRef.current = {
       sourceId: entryId,
       pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
+      rowLeft: rowBounds.left,
+      rowWidth: rowBounds.width,
+      pointerOffsetY: event.clientY - rowBounds.top,
       active: false,
       targetId: null,
-      position: "after"
+      position: "after",
+      previewOrder: entries.map((entry) => entry.id)
     };
     event.currentTarget.setPointerCapture(event.pointerId);
     event.currentTarget.focus({ preventScroll: true });
@@ -364,11 +402,26 @@ export function AuthenticatorPage() {
     if (!drag.active) {
       drag.active = true;
       setDraggedEntryId(drag.sourceId);
+      setDragPreviewOrder(drag.previewOrder);
     }
     event.preventDefault();
-    const targetRow = document
-      .elementFromPoint(event.clientX, event.clientY)
-      ?.closest("tr[data-authenticator-entry-id]") as HTMLTableRowElement | null;
+    setDragPreview({
+      left: drag.rowLeft + event.clientX - drag.startX,
+      top: event.clientY - drag.pointerOffsetY,
+      width: drag.rowWidth
+    });
+    const candidateRows = Array.from(document.querySelectorAll<HTMLTableRowElement>("tr[data-authenticator-entry-id]"))
+      .filter((row) => Number(row.dataset.authenticatorEntryId) !== drag.sourceId);
+    const targetRow = candidateRows.find((row) => {
+      const bounds = row.getBoundingClientRect();
+      return event.clientY >= bounds.top && event.clientY <= bounds.bottom;
+    }) ?? candidateRows.reduce<HTMLTableRowElement | null>((nearest, row) => {
+      if (!nearest) return row;
+      const rowBounds = row.getBoundingClientRect();
+      const nearestBounds = nearest.getBoundingClientRect();
+      return Math.abs(event.clientY - (rowBounds.top + rowBounds.height / 2))
+        < Math.abs(event.clientY - (nearestBounds.top + nearestBounds.height / 2)) ? row : nearest;
+    }, null);
     const targetId = Number(targetRow?.dataset.authenticatorEntryId);
     if (!targetRow || !Number.isInteger(targetId) || targetId === drag.sourceId) {
       drag.targetId = null;
@@ -379,6 +432,17 @@ export function AuthenticatorPage() {
     const position: DropPosition = event.clientY < bounds.top + bounds.height / 2 ? "before" : "after";
     drag.targetId = targetId;
     drag.position = position;
+    const previewEntries = reorderAuthenticatorEntries(entries, drag.sourceId, targetId, position);
+    const previewOrder = previewEntries.map((entry) => entry.id);
+    if (previewOrder.some((id, index) => id !== drag.previewOrder[index])) {
+      const previousTops = new Map(
+        Array.from(document.querySelectorAll<HTMLTableRowElement>("tr[data-authenticator-entry-id]"))
+          .map((row) => [Number(row.dataset.authenticatorEntryId), row.getBoundingClientRect().top] as const)
+      );
+      drag.previewOrder = previewOrder;
+      setDragPreviewOrder(previewOrder);
+      animateAuthenticatorRowShift(previousTops, drag.sourceId);
+    }
     setDropTarget((current) => current?.id === targetId && current.position === position
       ? current
       : { id: targetId, position });
@@ -395,6 +459,8 @@ export function AuthenticatorPage() {
     pointerDragRef.current = null;
     setDraggedEntryId(null);
     setDropTarget(null);
+    setDragPreviewOrder(null);
+    setDragPreview(null);
   };
 
   const finishPointerDrag = (event: ReactPointerEvent<HTMLTableRowElement>, save: boolean) => {
@@ -403,21 +469,27 @@ export function AuthenticatorPage() {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
-    const destination = drag.active && drag.targetId !== null
-      ? { sourceId: drag.sourceId, targetId: drag.targetId, position: drag.position }
+    const reordered = drag.active
+      ? drag.previewOrder.map((id) => entries.find((entry) => entry.id === id)).filter((entry): entry is VaultEntry => Boolean(entry))
       : null;
     finishRowDrag();
-    if (save && destination) {
-      void saveReorderedEntries(destination.sourceId, destination.targetId, destination.position);
+    if (save && reordered && reordered.some((entry, index) => entry.id !== entries[index]?.id)) {
+      void persistReorderedEntries(reordered, drag.sourceId);
     }
   };
 
+  const orderedEntries = useMemo(() => {
+    if (!dragPreviewOrder) return entries;
+    const byId = new Map(entries.map((entry) => [entry.id, entry]));
+    return dragPreviewOrder.map((id) => byId.get(id)).filter((entry): entry is VaultEntry => Boolean(entry));
+  }, [dragPreviewOrder, entries]);
+
   const visibleEntries = useMemo(() => {
     const query = search.trim().toLocaleLowerCase("de");
-    return entries
+    return orderedEntries
       .filter((entry) => !query || [entry.platform, entry.username, entry.description]
         .some((value) => value.toLocaleLowerCase("de").includes(query)));
-  }, [entries, search]);
+  }, [orderedEntries, search]);
 
   const moveRowWithKeyboard = (event: KeyboardEvent<HTMLTableRowElement>, entryId: number) => {
     if (!event.ctrlKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown") || savingOrder) return;
@@ -430,6 +502,8 @@ export function AuthenticatorPage() {
   };
 
   const countLabel = entries.length === 1 ? "1 Konto" : `${entries.length} Konten`;
+  const draggedEntry = draggedEntryId === null ? null : entries.find((entry) => entry.id === draggedEntryId) ?? null;
+  const draggedPosition = draggedEntryId === null ? 0 : orderedEntries.findIndex((entry) => entry.id === draggedEntryId) + 1;
 
   function showMessage(value: string, type: "success" | "error" | "info") {
     setMessageType(type);
@@ -451,6 +525,20 @@ export function AuthenticatorPage() {
       </header>
 
       <StatusMessage message={message} type={messageType} />
+
+      {dragPreview && draggedEntry && (
+        <div
+          className="authenticator-drag-preview"
+          style={{ left: dragPreview.left, top: dragPreview.top, width: dragPreview.width }}
+          aria-hidden="true"
+        >
+          <GripVertical size={20} />
+          <span className="authenticator-service-icon"><KeyRound size={18} /></span>
+          <span><strong>{draggedEntry.platform}</strong><small>{draggedEntry.username || "Ohne Kontoangabe"}</small></span>
+          <code>{codes[draggedEntry.id]?.value ?? "------"}</code>
+          <em>Position {draggedPosition}</em>
+        </div>
+      )}
 
       <section className="authenticator-mobile-scan-card" aria-label="QR-Code mit dem Smartphone lesen">
         <QrCode size={24} aria-hidden="true" />
@@ -526,7 +614,9 @@ export function AuthenticatorPage() {
                     onPointerCancel={(event) => finishPointerDrag(event, false)}
                     onKeyDown={(event) => moveRowWithKeyboard(event, entry.id)}
                   >
-                    <td>
+                    {draggedEntryId === entry.id ? (
+                      <td colSpan={5} className="authenticator-drop-space"><span>Hier wird der Eintrag abgelegt</span></td>
+                    ) : <><td>
                       <div className="authenticator-service">
                         <span className="authenticator-reorder-grip" aria-hidden="true"><GripVertical size={18} /></span>
                         <span className="authenticator-service-icon"><KeyRound size={18} aria-hidden="true" /></span>
@@ -566,7 +656,7 @@ export function AuthenticatorPage() {
                           <Trash2 size={16} /> Löschen
                         </button>
                       </div>
-                    </td>
+                    </td></>}
                   </tr>
                 );
               })}

@@ -14,6 +14,7 @@ import type { Contact, Group } from "../types/contact";
 import type { VaultEntry } from "../types/vault";
 import { calendarStorageKey, calendarTrashStorageKey, formatCalendarDate } from "../utils/calendar";
 import { displayName } from "../utils/contact";
+import { calendarChangedEventName } from "../utils/automaticCalendarSync";
 
 function readCalendarEvents(key: string): CalendarEvent[] {
   try {
@@ -89,6 +90,7 @@ export function TrashPage() {
     writeCalendarEvents(calendarTrashStorageKey, remaining);
     setDeletedEvents(remaining);
     setMessage("Termin wurde wiederhergestellt.");
+    window.dispatchEvent(new Event(calendarChangedEventName));
   };
 
   const restoreDeletedContact = async (contact: Contact) => {
@@ -101,6 +103,7 @@ export function TrashPage() {
     });
     setMessage("Kontakt wurde wiederhergestellt.");
     await refresh();
+    window.dispatchEvent(new Event(calendarChangedEventName));
   };
 
   const toggleContactSelectionMode = () => {
@@ -139,6 +142,7 @@ export function TrashPage() {
     setSelectedContactIds(new Set());
     setContactSelectionMode(false);
     await refresh();
+    window.dispatchEvent(new Event(calendarChangedEventName));
   };
 
   const restoreAllDeletedContacts = async () => {
@@ -148,6 +152,7 @@ export function TrashPage() {
     setSelectedContactIds(new Set());
     setContactSelectionMode(false);
     await refresh();
+    window.dispatchEvent(new Event(calendarChangedEventName));
   };
 
   const restoreDeletedGroup = async (group: Group) => {
@@ -155,6 +160,7 @@ export function TrashPage() {
     await restoreGroup(group.id);
     setMessage("Gruppe wurde wiederhergestellt.");
     await refresh();
+    window.dispatchEvent(new Event(calendarChangedEventName));
   };
 
   const restoreDeletedPassword = async (entry: VaultEntry) => {

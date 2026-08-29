@@ -10,6 +10,7 @@ import {
   Clock3,
   Download,
   FileText,
+  Images,
   Edit3,
   MessageSquare,
   Monitor,
@@ -29,9 +30,10 @@ import {
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { StatusMessage } from "../components/StatusMessage";
 import { OutdoorBookingsPanel } from "../components/OutdoorBookingsPanel";
+import { PhonePhotoTransferPanel } from "../components/PhonePhotoTransferPanel";
 
 type ServiceSection = "bookings" | "tickets" | "meals";
-type ServicePageSection = ServiceSection | "open-tickets";
+type ServicePageSection = ServiceSection | "open-tickets" | "phone-photos";
 type BookingMode = "standard" | "outdoor";
 type MealMode = "menu" | "reservation";
 type BookingResource = "Raum" | "Auto" | "Projektor" | "Zelt" | "Stühle" | "Tische";
@@ -242,7 +244,7 @@ export function DienstleistungenPage() {
       <header className="page-header">
         <div>
           <h2>Dienstleistungen</h2>
-          <p>Buchungen, Serviceanfragen und Mahlzeiten zentral organisieren.</p>
+          <p>Buchungen, Serviceanfragen, Mahlzeiten und einfache Übertragungen zentral organisieren.</p>
         </div>
       </header>
 
@@ -254,6 +256,7 @@ export function DienstleistungenPage() {
             <ServiceAction variant="booking" icon={<CalendarDays size={27} />} title="Buchungen" description="Räume, Fahrzeuge, Technik, Ausstattung und Outdoor-Material reservieren." onClick={() => selectSection("bookings")} />
             <ServiceAction variant="ticket" icon={<Ticket size={27} />} title="Service anfordern" description="Tickets an IT, Hauswirtschaft oder Haustechnik senden." onClick={() => selectSection("tickets")} />
             <ServiceAction variant="meal" icon={<Utensils size={27} />} title="Mahlzeiten" description="Speiseplan ansehen und Mahlzeiten für eine oder mehrere Personen reservieren." onClick={() => selectSection("meals")} />
+            <ServiceAction variant="phone-photos" icon={<Images size={27} />} title="Fotos vom Handy" description="Fotos per QR-Code direkt und ohne Anmeldung auf diesen PC übertragen." onClick={() => selectSection("phone-photos")} />
             <ServiceAction variant="open-tickets" icon={<ClipboardList size={27} />} title="Offene Tickets" description={`${tickets.filter((ticket) => ticket.status !== "Erledigt").length} offene Tickets in einer detaillierten Liste ansehen.`} onClick={() => selectSection("open-tickets")} />
           </section>
         </>
@@ -291,24 +294,33 @@ export function DienstleistungenPage() {
       )}
 
       {section === "tickets" && (
-        <section className="dienstleistung-panel">
-          <PanelHeading icon={<Ticket size={22} />} title="Service anfordern" description="Ein Ticket mit Beschreibung, Zuständigkeit und Anhängen eröffnen." onClose={closeSection} />
-          <form className="dienstleistung-form" onSubmit={saveTicket}>
-            <label className="field"><span>Bereich *</span><select value={ticketForm.category} onChange={(event) => setTicketForm({ ...ticketForm, category: event.target.value as ServiceTicket["category"] })}><option>IT</option><option>Hauswirtschaft</option><option>Haustechnik</option></select></label>
-            <label className="field"><span>Zuständig an</span><input value={ticketForm.assignee} onChange={(event) => setTicketForm({ ...ticketForm, assignee: event.target.value })} placeholder="Name oder Team" /></label>
-            <label className="field wide"><span>Titel *</span><input value={ticketForm.title} onChange={(event) => setTicketForm({ ...ticketForm, title: event.target.value })} required placeholder="Kurze Beschreibung des Anliegens" /></label>
-            <label className="field wide"><span>Nachricht *</span><textarea rows={6} value={ticketForm.message} onChange={(event) => setTicketForm({ ...ticketForm, message: event.target.value })} required placeholder="Was ist passiert, wo und wann?" /></label>
-            <label className="service-attachment-input"><Paperclip size={19} /><span>Bilder oder Dokumente anhängen (max. {maxTicketAttachments}, je 2 MB)</span><input type="file" accept={ticketAttachmentAccept} multiple onChange={(event) => { void handleTicketFiles(event.target.files); event.target.value = ""; }} /></label>
-            {ticketAttachments.length > 0 && <div className="service-attachments">{ticketAttachments.map((file, index) => <span key={`${file.name}-${index}`}><FileText size={16} /> {file.name}<button className="attachment-remove" type="button" title={`${file.name} entfernen`} aria-label={`${file.name} entfernen`} onClick={() => setTicketAttachments((current) => current.filter((_, attachmentIndex) => attachmentIndex !== index))}><X size={14} /></button></span>)}</div>}
-            <div className="button-row"><button className="primary" type="submit"><Send size={19} /> Ticket öffnen</button></div>
-          </form>
-        </section>
+        <div className="dienstleistung-workspace">
+          <WorkspaceHeading icon={<Ticket size={24} />} title="Service anfordern" description="Ein Ticket mit Beschreibung, Zuständigkeit und Anhängen eröffnen." onBack={closeSection} />
+          <section className="dienstleistung-panel">
+            <form className="dienstleistung-form" onSubmit={saveTicket}>
+              <label className="field"><span>Bereich *</span><select value={ticketForm.category} onChange={(event) => setTicketForm({ ...ticketForm, category: event.target.value as ServiceTicket["category"] })}><option>IT</option><option>Hauswirtschaft</option><option>Haustechnik</option></select></label>
+              <label className="field"><span>Zuständig an</span><input value={ticketForm.assignee} onChange={(event) => setTicketForm({ ...ticketForm, assignee: event.target.value })} placeholder="Name oder Team" /></label>
+              <label className="field wide"><span>Titel *</span><input value={ticketForm.title} onChange={(event) => setTicketForm({ ...ticketForm, title: event.target.value })} required placeholder="Kurze Beschreibung des Anliegens" /></label>
+              <label className="field wide"><span>Nachricht *</span><textarea rows={6} value={ticketForm.message} onChange={(event) => setTicketForm({ ...ticketForm, message: event.target.value })} required placeholder="Was ist passiert, wo und wann?" /></label>
+              <label className="service-attachment-input"><Paperclip size={19} /><span>Bilder oder Dokumente anhängen (max. {maxTicketAttachments}, je 2 MB)</span><input type="file" accept={ticketAttachmentAccept} multiple onChange={(event) => { void handleTicketFiles(event.target.files); event.target.value = ""; }} /></label>
+              {ticketAttachments.length > 0 && <div className="service-attachments">{ticketAttachments.map((file, index) => <span key={`${file.name}-${index}`}><FileText size={16} /> {file.name}<button className="attachment-remove" type="button" title={`${file.name} entfernen`} aria-label={`${file.name} entfernen`} onClick={() => setTicketAttachments((current) => current.filter((_, attachmentIndex) => attachmentIndex !== index))}><X size={14} /></button></span>)}</div>}
+              <div className="button-row"><button className="primary" type="submit"><Send size={19} /> Ticket öffnen</button></div>
+            </form>
+          </section>
+        </div>
       )}
 
       {section === "open-tickets" && (
         <div className="dienstleistung-workspace">
           <WorkspaceHeading icon={<ClipboardList size={24} />} title="Offene Tickets" description="Eigene Tickets, Buchungen und Mahlzeiten in einer detaillierten Liste." onBack={closeSection} />
           <ServicesOverview bookings={bookings} tickets={tickets} checkins={checkins} onOpen={selectSection} onUpdateTicket={updateTicket} />
+        </div>
+      )}
+
+      {section === "phone-photos" && (
+        <div className="dienstleistung-workspace">
+          <WorkspaceHeading icon={<Images size={24} />} title="Fotos vom Handy" description="Bilder ohne Kabel, Cloud oder Anmeldung direkt auf diesen PC übertragen." onBack={closeSection} />
+          <PhonePhotoTransferPanel />
         </div>
       )}
 
@@ -723,7 +735,7 @@ function serviceStatusTone(status: string) {
   return "open";
 }
 
-function ServiceAction({ variant, icon, title, description, onClick }: { variant: "booking" | "ticket" | "meal" | "open-tickets"; icon: React.ReactNode; title: string; description: string; onClick: () => void }) {
+function ServiceAction({ variant, icon, title, description, onClick }: { variant: "booking" | "ticket" | "meal" | "phone-photos" | "open-tickets"; icon: React.ReactNode; title: string; description: string; onClick: () => void }) {
   return <button className={`dienstleistung-action dienstleistung-action-${variant}`} type="button" onClick={onClick}><span className="dienstleistung-action-icon">{icon}</span><strong>{title}</strong><small>{description}</small><span className="dienstleistung-action-cta"><span className="sr-only">Öffnen</span><ArrowRight size={19} /></span></button>;
 }
 

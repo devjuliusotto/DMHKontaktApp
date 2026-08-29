@@ -18,7 +18,11 @@ const ungroupedLabel = "Gesammelte Adressen";
 const defaultImportCategory = "Allgemein";
 const suggestedCalendarCategories = ["Geburtstag", "Arbeit", "Sitzung", "Beratung", "PJT"];
 
-export function ImportPage() {
+interface ImportPageProps {
+  embedded?: boolean;
+}
+
+export function ImportPage({ embedded = false }: ImportPageProps) {
   const [mode, setMode] = useState<ImportMode | null>(null);
   const [fileName, setFileName] = useState("");
   const [preview, setPreview] = useState<ImportPreview | null>(null);
@@ -37,6 +41,7 @@ export function ImportPage() {
   const canConfirm = Boolean((preview && selectedCount > 0 && !preview.emailColumnMissing) || pendingEvents.length > 0);
 
   useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
     listGroups().then(setGroups).catch((error) => setMessage(`Gruppen konnten nicht geladen werden: ${error}`));
   }, []);
 
@@ -211,12 +216,14 @@ export function ImportPage() {
 
   return (
     <div className="page import-page">
-      <header className="page-header">
-        <div>
-          <h2>{t.importContacts}</h2>
-          <p>Wählen Sie zuerst, ob Kontakte oder Kalendertermine importiert werden sollen.</p>
-        </div>
-      </header>
+      {!embedded && (
+        <header className="page-header">
+          <div>
+            <h2>{t.importContacts}</h2>
+            <p>Wählen Sie zuerst, ob Kontakte oder Kalendertermine importiert werden sollen.</p>
+          </div>
+        </header>
+      )}
       <StatusMessage message={message} />
 
       {!mode && (

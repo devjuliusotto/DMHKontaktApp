@@ -90,6 +90,7 @@ function blankEvent(date = new Date()): CalendarEvent {
   const ends = new Date(starts.getTime() + 60 * 60 * 1000);
   return {
     id: crypto.randomUUID(),
+    updatedAt: new Date().toISOString(),
     title: "",
     startsAt: toLocalDateTime(starts.toISOString()),
     endsAt: toLocalDateTime(ends.toISOString()),
@@ -329,7 +330,7 @@ export function CalendarPage() {
     if (!editingEvent) return;
     const next = events.filter((event) => event.id !== editingEvent.id);
     const matchingCategory = categories.find((category) => category.name === editingEvent.category.trim());
-    persist([...next, normalizeEvent({ ...editingEvent, color: matchingCategory?.color ?? editingEvent.color, source: editingEvent.source || "DMH Kontakte und Kalender" })]);
+    persist([...next, normalizeEvent({ ...editingEvent, updatedAt: new Date().toISOString(), color: matchingCategory?.color ?? editingEvent.color, source: editingEvent.source || "DMH Kontakte und Kalender" })]);
     const date = eventDate(editingEvent);
     if (date) setCursor(startOfDay(date));
     setEditingEvent(null);
@@ -357,6 +358,7 @@ export function CalendarPage() {
     persist(events.filter((entry) => entry.id !== master.id));
     setEditingEvent(null);
     setMessage(master.recurrence ? "Terminserie wurde in den Papierkorb verschoben." : "Termin wurde in den Papierkorb verschoben.");
+    window.dispatchEvent(new Event(calendarChangedEventName));
   };
 
   const deleteAllEvents = () => {
@@ -378,6 +380,7 @@ export function CalendarPage() {
     persist([]);
     setEditingEvent(null);
     setMessage(`${events.length} Termine und Terminserien wurden in den Papierkorb verschoben.`);
+    window.dispatchEvent(new Event(calendarChangedEventName));
   };
 
   return (

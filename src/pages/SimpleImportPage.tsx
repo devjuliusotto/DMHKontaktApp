@@ -1,4 +1,4 @@
-import { AlertTriangle, Bird, CalendarDays, CalendarRange, Download, LoaderCircle, Undo2, UsersRound } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowRight, Bird, CalendarDays, CalendarRange, Download, FileUp, LoaderCircle, Settings2, Undo2, UsersRound } from "lucide-react";
 import { useState } from "react";
 import { OutlookContactImportDialog } from "../components/OutlookContactImportDialog";
 import { StatusMessage } from "../components/StatusMessage";
@@ -23,13 +23,22 @@ function formatPreviewDate(value: string): string {
     : new Intl.DateTimeFormat("de-DE", { dateStyle: "short", timeStyle: "short" }).format(date);
 }
 
-export function SimpleImportPage() {
+type ImportSource = "outlook" | "thunderbird";
+
+interface SimpleImportPageProps {
+  embedded?: boolean;
+  onOpenFileImport?: () => void;
+}
+
+export function SimpleImportPage({ embedded = false, onOpenFileImport }: SimpleImportPageProps) {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState<"success" | "error" | "info">("info");
   const [contactImportDialogOpen, setContactImportDialogOpen] = useState(false);
   const [outlookCalendarPreview, setOutlookCalendarPreview] = useState<OutlookCalendarPreview | null>(null);
   const [cleanImportedNames, setCleanImportedNames] = useState(true);
+  const [includeThunderbirdAutocomplete, setIncludeThunderbirdAutocomplete] = useState(true);
+  const [activeSource, setActiveSource] = useState<ImportSource | null>(null);
 
   const contactsImported = (result: OutlookContactImportResult, source: "classic" | "csv") => {
     setMessageType("success");
@@ -124,7 +133,11 @@ export function SimpleImportPage() {
 
   const importThunderbirdContacts = async () => {
     const confirmed = window.confirm(
-      "Alle Kontakte aus dem aktiven Thunderbird-Profil einmalig übernehmen?\n\nAdressbücher und darin enthaltene Verteilerlisten werden automatisch als Gruppen angelegt. Bereits vorhandene Kontakte mit derselben E-Mail-Adresse werden nicht doppelt angelegt, sondern den passenden Gruppen zugeordnet. Thunderbird wird nicht verändert."
+      "Alle Kontakte aus dem aktiven Thunderbird-Profil einmalig übernehmen?\n\nAdressbücher und darin enthaltene Verteilerlisten werden automatisch als Gruppen angelegt. "
+      + (includeThunderbirdAutocomplete
+        ? "Frühere Empfänger aus der Thunderbird-Autovervollständigung werden ebenfalls übernommen. "
+        : "Die Thunderbird-Autovervollständigung wird ausgelassen. ")
+      + "Bereits vorhandene Kontakte mit derselben E-Mail-Adresse werden nicht doppelt angelegt, sondern den passenden Gruppen zugeordnet. Thunderbird wird nicht verändert."
     );
     if (!confirmed) return;
 
@@ -132,13 +145,19 @@ export function SimpleImportPage() {
     setMessageType("info");
     setMessage("Thunderbird-Adressbücher und Listen werden gelesen …");
     try {
-      const result = await importThunderbirdContactsOnce(cleanImportedNames);
+      const result = await importThunderbirdContactsOnce(cleanImportedNames, includeThunderbirdAutocomplete);
       setMessageType(result.found > 0 ? "success" : "info");
+      const autocompleteSummary = includeThunderbirdAutocomplete
+        ? result.autocompleteFound > 0
+          ? `${result.autocompleteImported} von ${result.autocompleteFound} früheren Empfängern wurden neu angelegt; ${result.autocompleteLinkedExisting} waren bereits vorhanden. `
+          : "In der Thunderbird-Autovervollständigung wurden keine früheren Empfänger gefunden. "
+        : "Die Thunderbird-Autovervollständigung wurde nicht importiert. ";
       setMessage(
         result.found === 0
           ? `In ${result.addressBooks} Thunderbird-Adressbüchern wurden keine Kontakte gefunden.`
           : `${result.imported} neue Thunderbird-Kontakte wurden importiert. `
             + `${result.linkedExisting} bereits vorhandene Kontakte wurden den passenden Gruppen zugeordnet. `
+            + autocompleteSummary
             + `${result.addressBooks} Adressbücher und insgesamt ${result.groupsUsed} Gruppen oder Listen wurden berücksichtigt. `
             + `${result.skippedInvalid} nicht lesbare Einträge wurden ausgelassen.`
       );
@@ -193,24 +212,70 @@ export function SimpleImportPage() {
 
   return (
     <div className="page simple-import-page">
-      <header className="page-header">
-        <div>
-          <h2>Einfach importieren</h2>
-          <p>Wählen Sie zuerst die Quelle und danach den Datenbereich aus.</p>
-        </div>
-      </header>
+      {!embedded && (
+        <header className="page-header">
+          <div>
+            <h2>Einfach importieren</h2>
+            <p>Wählen Sie zuerst die Quelle und danach den Datenbereich aus.</p>
+          </div>
+        </header>
+      )}
 
       <StatusMessage message={message} type={messageType} />
 
-      <section className="simple-import-cleanup form-panel">
-        <label className="checkbox-row">
-          <input type="checkbox" checked={cleanImportedNames} onChange={(event) => setCleanImportedNames(event.target.checked)} />
-          <span><strong>Importierte Namen automatisch bereinigen</strong><small>E-Mail-Adressen erkennen und Namen wie „max.mustermann@firma.de“ als „Max Mustermann“ anzeigen.</small></span>
-        </label>
-      </section>
+      {!activeSource && (
+        <section className="simple-import-source-picker" aria-label="Importquelle auswählen">
+          <button type="button" onClick={() => setActiveSource("outlook")}>
+            <span className="simple-import-picker-icon"><CalendarDays size={26} aria-hidden="true" /></span>
+            <span><strong>Outlook</strong><small>Classic, neues Outlook und Kalender</small></span>
+            <ArrowRight size={20} aria-hidden="true" />
+          </button>
+          <button type="button" onClick={() => setActiveSource("thunderbird")}>
+            <span className="simple-import-picker-icon"><Bird size={26} aria-hidden="true" /></span>
+            <span><strong>Thunderbird</strong><small>Adressbücher, Empfänger und Kalender</small></span>
+            <ArrowRight size={20} aria-hidden="true" />
+          </button>
+          <button type="button" onClick={onOpenFileImport} disabled={!onOpenFileImport}>
+            <span className="simple-import-picker-icon"><FileUp size={26} aria-hidden="true" /></span>
+            <span><strong>Datei auswählen</strong><small>CSV, Excel, ICS, EML, PST oder OST</small></span>
+            <ArrowRight size={20} aria-hidden="true" />
+          </button>
+        </section>
+      )}
+
+      {activeSource && (
+        <>
+          <div className="simple-import-source-toolbar">
+            <button type="button" onClick={() => setActiveSource(null)}>
+              <ArrowLeft size={18} aria-hidden="true" /> Andere Quelle
+            </button>
+            <span><strong>{activeSource === "outlook" ? "Outlook" : "Thunderbird"}</strong> · Datenbereich auswählen</span>
+          </div>
+
+          <details className="simple-import-options">
+            <summary><Settings2 size={18} aria-hidden="true" /> Weitere Optionen</summary>
+            <div className="simple-import-options-content">
+              <label className="checkbox-row">
+                <input type="checkbox" checked={cleanImportedNames} onChange={(event) => setCleanImportedNames(event.target.checked)} />
+                <span><strong>Namen automatisch bereinigen</strong><small>E-Mail-Adressen erkennen und Namen einheitlich schreiben.</small></span>
+              </label>
+              {activeSource === "thunderbird" && (
+                <label className="checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={includeThunderbirdAutocomplete}
+                    disabled={busyAction !== null}
+                    onChange={(event) => setIncludeThunderbirdAutocomplete(event.target.checked)}
+                  />
+                  <span><strong>Frühere Empfänger mitimportieren</strong><small>Gesammelte Adressen aus der Autovervollständigung.</small></span>
+                </label>
+              )}
+            </div>
+          </details>
 
       <div className="simple-import-source-list">
-        <section className="simple-import-source-card">
+        {activeSource === "outlook" && (
+          <section className="simple-import-source-card">
           <header>
             <span className="simple-import-source-icon"><Download size={23} aria-hidden="true" /></span>
             <div>
@@ -292,9 +357,11 @@ export function SimpleImportPage() {
               Letzten Outlook-Kontaktimport rückgängig machen
             </button>
           </div>
-        </section>
+          </section>
+        )}
 
-        <section className="simple-import-source-card">
+        {activeSource === "thunderbird" && (
+          <section className="simple-import-source-card">
           <header>
             <span className="simple-import-source-icon"><Bird size={23} aria-hidden="true" /></span>
             <div>
@@ -326,12 +393,15 @@ export function SimpleImportPage() {
               </button>
             </article>
           </div>
-        </section>
+          </section>
+        )}
       </div>
 
       <p className="simple-import-note">
         Alle Aktionen auf dieser Seite sind einmalige Übernahmen. Die Originaldaten in Outlook und Thunderbird werden nicht verändert und es wird keine Synchronisierung eingerichtet.
       </p>
+        </>
+      )}
 
       <OutlookContactImportDialog
         open={contactImportDialogOpen}

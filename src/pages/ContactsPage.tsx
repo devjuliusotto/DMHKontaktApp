@@ -1,6 +1,6 @@
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Ellipsis, Inbox, Mail, Minus, Pencil, Plus, Search, Settings2, Trash2, UserPlus, UsersRound, X } from "lucide-react";
-import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ContactForm } from "../components/ContactForm";
 import { ContactTable } from "../components/ContactTable";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -27,6 +27,7 @@ import {
 import type { Contact, ContactInput, Group } from "../types/contact";
 import { displayName, emptyContact, toContactInput } from "../utils/contact";
 import { deletionConfirmationSettingKey } from "../utils/settings";
+import { calendarChangedEventName, m365DataUpdatedEventName } from "../utils/automaticCalendarSync";
 
 type ContactsTab = "all" | "groups";
 type GroupSelection = "ungrouped" | number;
@@ -79,6 +80,7 @@ function contactInGroup(contact: Contact, groupId: number) {
 }
 
 export function ContactsPage() {
+  const notifyLocalM365Change = () => window.dispatchEvent(new Event(calendarChangedEventName));
   const [tab, setTab] = useState<ContactsTab>("all");
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
@@ -142,7 +144,7 @@ export function ContactsPage() {
     });
   };
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     const [groupRows, allContactRows] = await Promise.all([listGroups(), listContacts("")]);
     setGroups(groupRows);
     groupsRef.current = groupRows;
@@ -170,14 +172,25 @@ export function ContactsPage() {
     }
 
     setContacts(await listContacts(groupSearch, groupSelection));
-  };
+  }, [allSearch, groupSearch, groupSelection, tab]);
 
   useEffect(() => {
     refresh().catch((error) => {
       setMessage(`Fehler beim Laden: ${error}`);
       setMessageType("error");
     });
-  }, [tab, allSearch, groupSearch, groupSelection]);
+  }, [refresh]);
+
+  useEffect(() => {
+    const reloadMicrosoft365Changes = () => {
+      void refresh().catch((error) => {
+        setMessage(`Microsoft-365-Änderungen konnten nicht angezeigt werden: ${error}`);
+        setMessageType("error");
+      });
+    };
+    window.addEventListener(m365DataUpdatedEventName, reloadMicrosoft365Changes);
+    return () => window.removeEventListener(m365DataUpdatedEventName, reloadMicrosoft365Changes);
+  }, [refresh]);
 
   useEffect(() => {
     getAppSetting(emailAppSettingKey)
@@ -239,6 +252,7 @@ export function ContactsPage() {
       setMessage("Gruppe wurde erstellt.");
       setMessageType("success");
       await refresh();
+      notifyLocalM365Change();
     } catch (error) {
       const detail = String(error);
       setGroupCreateError(
@@ -273,6 +287,7 @@ export function ContactsPage() {
       setMessage(`Gruppe wurde in „${name}“ umbenannt.`);
       setMessageType("success");
       await refresh();
+      notifyLocalM365Change();
     } catch (error) {
       const detail = String(error);
       setGroupRenameError(
@@ -291,6 +306,7 @@ export function ContactsPage() {
       setMessage("Kontakt wurde lokal gespeichert.");
       setMessageType("success");
       await refresh();
+      notifyLocalM365Change();
     } catch (error) {
       setMessage(`Kontakt konnte nicht gespeichert werden: ${error}`);
       setMessageType("error");
@@ -304,6 +320,7 @@ export function ContactsPage() {
       setMessage("Kontakt wurde lokal in den Papierkorb verschoben.");
       setMessageType("success");
       await refresh();
+      notifyLocalM365Change();
     } catch (error) {
       setMessage(`Kontakt konnte nicht gelöscht werden: ${error}`);
       setMessageType("error");
@@ -324,6 +341,7 @@ export function ContactsPage() {
       setMessage("Gruppe wurde in den Papierkorb verschoben.");
       setMessageType("success");
       await refresh();
+      notifyLocalM365Change();
     } catch (error) {
       setMessage(`Gruppe konnte nicht gelöscht werden: ${error}`);
       setMessageType("error");
@@ -343,6 +361,7 @@ export function ContactsPage() {
       setMessage(`${count} Kontakte wurden lokal in den Papierkorb verschoben.`);
       setMessageType("success");
       await refresh();
+      notifyLocalM365Change();
     } catch (error) {
       setMessage(`Kontakte konnten nicht gelöscht werden: ${error}`);
       setMessageType("error");
@@ -367,6 +386,7 @@ export function ContactsPage() {
       );
       setMessageType("success");
       await refresh();
+      notifyLocalM365Change();
     } catch (error) {
       setMessage(`Ausgewählte Kontakte konnten nicht gelöscht werden: ${error}`);
       setMessageType("error");
@@ -528,6 +548,7 @@ export function ContactsPage() {
       setSelectedContactIds(new Set());
       setSelectionMode(false);
       await refresh();
+      notifyLocalM365Change();
     } catch (error) {
       setMessage(`Kontakte konnten nicht verschoben werden: ${error}`);
       setMessageType("error");
@@ -869,7 +890,7 @@ export function ContactsPage() {
                 <div className="group-card-bottom">
                   <strong>{ungroupedContactCount} {ungroupedContactCount === 1 ? "Kontakt" : "Kontakte"}</strong>
                   <div className="group-card-actions">
-                    <button type="button" title="Gruppe verwalten" aria-label="Gesammelte Adressen verwalten" onClick={() => setGroupSelection("ungrouped")}><Settings2 size={23} /></button>
+                    <button type="button" className={groupSelection === "ungrouped" ? "selected" : ""} aria-pressed={groupSelection === "ungrouped"} title="Gruppe verwalten" aria-label="Gesammelte Adressen verwalten" onClick={() => setGroupSelection("ungrouped")}><Settings2 size={23} /></button>
                     <button type="button" title="E-Mail an Gruppe" aria-label="E-Mail an Gesammelte Adressen" onClick={() => chooseGroupEmailApp("ungrouped")}><Mail size={23} /></button>
                   </div>
                 </div>
@@ -896,7 +917,7 @@ export function ContactsPage() {
                     <div className="group-card-bottom">
                       <strong>{contactCount} {contactCount === 1 ? "Kontakt" : "Kontakte"}</strong>
                       <div className="group-card-actions">
-                        <button type="button" title="Gruppe verwalten" aria-label={`${group.name} verwalten`} onClick={() => setGroupSelection(group.id ?? "ungrouped")}><Settings2 size={23} /></button>
+                        <button type="button" className={groupSelection === group.id ? "selected" : ""} aria-pressed={groupSelection === group.id} title="Gruppe verwalten" aria-label={`${group.name} verwalten`} onClick={() => setGroupSelection(group.id ?? "ungrouped")}><Settings2 size={23} /></button>
                         <button type="button" title="E-Mail an Gruppe" aria-label={`E-Mail an ${group.name}`} onClick={() => chooseGroupEmailApp(group)}><Mail size={23} /></button>
                         <button className="group-card-delete" type="button" title="Gruppe löschen" aria-label={`${group.name} löschen`} onClick={() => removeGroup(group)}><Trash2 size={23} /></button>
                       </div>
