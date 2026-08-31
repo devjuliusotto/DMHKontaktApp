@@ -109,6 +109,18 @@ export interface OutlookContactImportResult {
   batchId: string;
 }
 
+export interface OutlookContactExportResult {
+  total: number;
+  created: number;
+  updated: number;
+  linked: number;
+  errors: number;
+  autocompleteResolved: number;
+  autocompleteErrors: number;
+  folderPath: string;
+  storeName: string;
+}
+
 export interface ThunderbirdContactImportResult {
   found: number;
   imported: number;

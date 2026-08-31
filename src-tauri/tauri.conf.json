@@ -30,7 +30,7 @@
     "longDescription": "DMH Kontakte und Kalender verwaltet Kontakte, Gruppen und Termine lokal auf dem Windows-PC.",
     "publisher": "Diakonissenmutterhaus Aidlingen e.V.",
     "resources": [
-      "resources/*"
+      "resources/**/*"
     ],
     "shortDescription": "Lokale Kontakt- und Kalenderverwaltung",
     "targets": [

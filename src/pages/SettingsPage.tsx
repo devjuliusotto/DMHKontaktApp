@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { AlertTriangle, ArchiveRestore, CheckCircle2, ChevronDown, Download, Eye, EyeOff, Mail, RefreshCw, Search, Send, ShieldCheck, Sparkles, Trash2, X } from "lucide-react";
 import { MigrationCaptureDialog } from "../components/MigrationCaptureDialog";
+import { PrinterSettings } from "../components/PrinterSettings";
 import { StatusMessage } from "../components/StatusMessage";
 import type { SettingsSection } from "../components/SettingsSubtabs";
 import type { Page } from "../components/Sidebar";
@@ -42,6 +43,7 @@ interface SettingsSearchItem {
 
 const settingsSearchItems: SettingsSearchItem[] = [
   { id: "mail", label: "E-Mail-Konten verwalten", description: "E-Mail & Konten → Konten", keywords: "e-mail mail konto konten outlook verwalten kennwort", page: "settings", section: "mail", targetId: "settings-mail-accounts" },
+  { id: "printer", label: "Drucker hinzufügen", description: "Drucker → Netzwerkdrucker", keywords: "drucker printer netzwerk freigabe ip hinzufügen", page: "settings", section: "printer" },
   { id: "backup", label: "Sicherung öffnen", description: "Sicherung → Öffnen", keywords: "sicherung backup daten wiederherstellen export", page: "backup", section: "backup" },
   { id: "appearance", label: "Erscheinungsbild öffnen", description: "Erscheinungsbild → Darstellung", keywords: "erscheinungsbild thema farbe dunkel hell akzent", page: "appearance", section: "appearance" },
   { id: "import", label: "Import öffnen", description: "Import → Kontakte und Termine", keywords: "import outlook thunderbird kontakte termine", page: "simple-import", section: "import" },
@@ -555,6 +557,8 @@ export function SettingsPage({ section = "general", onNavigate = () => undefined
           </details>
         </div>
       )}
+
+      {section === "printer" && <PrinterSettings />}
 
       {revealedPassword && (
         <div className="modal-backdrop" role="presentation" onMouseDown={() => setRevealedPassword(null)}>

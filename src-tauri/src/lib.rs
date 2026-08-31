@@ -21,6 +21,7 @@ mod m365;
 mod mail_accounts;
 mod outlook_autocomplete;
 mod phone_transfer;
+mod printers;
 mod thunderbird;
 mod vault;
 
@@ -261,6 +262,8 @@ pub struct OutlookPushResult {
     pub updated: usize,
     pub linked: usize,
     pub errors: usize,
+    pub autocomplete_resolved: usize,
+    pub autocomplete_errors: usize,
     pub folder_path: String,
     pub store_name: String,
 }
@@ -563,6 +566,8 @@ struct OutlookPushData {
     created: usize,
     updated: usize,
     errors: usize,
+    autocomplete_resolved: usize,
+    autocomplete_errors: usize,
     folder_path: String,
     store_name: String,
 }
@@ -3248,7 +3253,10 @@ if ($null -ne $item) {{
     Ok(stdout.contains("true"))
 }
 
-fn push_local_contacts_to_outlook(conn: &mut Connection) -> Result<OutlookPushResult, String> {
+fn push_local_contacts_to_outlook(
+    conn: &mut Connection,
+    target_email: Option<&str>,
+) -> Result<OutlookPushResult, String> {
     let contacts = load_local_outlook_contacts(conn)?;
     if contacts.is_empty() {
         return Ok(OutlookPushResult {
@@ -3257,6 +3265,8 @@ fn push_local_contacts_to_outlook(conn: &mut Connection) -> Result<OutlookPushRe
             updated: 0,
             linked: 0,
             errors: 0,
+            autocomplete_resolved: 0,
+            autocomplete_errors: 0,
             folder_path: String::new(),
             store_name: String::new(),
         });
@@ -3269,19 +3279,37 @@ fn push_local_contacts_to_outlook(conn: &mut Connection) -> Result<OutlookPushRe
     ));
     fs::write(&json_path, json).map_err(|err| err.to_string())?;
     let escaped_path = json_path.to_string_lossy().replace('\'', "''");
+    let target_email = powershell_single_quote(target_email.unwrap_or_default().trim());
     let script = format!(
         r#"
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $contactsPath = '{escaped_path}'
+$targetEmail = {target_email}
 $localContacts = @(Get-Content -LiteralPath $contactsPath -Raw -Encoding UTF8 | ConvertFrom-Json)
 $outlook = New-Object -ComObject Outlook.Application
 $namespace = $outlook.Session
-$contactsFolder = $namespace.GetDefaultFolder(10)
+$targetAccount = $null
+$contactsFolder = $null
+if (-not [string]::IsNullOrWhiteSpace($targetEmail)) {{
+  for ($accountIndex = 1; $accountIndex -le $namespace.Accounts.Count; $accountIndex++) {{
+    $candidate = $namespace.Accounts.Item($accountIndex)
+    if (([string]$candidate.SmtpAddress).Trim().ToLowerInvariant() -eq $targetEmail.Trim().ToLowerInvariant()) {{
+      $targetAccount = $candidate
+      try {{ $contactsFolder = $candidate.DeliveryStore.GetDefaultFolder(10) }} catch {{}}
+      break
+    }}
+  }}
+  if ($null -eq $targetAccount) {{ throw "Das Outlook-IMAP-Konto '$targetEmail' wurde im aktuellen Outlook-Profil nicht gefunden." }}
+}}
+if ($null -eq $contactsFolder) {{ $contactsFolder = $namespace.GetDefaultFolder(10) }}
 $links = New-Object System.Collections.Generic.List[object]
+$autocompleteCandidates = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 $createdCount = 0
 $updatedCount = 0
 $errorCount = 0
+$autocompleteResolvedCount = 0
+$autocompleteErrorCount = 0
 $storeName = ''
 try {{ $storeName = [string]$contactsFolder.Store.DisplayName }} catch {{}}
 
@@ -3387,6 +3415,11 @@ foreach ($local in $localContacts) {{
     Set-When-Present $item 'Body' $local.notes
     $item.Save()
 
+    $autocompleteEmail = ([string](Get-Scalar $local.email)).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($autocompleteEmail)) {{
+      $autocompleteCandidates.Add($autocompleteEmail) | Out-Null
+    }}
+
     $localId = [string](Get-Scalar $local.id)
     $links.Add([pscustomobject]@{{
       localId = $localId
@@ -3398,11 +3431,38 @@ foreach ($local in $localContacts) {{
   }}
 }}
 
+# Resolve every address through Outlook itself. This seeds Outlook's in-memory
+# recipient suggestions without sending or saving a message. Outlook persists
+# changes to its autocomplete stream when it closes normally.
+if ($autocompleteCandidates.Count -gt 0) {{
+  $suggestionDraft = $null
+  try {{
+    $suggestionDraft = $outlook.CreateItem(0)
+    if ($null -ne $targetAccount) {{ $suggestionDraft.SendUsingAccount = $targetAccount }}
+    foreach ($autocompleteEmail in $autocompleteCandidates) {{
+      try {{
+        $recipient = $suggestionDraft.Recipients.Add($autocompleteEmail)
+        if ($recipient.Resolve()) {{ $autocompleteResolvedCount++ }} else {{ $autocompleteErrorCount++ }}
+        if ($suggestionDraft.Recipients.Count -gt 0) {{ $suggestionDraft.Recipients.Remove(1) }}
+      }} catch {{
+        $autocompleteErrorCount++
+        try {{ if ($suggestionDraft.Recipients.Count -gt 0) {{ $suggestionDraft.Recipients.Remove(1) }} }} catch {{}}
+      }}
+    }}
+  }} catch {{
+    $autocompleteErrorCount += $autocompleteCandidates.Count
+  }} finally {{
+    if ($null -ne $suggestionDraft) {{ try {{ $suggestionDraft.Close(1) }} catch {{}} }}
+  }}
+}}
+
 [pscustomobject]@{{
   links = $links
   created = $createdCount
   updated = $updatedCount
   errors = $errorCount
+  autocompleteResolved = $autocompleteResolvedCount
+  autocompleteErrors = $autocompleteErrorCount
   folderPath = [string]$contactsFolder.FolderPath
   storeName = $storeName
 }} | ConvertTo-Json -Depth 5 -Compress
@@ -3456,6 +3516,8 @@ foreach ($local in $localContacts) {{
         updated: data.updated,
         linked: data.links.len(),
         errors: data.errors,
+        autocomplete_resolved: data.autocomplete_resolved,
+        autocomplete_errors: data.autocomplete_errors,
         folder_path: data.folder_path,
         store_name: data.store_name,
     })
@@ -3664,7 +3726,7 @@ fn import_outlook_classic_contacts_once(
 #[tauri::command]
 fn sync_outlook_classic_contacts(app: AppHandle) -> Result<OutlookSyncResult, String> {
     let mut conn = open_db(&app)?;
-    let pushed = push_local_contacts_to_outlook(&mut conn)?;
+    let pushed = push_local_contacts_to_outlook(&mut conn, None)?;
     let contacts = read_outlook_classic_contacts()?.contacts;
     let tx = conn.transaction().map_err(|err| err.to_string())?;
     let timestamp = now();
@@ -3772,9 +3834,12 @@ fn sync_outlook_classic_contacts(app: AppHandle) -> Result<OutlookSyncResult, St
 }
 
 #[tauri::command]
-fn push_project_contacts_to_outlook(app: AppHandle) -> Result<OutlookPushResult, String> {
+fn push_project_contacts_to_outlook(
+    app: AppHandle,
+    target_email: Option<String>,
+) -> Result<OutlookPushResult, String> {
     let mut conn = open_db(&app)?;
-    push_local_contacts_to_outlook(&mut conn)
+    push_local_contacts_to_outlook(&mut conn, target_email.as_deref())
 }
 
 #[tauri::command]
@@ -4507,6 +4572,7 @@ pub fn run() {
             add_contact_to_group,
             move_contact_to_group,
             clear_contact_groups,
+            push_project_contacts_to_outlook,
             open_outlook_classic_email,
             open_new_outlook_email,
             open_outlook_classic_bulk_email,
@@ -4548,6 +4614,10 @@ pub fn run() {
             phone_transfer::start_phone_photo_transfer,
             phone_transfer::get_phone_photo_transfer_status,
             phone_transfer::stop_phone_photo_transfer,
+            printers::list_printers,
+            printers::list_printer_drivers,
+            printers::add_network_printer,
+            printers::install_dmh_kopierraum_printer,
             import_outlook_store,
             preview_outlook_classic_contacts,
             import_selected_outlook_classic_contacts,
@@ -4579,7 +4649,9 @@ pub fn run() {
             vault::unlock_vault,
             vault::lock_vault,
             vault::request_vault_recovery,
-            vault::complete_vault_recovery
+            vault::complete_vault_recovery,
+            vault::request_local_account_password_recovery,
+            vault::complete_local_account_password_recovery
         ])
         .run(tauri::generate_context!())
         .expect("Fehler beim Starten von DMH Kontakte und Kalender");

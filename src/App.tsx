@@ -2,6 +2,7 @@ import { LoaderCircle, RefreshCw } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AppLockScreen } from "./components/AppLockScreen";
+import { WelcomeSignIn } from "./components/WelcomeSignIn";
 import { Sidebar, type Page } from "./components/Sidebar";
 import { SettingsSubtabs, type SettingsSection } from "./components/SettingsSubtabs";
 import { ContactsPage } from "./pages/ContactsPage";
@@ -35,6 +36,7 @@ import {
   type CalendarAutomaticSyncStatus
 } from "./utils/automaticCalendarSync";
 import { onboardingCompletedSettingKey } from "./utils/settings";
+import { readActiveLocalSession, type LocalAccountSession } from "./utils/localAuth";
 
 const OnboardingDialog = lazy(() =>
   import("./components/OnboardingDialog").then((module) => ({ default: module.OnboardingDialog }))
@@ -63,6 +65,8 @@ export default function App() {
   const [vaultStatus, setVaultStatus] = useState<VaultStatus | null>(null);
   const [startupError, setStartupError] = useState("");
   const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [signedInAccount, setSignedInAccount] = useState<LocalAccountSession | null>(readActiveLocalSession);
+  const [newAccountNeedsOnboarding, setNewAccountNeedsOnboarding] = useState(false);
   const automaticBackupPromise = useRef<Promise<void> | null>(null);
   const documentSyncPromise = useRef<Promise<void> | null>(null);
   const calendarSyncPromise = useRef<Promise<void> | null>(null);
@@ -174,7 +178,11 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!vaultStatus || (vaultStatus.protectionEnabled && !vaultStatus.unlocked)) return;
+    if (!signedInAccount || !vaultStatus || (vaultStatus.protectionEnabled && !vaultStatus.unlocked)) return;
+    if (newAccountNeedsOnboarding) {
+      setOnboardingOpen(true);
+      return;
+    }
     let cancelled = false;
     const localBrowserPreview = !("__TAURI_INTERNALS__" in window)
       && (window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost");
@@ -186,14 +194,21 @@ export default function App() {
       .then((value) => { if (!cancelled) setOnboardingOpen(value !== "true"); })
       .catch(() => { if (!cancelled) setOnboardingOpen(false); });
     return () => { cancelled = true; };
-  }, [vaultStatus]);
+  }, [newAccountNeedsOnboarding, signedInAccount, vaultStatus]);
 
   const completeOnboarding = async () => {
     const localBrowserPreview = !("__TAURI_INTERNALS__" in window)
       && (window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost");
     if (localBrowserPreview) localStorage.setItem(onboardingCompletedSettingKey, "true");
     else await setAppSetting(onboardingCompletedSettingKey, "true");
+    setNewAccountNeedsOnboarding(false);
     setOnboardingOpen(false);
+  };
+
+  const finishAuthentication = (session: LocalAccountSession, isNewAccount: boolean) => {
+    setSignedInAccount(session);
+    setNewAccountNeedsOnboarding(isNewAccount);
+    if (isNewAccount) setOnboardingOpen(true);
   };
 
   useEffect(() => {
@@ -268,6 +283,10 @@ export default function App() {
       void unlisten.then((dispose) => dispose());
     };
   }, [runAutomaticBackup, runDocumentSync]);
+
+  if (!signedInAccount) {
+    return <WelcomeSignIn onAuthenticated={finishAuthentication} />;
+  }
 
   if (!vaultStatus) {
     return (

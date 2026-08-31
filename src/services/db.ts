@@ -10,6 +10,7 @@ import type {
   OutlookContactImportPreview,
   OutlookContactImportRequest,
   OutlookContactImportResult,
+  OutlookContactExportResult,
   ThunderbirdContactImportResult,
   ThunderbirdDataPreview
 } from "../types/contact";
@@ -37,6 +38,23 @@ import type {
 } from "../types/m365";
 import type { DocumentConflictDecision, DocumentItem, DocumentMutationRequest, DocumentOfflineFolderResult, DocumentSource, DocumentSyncConflict, DocumentSyncSummary, DocumentTransferRequest, DocumentTransferResult, DocumentUploadResult, DocumentVersion, SystemFileIcon } from "../types/documents";
 import type { PhoneTransferStatus } from "../types/phoneTransfer";
+import type { AddNetworkPrinterRequest, PrinterDriver, PrinterInfo } from "../types/printer";
+
+export function listPrinters(): Promise<PrinterInfo[]> {
+  return invoke("list_printers");
+}
+
+export function listPrinterDrivers(): Promise<PrinterDriver[]> {
+  return invoke("list_printer_drivers");
+}
+
+export function addNetworkPrinter(request: AddNetworkPrinterRequest): Promise<void> {
+  return invoke("add_network_printer", { request });
+}
+
+export function installDmhKopierraumPrinter(): Promise<"installed" | "alreadyInstalled"> {
+  return invoke("install_dmh_kopierraum_printer");
+}
 
 export function startPhonePhotoTransfer(): Promise<PhoneTransferStatus> {
   return invoke("start_phone_photo_transfer");
@@ -124,6 +142,10 @@ export function restoreAutomaticBackup(authorization: string): Promise<Automatic
 
 export function writeExportFile(path: string, content: string): Promise<void> {
   return invoke("write_export_file", { path, content });
+}
+
+export function pushProjectContactsToOutlook(targetEmail?: string): Promise<OutlookContactExportResult> {
+  return invoke("push_project_contacts_to_outlook", { targetEmail: targetEmail || null });
 }
 
 export function deleteAllContacts(): Promise<number> {
@@ -459,4 +481,12 @@ export function requestVaultRecovery(username: string): Promise<VaultRecoveryDel
 
 export function completeVaultRecovery(code: string, newPassword: string): Promise<VaultStatus> {
   return invoke("complete_vault_recovery", { code, newPassword });
+}
+
+export function requestLocalAccountPasswordRecovery(email: string): Promise<VaultRecoveryDelivery> {
+  return invoke("request_local_account_password_recovery", { email });
+}
+
+export function completeLocalAccountPasswordRecovery(email: string, code: string): Promise<void> {
+  return invoke("complete_local_account_password_recovery", { email, code });
 }

@@ -1,11 +1,12 @@
 import { save } from "@tauri-apps/plugin-dialog";
-import { CalendarDays, Download, UsersRound } from "lucide-react";
+import { CalendarDays, CheckCircle2, ContactRound, Download, LoaderCircle, Send, Sparkles, UsersRound } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { StatusMessage } from "../components/StatusMessage";
 import { t } from "../i18n";
-import { listContacts, listGroups, writeExportFile } from "../services/db";
+import { listContacts, listGroups, listMailAccounts, pushProjectContactsToOutlook, writeExportFile } from "../services/db";
 import type { CalendarEvent } from "../types/calendar";
-import type { Contact, Group } from "../types/contact";
+import type { Contact, Group, OutlookContactExportResult } from "../types/contact";
+import type { MailAccount } from "../types/mail";
 import { calendarStorageKey, exportCalendarIcs } from "../utils/calendar";
 import { exportGeneralCsv, exportNewOutlookCsv, exportOutlookClassicCsv } from "../utils/exporters";
 
@@ -35,11 +36,23 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
   const [choice, setChoice] = useState<ExportChoice | null>(null);
   const [contactExportKind, setContactExportKind] = useState<ContactExportKind>("classic");
   const [calendarExportTarget, setCalendarExportTarget] = useState<CalendarExportTarget>("universal");
+  const [mailAccounts, setMailAccounts] = useState<MailAccount[]>([]);
+  const [selectedMailAccountId, setSelectedMailAccountId] = useState<number | null>(null);
+  const [directOutlookBusy, setDirectOutlookBusy] = useState(false);
+  const [directOutlookResult, setDirectOutlookResult] = useState<OutlookContactExportResult | null>(null);
 
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
     listGroups().then(setGroups).catch((error) => setMessage(`Gruppen konnten nicht geladen werden: ${error}`));
+    listMailAccounts()
+      .then((accounts) => {
+        setMailAccounts(accounts);
+        setSelectedMailAccountId((current) => current ?? accounts[0]?.id ?? null);
+      })
+      .catch((error) => setMessage(`Outlook-Konten konnten nicht geladen werden: ${error}`));
   }, []);
+
+  const selectedMailAccount = mailAccounts.find((account) => account.id === selectedMailAccountId) ?? null;
 
   const selectedGroups = useMemo(
     () => groups.filter((group) => group.id && selectedGroupIds.includes(group.id)),
@@ -118,6 +131,31 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
     }
   };
 
+  const runDirectOutlookExport = async () => {
+    if (!("__TAURI_INTERNALS__" in window)) {
+      setMessage("Die direkte Outlook-Übertragung ist nur in der installierten Windows-App verfügbar.");
+      return;
+    }
+    setDirectOutlookBusy(true);
+    setDirectOutlookResult(null);
+    setMessage("");
+    try {
+      const result = await pushProjectContactsToOutlook(selectedMailAccount?.email);
+      setDirectOutlookResult(result);
+      if (result.total === 0) {
+        setMessage("Es sind keine Kontakte zum Übertragen vorhanden.");
+      } else if (result.errors > 0 || result.autocompleteErrors > 0) {
+        setMessage(`${result.linked} von ${result.total} Kontakten wurden an Outlook übertragen. ${result.errors + result.autocompleteErrors} Einträge konnten nicht vollständig verarbeitet werden.`);
+      } else {
+        setMessage(`${result.total} Kontakte wurden erfolgreich an Outlook übertragen und für die Empfängersuche vorbereitet.`);
+      }
+    } catch (error) {
+      setMessage(`Direkte Outlook-Übertragung fehlgeschlagen: ${error}`);
+    } finally {
+      setDirectOutlookBusy(false);
+    }
+  };
+
   const confirmExport = () => {
     if (!choice) return;
     if (choice === "calendar") void runCalendarExport(calendarExportTarget);
@@ -144,22 +182,66 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
       <StatusMessage message={message} />
 
       {!choice && (
-        <section className="export-choice-grid" aria-label="Exportart auswählen">
-          <button className="export-choice-card" type="button" onClick={() => setChoice("calendar")}>
-            <CalendarDays size={34} />
-            <span>
-              <strong>Kalender exportieren</strong>
-              <small>Alle Termine mit Uhrzeit, Ort, Beschreibung und Kategorie als ICS speichern</small>
-            </span>
-          </button>
-          <button className="export-choice-card" type="button" onClick={() => setChoice("contacts")}>
-            <UsersRound size={34} />
-            <span>
-              <strong>Kontaktlisten exportieren</strong>
-              <small>Kontakte als CSV für Outlook oder Tabellenprogramme speichern</small>
-            </span>
-          </button>
-        </section>
+        <>
+          <section className="outlook-direct-export" aria-labelledby="outlook-direct-export-title">
+            <div className="outlook-direct-export-icon"><Send size={34} aria-hidden="true" /></div>
+            <div className="outlook-direct-export-copy">
+              <p><Sparkles size={17} aria-hidden="true" /> Empfohlen · ohne CSV-Datei</p>
+              <h3 id="outlook-direct-export-title">Alle Kontakte mit einem Klick an Outlook</h3>
+              <span>Die Kontakte werden direkt in Outlook Classic gespeichert und erscheinen beim Eingeben von Empfängern in der Suche und den Vorschlägen.</span>
+
+              <div className="outlook-direct-export-features">
+                <span><CheckCircle2 size={18} /> Vorhandene Kontakte werden aktualisiert statt verdoppelt</span>
+                <span><CheckCircle2 size={18} /> Es wird keine E-Mail gesendet</span>
+              </div>
+
+              {mailAccounts.length > 0 ? (
+                <label className="outlook-direct-account">
+                  <span>Outlook-IMAP-Konto</span>
+                  <select value={selectedMailAccountId ?? ""} onChange={(event) => setSelectedMailAccountId(Number(event.target.value))} disabled={directOutlookBusy}>
+                    {mailAccounts.map((account) => <option key={account.id} value={account.id}>{account.accountName || account.email} · {account.email}</option>)}
+                  </select>
+                </label>
+              ) : (
+                <p className="outlook-direct-default-note"><ContactRound size={18} /> Der Standard-Kontaktordner des eingerichteten Outlook-Profils wird verwendet.</p>
+              )}
+
+              <button className="primary large outlook-direct-export-button" type="button" onClick={() => void runDirectOutlookExport()} disabled={directOutlookBusy}>
+                {directOutlookBusy ? <LoaderCircle className="spin" size={22} /> : <Send size={22} />}
+                {directOutlookBusy ? "Kontakte werden übertragen …" : "Jetzt alles an Outlook übertragen"}
+              </button>
+
+              {directOutlookResult && directOutlookResult.total > 0 && (
+                <div className="outlook-direct-result" role="status">
+                  <CheckCircle2 size={24} aria-hidden="true" />
+                  <div>
+                    <strong>{directOutlookResult.linked} Kontakte in {directOutlookResult.storeName || "Outlook"}</strong>
+                    <span>{directOutlookResult.created} neu · {directOutlookResult.updated} aktualisiert · {directOutlookResult.autocompleteResolved} für Vorschläge vorbereitet</span>
+                    {directOutlookResult.folderPath && <small>Ziel: {directOutlookResult.folderPath}</small>}
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
+
+          <div className="export-alternative-heading"><span>Oder als Datei speichern</span></div>
+          <section className="export-choice-grid" aria-label="Exportart auswählen">
+            <button className="export-choice-card" type="button" onClick={() => setChoice("calendar")}>
+              <CalendarDays size={34} />
+              <span>
+                <strong>Kalender exportieren</strong>
+                <small>Alle Termine mit Uhrzeit, Ort, Beschreibung und Kategorie als ICS speichern</small>
+              </span>
+            </button>
+            <button className="export-choice-card" type="button" onClick={() => setChoice("contacts")}>
+              <UsersRound size={34} />
+              <span>
+                <strong>Kontaktlisten exportieren</strong>
+                <small>Kontakte als CSV für Outlook oder Tabellenprogramme speichern</small>
+              </span>
+            </button>
+          </section>
+        </>
       )}
 
       {choice && (

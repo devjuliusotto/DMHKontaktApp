@@ -34,6 +34,7 @@ const DPAPI_ENTROPY: &[u8] = b"de.dmh.agendakontakte.vault.v1";
 pub(crate) struct VaultRuntime {
     key: Option<Zeroizing<[u8; VAULT_KEY_LENGTH]>>,
     recovery: Option<RecoveryChallenge>,
+    local_account_recovery: Option<LocalAccountRecoveryChallenge>,
     login_failures: u8,
     login_blocked_until: Option<Instant>,
 }
@@ -53,6 +54,11 @@ struct RecoveryChallenge {
     expires_at: Instant,
     next_request_at: Instant,
     attempts: u8,
+}
+
+struct LocalAccountRecoveryChallenge {
+    email: String,
+    challenge: RecoveryChallenge,
 }
 
 #[derive(Debug)]
@@ -1205,6 +1211,108 @@ pub fn complete_vault_recovery(
     get_vault_status(app)
 }
 
+fn normalize_recovery_email(email: &str) -> Result<String, String> {
+    let email = email.trim().to_ascii_lowercase();
+    let valid = email.len() <= 254
+        && email.matches('@').count() == 1
+        && email
+            .split_once('@')
+            .is_some_and(|(local, domain)| !local.is_empty() && domain.contains('.') && !domain.ends_with('.'))
+        && !email
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace() || matches!(character, ';' | ',' | '"'));
+    if !valid {
+        return Err("Bitte geben Sie eine gültige E-Mail-Adresse ein.".to_string());
+    }
+    Ok(email)
+}
+
+#[tauri::command]
+pub fn request_local_account_password_recovery(
+    app: AppHandle,
+    email: String,
+) -> Result<VaultRecoveryDelivery, String> {
+    let email = normalize_recovery_email(&email)?;
+    {
+        let state = app.state::<AppState>();
+        let runtime = state
+            .vault
+            .lock()
+            .map_err(|_| "Die Kennwort-Wiederherstellung konnte nicht vorbereitet werden.".to_string())?;
+        if runtime
+            .local_account_recovery
+            .as_ref()
+            .is_some_and(|recovery| Instant::now() < recovery.challenge.next_request_at)
+        {
+            return Err(
+                "Bitte warten Sie eine Minute, bevor Sie einen neuen Code anfordern.".to_string(),
+            );
+        }
+    }
+
+    let mut code = Zeroizing::new(format!("{:06}", OsRng.gen_range(0..1_000_000u32)));
+    let code_hash: [u8; 32] = Sha256::digest(code.as_bytes()).into();
+    send_recovery_email(&email, &email, &code)?;
+    code.zeroize();
+
+    let now = Instant::now();
+    let state = app.state::<AppState>();
+    let mut runtime = state
+        .vault
+        .lock()
+        .map_err(|_| "Die Kennwort-Wiederherstellung konnte nicht gespeichert werden.".to_string())?;
+    runtime.local_account_recovery = Some(LocalAccountRecoveryChallenge {
+        email: email.clone(),
+        challenge: RecoveryChallenge {
+            code_hash,
+            expires_at: now + RECOVERY_VALIDITY,
+            next_request_at: now + RECOVERY_REQUEST_DELAY,
+            attempts: 0,
+        },
+    });
+    Ok(VaultRecoveryDelivery {
+        recovery_email_hint: mask_email(&email),
+        expires_in_minutes: 10,
+    })
+}
+
+#[tauri::command]
+pub fn complete_local_account_password_recovery(
+    app: AppHandle,
+    email: String,
+    mut code: String,
+) -> Result<(), String> {
+    let email = normalize_recovery_email(&email)?;
+    let submitted_hash: [u8; 32] = Sha256::digest(code.trim().as_bytes()).into();
+    code.zeroize();
+
+    let state = app.state::<AppState>();
+    let mut runtime = state
+        .vault
+        .lock()
+        .map_err(|_| "Die Kennwort-Wiederherstellung konnte nicht geprüft werden.".to_string())?;
+    let recovery = runtime.local_account_recovery.as_mut().ok_or_else(|| {
+        "Fordern Sie zuerst einen neuen Wiederherstellungscode an.".to_string()
+    })?;
+    if !recovery.email.eq_ignore_ascii_case(&email) {
+        return Err("Der Wiederherstellungscode gehört zu einer anderen E-Mail-Adresse.".to_string());
+    }
+    if Instant::now() > recovery.challenge.expires_at {
+        runtime.local_account_recovery = None;
+        return Err("Der Wiederherstellungscode ist abgelaufen.".to_string());
+    }
+    recovery.challenge.attempts = recovery.challenge.attempts.saturating_add(1);
+    if recovery.challenge.code_hash != submitted_hash {
+        if recovery.challenge.attempts >= MAX_RECOVERY_ATTEMPTS {
+            runtime.local_account_recovery = None;
+            return Err("Zu viele falsche Codes. Fordern Sie einen neuen Code an.".to_string());
+        }
+        return Err("Der Wiederherstellungscode ist falsch.".to_string());
+    }
+    runtime.local_account_recovery = None;
+    Ok(())
+}
+
 fn mask_email(email: &str) -> String {
     let Some((local, domain)) = email.split_once('@') else {
         return String::new();
@@ -1466,6 +1574,16 @@ mod tests {
     #[test]
     fn recovery_email_is_masked() {
         assert_eq!(mask_email("max@example.org"), "m***@example.org");
+    }
+
+    #[test]
+    fn local_recovery_email_rejects_recipient_injection() {
+        assert_eq!(
+            normalize_recovery_email(" Maria.Mustermann@dmh.example ").unwrap(),
+            "maria.mustermann@dmh.example"
+        );
+        assert!(normalize_recovery_email("person@example.org;other@example.org").is_err());
+        assert!(normalize_recovery_email("person@example.org\r\nBCC: other@example.org").is_err());
     }
 
     #[cfg(target_os = "windows")]

@@ -1,11 +1,12 @@
-import { ArchiveRestore, ArrowLeftRight, ArrowUpDown, Home, Mail, Palette, Settings, SlidersHorizontal, Trash2 } from "lucide-react";
+import { ArchiveRestore, ArrowLeftRight, ArrowUpDown, Home, Mail, Palette, Printer, Settings, SlidersHorizontal, Trash2 } from "lucide-react";
 import type { Page } from "./Sidebar";
 
-export type SettingsSection = "general" | "mail" | "appearance" | "import" | "backup" | "sync" | "advanced" | "trash";
+export type SettingsSection = "general" | "mail" | "printer" | "appearance" | "import" | "backup" | "sync" | "advanced" | "trash";
 
 const items: Array<{ page: Page; section: SettingsSection; label: string; icon: typeof Settings; activePages?: Page[] }> = [
   { page: "settings", section: "general", label: "Allgemein", icon: Settings },
   { page: "settings", section: "mail", label: "E-Mail & Konten", icon: Mail },
+  { page: "settings", section: "printer", label: "Drucker", icon: Printer },
   { page: "appearance", section: "appearance", label: "Erscheinungsbild", icon: Palette },
   { page: "simple-import", section: "import", label: "Import & Export", icon: ArrowUpDown },
   { page: "backup", section: "backup", label: "Sicherung", icon: ArchiveRestore },
