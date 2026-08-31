@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CalendarEvent, OutlookCalendarPreview, OutlookOneTimeCalendarImportResult, ThunderbirdCalendarImportResult } from "../types/calendar";
+import type { CalendarEvent, OutlookCalendarExportResult, OutlookCalendarPreview, OutlookOneTimeCalendarImportResult, ThunderbirdCalendarImportResult } from "../types/calendar";
 import type {
   BackupData,
   AutomaticBackupRestoreResult,
@@ -146,6 +146,10 @@ export function writeExportFile(path: string, content: string): Promise<void> {
 
 export function pushProjectContactsToOutlook(targetEmail?: string): Promise<OutlookContactExportResult> {
   return invoke("push_project_contacts_to_outlook", { targetEmail: targetEmail || null });
+}
+
+export function pushProjectAppointmentsToOutlook(events: CalendarEvent[], targetEmail?: string): Promise<OutlookCalendarExportResult> {
+  return invoke("push_project_appointments_to_outlook", { events, targetEmail: targetEmail || null });
 }
 
 export function deleteAllContacts(): Promise<number> {

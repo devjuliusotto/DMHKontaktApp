@@ -35,6 +35,15 @@ export interface OutlookOneTimeCalendarImportResult {
   events: CalendarEvent[];
 }
 
+export interface OutlookCalendarExportResult {
+  total: number;
+  created: number;
+  updated: number;
+  errors: number;
+  folderPath: string;
+  storeName: string;
+}
+
 export interface OutlookCalendarPreviewCalendar {
   id: string;
   name: string;

@@ -20,6 +20,7 @@ mod file_icons;
 mod m365;
 mod mail_accounts;
 mod outlook_autocomplete;
+mod outlook_calendar_export;
 mod phone_transfer;
 mod printers;
 mod thunderbird;
@@ -4754,6 +4755,7 @@ pub fn run() {
             move_contact_to_group,
             clear_contact_groups,
             push_project_contacts_to_outlook,
+            outlook_calendar_export::push_project_appointments_to_outlook,
             open_outlook_classic_email,
             open_new_outlook_email,
             open_outlook_classic_bulk_email,

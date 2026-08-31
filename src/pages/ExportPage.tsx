@@ -1,10 +1,10 @@
 import { save } from "@tauri-apps/plugin-dialog";
-import { CalendarDays, CheckCircle2, ContactRound, Download, LoaderCircle, Send, UsersRound } from "lucide-react";
+import { CalendarClock, CalendarDays, CheckCircle2, ContactRound, Download, LoaderCircle, Send, UsersRound } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { StatusMessage } from "../components/StatusMessage";
 import { t } from "../i18n";
-import { listContacts, listGroups, listMailAccounts, pushProjectContactsToOutlook, writeExportFile } from "../services/db";
-import type { CalendarEvent } from "../types/calendar";
+import { listContacts, listGroups, listMailAccounts, pushProjectAppointmentsToOutlook, pushProjectContactsToOutlook, writeExportFile } from "../services/db";
+import type { CalendarEvent, OutlookCalendarExportResult } from "../types/calendar";
 import type { Contact, Group, OutlookContactExportResult } from "../types/contact";
 import type { MailAccount } from "../types/mail";
 import { calendarStorageKey, exportCalendarIcs } from "../utils/calendar";
@@ -12,10 +12,11 @@ import { exportGeneralCsv, exportNewOutlookCsv, exportOutlookClassicCsv } from "
 
 type ContactExportKind = "classic" | "new" | "general";
 type CalendarExportTarget = "apple" | "google" | "teams" | "universal";
-type ExportChoice = "outlook" | "calendar" | "contacts";
+type ExportChoice = "outlook" | "outlook-calendar" | "calendar" | "contacts";
 
 const exportChoiceLabels: Record<ExportChoice, string> = {
   outlook: "Kontakte an Outlook übertragen",
+  "outlook-calendar": "Termine an Outlook übertragen",
   calendar: "Kalender exportieren",
   contacts: "Kontaktlisten exportieren"
 };
@@ -41,6 +42,8 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
   const [selectedMailAccountId, setSelectedMailAccountId] = useState<number | null>(null);
   const [directOutlookBusy, setDirectOutlookBusy] = useState(false);
   const [directOutlookResult, setDirectOutlookResult] = useState<OutlookContactExportResult | null>(null);
+  const [directOutlookCalendarBusy, setDirectOutlookCalendarBusy] = useState(false);
+  const [directOutlookCalendarResult, setDirectOutlookCalendarResult] = useState<OutlookCalendarExportResult | null>(null);
 
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
@@ -157,9 +160,38 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
     }
   };
 
+  const runDirectOutlookCalendarExport = async () => {
+    if (!("__TAURI_INTERNALS__" in window)) {
+      setMessage("Die direkte Outlook-Übertragung ist nur in der installierten Windows-App verfügbar.");
+      return;
+    }
+    const events = loadCalendarEvents();
+    if (!events.length) {
+      setMessage("Es gibt keine Termine zum Übertragen.");
+      return;
+    }
+    setDirectOutlookCalendarBusy(true);
+    setDirectOutlookCalendarResult(null);
+    setMessage("");
+    try {
+      const result = await pushProjectAppointmentsToOutlook(events, selectedMailAccount?.email);
+      setDirectOutlookCalendarResult(result);
+      if (result.errors > 0) {
+        setMessage(`${result.created + result.updated} von ${result.total} Terminen wurden an Outlook übertragen. ${result.errors} konnten nicht vollständig verarbeitet werden.`);
+      } else {
+        setMessage(`${result.total} Termine wurden an Outlook Classic übertragen.`);
+      }
+    } catch (error) {
+      setMessage(`Outlook-Kalenderübertragung fehlgeschlagen: ${error}`);
+    } finally {
+      setDirectOutlookCalendarBusy(false);
+    }
+  };
+
   const confirmExport = () => {
     if (!choice) return;
     if (choice === "outlook") void runDirectOutlookExport();
+    if (choice === "outlook-calendar") void runDirectOutlookCalendarExport();
     if (choice === "calendar") void runCalendarExport(calendarExportTarget);
     if (choice === "contacts") void runContactExport(contactExportKind);
   };
@@ -170,6 +202,7 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
     setContactExportKind("classic");
     setCalendarExportTarget("universal");
     setDirectOutlookResult(null);
+    setDirectOutlookCalendarResult(null);
     setMessage("");
   };
 
@@ -192,6 +225,13 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
               <span>
                 <strong>Direkt an Outlook übertragen</strong>
                 <small>Gruppen als Outlook-Ordner mit den zugehörigen Kontakten übernehmen</small>
+              </span>
+            </button>
+            <button className="export-choice-card" type="button" onClick={() => setChoice("outlook-calendar")}>
+              <CalendarClock size={34} />
+              <span>
+                <strong>Termine direkt an Outlook</strong>
+                <small>Alle Termine und Serien in den Kalender des Outlook-IMAP-Kontos übertragen</small>
               </span>
             </button>
             <button className="export-choice-card" type="button" onClick={() => setChoice("calendar")}>
@@ -217,7 +257,7 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
             <div>
               <h3>{exportChoiceLabels[choice]}</h3>
               <p className="export-step-text">
-                {choice === "outlook" ? "1. Konto wählen · 2. Übertragen" : choice === "calendar" ? "1. Kalender prüfen · 2. Datei speichern" : "1. Format wählen · 2. Gruppen wählen · 3. Datei speichern"}
+                {choice === "outlook" || choice === "outlook-calendar" ? "1. Konto wählen · 2. Übertragen" : choice === "calendar" ? "1. Kalender prüfen · 2. Datei speichern" : "1. Format wählen · 2. Gruppen wählen · 3. Datei speichern"}
               </p>
             </div>
             <button type="button" onClick={resetChoice}>Andere Exportart</button>
@@ -247,6 +287,31 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
                         <strong>{directOutlookResult.linked} Kontakte · {directOutlookResult.foldersUsed} Gruppenordner</strong>
                         <span>{directOutlookResult.contactCopies} Einträge · {directOutlookResult.created} neu · {directOutlookResult.updated} aktualisiert</span>
                         {directOutlookResult.folderPath && <small>Ziel: {directOutlookResult.folderPath}</small>}
+                      </div>
+                    </div>
+                  )}
+                </>
+              ) : choice === "outlook-calendar" ? (
+                <>
+                  <h4>Outlook-Konto wählen</h4>
+                  <p>Alle Termine und Serien werden in den lokalen Kalender dieses IMAP-Kontos übertragen.</p>
+                  {mailAccounts.length > 0 ? (
+                    <label className="outlook-direct-account">
+                      <span>Outlook-IMAP-Konto</span>
+                      <select value={selectedMailAccountId ?? ""} onChange={(event) => setSelectedMailAccountId(Number(event.target.value))} disabled={directOutlookCalendarBusy}>
+                        {mailAccounts.map((account) => <option key={account.id} value={account.id}>{account.accountName || account.email} · {account.email}</option>)}
+                      </select>
+                    </label>
+                  ) : (
+                    <p className="outlook-direct-default-note"><ContactRound size={18} /> Das Standardkonto von Outlook wird verwendet.</p>
+                  )}
+                  {directOutlookCalendarResult && directOutlookCalendarResult.total > 0 && (
+                    <div className="outlook-direct-result" role="status">
+                      <CheckCircle2 size={24} aria-hidden="true" />
+                      <div>
+                        <strong>{directOutlookCalendarResult.created + directOutlookCalendarResult.updated} Termine in {directOutlookCalendarResult.storeName || "Outlook"}</strong>
+                        <span>{directOutlookCalendarResult.created} neu · {directOutlookCalendarResult.updated} aktualisiert</span>
+                        {directOutlookCalendarResult.folderPath && <small>Ziel: {directOutlookCalendarResult.folderPath}</small>}
                       </div>
                     </div>
                   )}
@@ -316,14 +381,16 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
 
       {choice && (
         <section className="export-confirm-panel">
-          <button className="primary large" type="button" onClick={confirmExport} disabled={directOutlookBusy}>
+          <button className="primary large" type="button" onClick={confirmExport} disabled={directOutlookBusy || directOutlookCalendarBusy}>
             {choice === "outlook" ? (
               <>{directOutlookBusy ? <LoaderCircle className="spin" size={22} /> : <Send size={22} />}{directOutlookBusy ? "Kontakte werden übertragen …" : "Jetzt an Outlook übertragen"}</>
+            ) : choice === "outlook-calendar" ? (
+              <>{directOutlookCalendarBusy ? <LoaderCircle className="spin" size={22} /> : <CalendarClock size={22} />}{directOutlookCalendarBusy ? "Termine werden übertragen …" : "Jetzt an Outlook übertragen"}</>
             ) : (
               <><Download size={22} /> Datei speichern</>
             )}
           </button>
-          <button className="large" type="button" onClick={resetChoice} disabled={directOutlookBusy}>Abbrechen</button>
+          <button className="large" type="button" onClick={resetChoice} disabled={directOutlookBusy || directOutlookCalendarBusy}>Abbrechen</button>
         </section>
       )}
     </div>
