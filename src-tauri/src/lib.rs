@@ -261,6 +261,9 @@ pub struct OutlookPushResult {
     pub created: usize,
     pub updated: usize,
     pub linked: usize,
+    pub contact_copies: usize,
+    pub folders_created: usize,
+    pub folders_used: usize,
     pub errors: usize,
     pub autocomplete_resolved: usize,
     pub autocomplete_errors: usize,
@@ -547,8 +550,16 @@ struct LocalOutlookContact {
     country: String,
     short_info: String,
     notes: String,
+    groups: Vec<String>,
     outlook_entry_id: Option<String>,
     outlook_store_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalOutlookExportPayload {
+    contacts: Vec<LocalOutlookContact>,
+    groups: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -565,6 +576,9 @@ struct OutlookPushData {
     links: Vec<OutlookLink>,
     created: usize,
     updated: usize,
+    contact_copies: usize,
+    folders_created: usize,
+    folders_used: usize,
     errors: usize,
     autocomplete_resolved: usize,
     autocomplete_errors: usize,
@@ -3077,14 +3091,41 @@ fn load_local_outlook_contacts(conn: &Connection) -> Result<Vec<LocalOutlookCont
                 country: row.get(10)?,
                 short_info: row.get(11)?,
                 notes: row.get(12)?,
+                groups: Vec::new(),
                 outlook_entry_id: row.get(13)?,
                 outlook_store_id: row.get(14)?,
             })
         })
         .map_err(|err| err.to_string())?;
 
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|err| err.to_string())
+    let mut contacts = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| err.to_string())?;
+    for contact in &mut contacts {
+        contact.groups = read_groups_for_contact(conn, contact.id)?
+            .into_iter()
+            .map(|group| group.name)
+            .collect();
+    }
+    Ok(contacts)
+}
+
+fn load_local_outlook_group_names(conn: &Connection) -> Result<Vec<String>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT name FROM groups WHERE deleted_at IS NULL ORDER BY name COLLATE NOCASE",
+        )
+        .map_err(|error| error.to_string())?;
+    let database_names = statement
+        .query_map([], |row| row.get(0))
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<String>, _>>()
+        .map_err(|error| error.to_string())?;
+    let mut names = vec!["Gesammelte Adressen".to_string()];
+    names.extend(database_names.into_iter().filter(|name| {
+        !name.trim().eq_ignore_ascii_case("Gesammelte Adressen")
+    }));
+    Ok(names)
 }
 
 fn load_local_outlook_contact(
@@ -3115,13 +3156,22 @@ fn load_local_outlook_contact(
                 country: row.get(10)?,
                 short_info: row.get(11)?,
                 notes: row.get(12)?,
+                groups: Vec::new(),
                 outlook_entry_id: row.get(13)?,
                 outlook_store_id: row.get(14)?,
             })
         },
     )
     .optional()
-    .map_err(|err| err.to_string())
+    .map_err(|err| err.to_string())?
+    .map(|mut contact| {
+        contact.groups = read_groups_for_contact(conn, contact.id)?
+            .into_iter()
+            .map(|group| group.name)
+            .collect();
+        Ok(contact)
+    })
+    .transpose()
 }
 
 fn delete_local_contact_from_outlook(conn: &Connection, id: i64) -> Result<bool, String> {
@@ -3258,12 +3308,16 @@ fn push_local_contacts_to_outlook(
     target_email: Option<&str>,
 ) -> Result<OutlookPushResult, String> {
     let contacts = load_local_outlook_contacts(conn)?;
-    if contacts.is_empty() {
+    let groups = load_local_outlook_group_names(conn)?;
+    if contacts.is_empty() && groups.is_empty() {
         return Ok(OutlookPushResult {
             total: 0,
             created: 0,
             updated: 0,
             linked: 0,
+            contact_copies: 0,
+            folders_created: 0,
+            folders_used: 0,
             errors: 0,
             autocomplete_resolved: 0,
             autocomplete_errors: 0,
@@ -3272,7 +3326,9 @@ fn push_local_contacts_to_outlook(
         });
     }
 
-    let json = serde_json::to_string(&contacts).map_err(|err| err.to_string())?;
+    let contact_total = contacts.len();
+    let payload = LocalOutlookExportPayload { contacts, groups };
+    let json = serde_json::to_string(&payload).map_err(|err| err.to_string())?;
     let json_path = env::temp_dir().join(format!(
         "agendakontakte-outlook-sync-{}.json",
         Utc::now().timestamp_millis()
@@ -3286,7 +3342,9 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $contactsPath = '{escaped_path}'
 $targetEmail = {target_email}
-$localContacts = @(Get-Content -LiteralPath $contactsPath -Raw -Encoding UTF8 | ConvertFrom-Json)
+$payload = Get-Content -LiteralPath $contactsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$localContacts = @($payload.contacts | ForEach-Object {{ $_ }})
+$localGroups = @($payload.groups | ForEach-Object {{ [string]$_ }})
 $outlook = New-Object -ComObject Outlook.Application
 $namespace = $outlook.Session
 $targetAccount = $null
@@ -3307,11 +3365,97 @@ $links = New-Object System.Collections.Generic.List[object]
 $autocompleteCandidates = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 $createdCount = 0
 $updatedCount = 0
+$contactCopyCount = 0
+$foldersCreatedCount = 0
 $errorCount = 0
 $autocompleteResolvedCount = 0
 $autocompleteErrorCount = 0
 $storeName = ''
 try {{ $storeName = [string]$contactsFolder.Store.DisplayName }} catch {{}}
+$folderCache = @{{}}
+$folderItemsCache = @{{}}
+
+function Read-Contact-Folder-Only($folder) {{
+  $items = New-Object System.Collections.ArrayList
+  try {{
+    $folderItems = $folder.Items
+    for ($index = 1; $index -le $folderItems.Count; $index++) {{
+      try {{
+        $item = $folderItems.Item($index)
+        if ([string]$item.MessageClass -like 'IPM.Contact*') {{ $items.Add($item) | Out-Null }}
+      }} catch {{}}
+    }}
+  }} catch {{}}
+  return ,$items
+}}
+
+function Get-OrCreate-Contact-Folder($folderName) {{
+  $name = ([string]$folderName).Trim()
+  if ([string]::IsNullOrWhiteSpace($name)) {{ return $contactsFolder }}
+  $cacheKey = $name.ToLowerInvariant()
+  if ($folderCache.ContainsKey($cacheKey)) {{ return $folderCache[$cacheKey] }}
+
+  $folder = $null
+  foreach ($child in @($contactsFolder.Folders)) {{
+    try {{
+      if (([string]$child.Name).Trim().ToLowerInvariant() -eq $cacheKey) {{
+        $folder = $child
+        break
+      }}
+    }} catch {{}}
+  }}
+  if ($null -eq $folder) {{
+    $folder = $contactsFolder.Folders.Add($name)
+    $script:foldersCreatedCount++
+  }}
+  $folderCache[$cacheKey] = $folder
+  return $folder
+}}
+
+function Get-Cached-Folder-Contacts($folder) {{
+  $cacheKey = [string]$folder.EntryID
+  if ($folderItemsCache.ContainsKey($cacheKey)) {{ return ,$folderItemsCache[$cacheKey] }}
+  $items = Read-Contact-Folder-Only $folder
+  $folderItemsCache[$cacheKey] = $items
+  return ,$items
+}}
+
+function Find-Outlook-Contact-In-Folder($local, $allContacts, $destinationFolder) {{
+  $entryId = [string](Get-Scalar $local.outlookEntryId)
+  $storeId = [string](Get-Scalar $local.outlookStoreId)
+  if (-not [string]::IsNullOrWhiteSpace($entryId)) {{
+    try {{
+      $linkedItem = if (-not [string]::IsNullOrWhiteSpace($storeId)) {{ $namespace.GetItemFromID($entryId, $storeId) }} else {{ $namespace.GetItemFromID($entryId) }}
+      if ([string]$linkedItem.Parent.EntryID -eq [string]$destinationFolder.EntryID) {{ return $linkedItem }}
+    }} catch {{}}
+  }}
+
+  $email = ([string](Get-Scalar $local.email)).Trim().ToLowerInvariant()
+  $name = ([string](Get-Scalar $local.displayName)).Trim().ToLowerInvariant()
+  if ([string]::IsNullOrWhiteSpace($name)) {{ $name = (([string](Get-Scalar $local.firstName) + ' ' + [string](Get-Scalar $local.lastName)).Trim()).ToLowerInvariant() }}
+  $phone = ([string](Get-Scalar $local.phone)).Trim()
+  $mobile = ([string](Get-Scalar $local.mobilePhone)).Trim()
+  $city = ([string](Get-Scalar $local.city)).Trim().ToLowerInvariant()
+  $nameMatches = New-Object System.Collections.Generic.List[object]
+
+  foreach ($item in $allContacts.ToArray()) {{
+    try {{
+      if (-not [string]::IsNullOrWhiteSpace($email) -and (Get-Contact-Email $item).Trim().ToLowerInvariant() -eq $email) {{ return $item }}
+      $itemName = ([string]$item.FullName).Trim().ToLowerInvariant()
+      if ([string]::IsNullOrWhiteSpace($itemName)) {{ $itemName = (([string]$item.FirstName + ' ' + [string]$item.LastName).Trim()).ToLowerInvariant() }}
+      if (-not [string]::IsNullOrWhiteSpace($name) -and $itemName -eq $name) {{
+        $nameMatches.Add($item) | Out-Null
+        if ((-not [string]::IsNullOrWhiteSpace($phone) -and [string]$item.BusinessTelephoneNumber -eq $phone) -or
+            (-not [string]::IsNullOrWhiteSpace($mobile) -and [string]$item.MobileTelephoneNumber -eq $mobile) -or
+            ([string]::IsNullOrWhiteSpace($phone) -and [string]::IsNullOrWhiteSpace($mobile) -and ([string]$item.BusinessAddressCity).Trim().ToLowerInvariant() -eq $city)) {{
+          return $item
+        }}
+      }}
+    }} catch {{}}
+  }}
+  if ($nameMatches.Count -eq 1) {{ return $nameMatches[0] }}
+  return $null
+}}
 
 function Get-Scalar($value) {{
   if ($null -eq $value) {{ return '' }}
@@ -3388,46 +3532,77 @@ function Set-When-Present($item, $property, $value) {{
   if (-not [string]::IsNullOrWhiteSpace($text)) {{ $item.$property = $text }}
 }}
 
-$allContacts = New-Object System.Collections.ArrayList
-Read-Contact-Folders $contactsFolder $allContacts
+foreach ($groupName in $localGroups) {{
+  if ([string]::IsNullOrWhiteSpace(([string]$groupName).Trim())) {{ continue }}
+  try {{ Get-OrCreate-Contact-Folder $groupName | Out-Null }} catch {{ $errorCount++ }}
+}}
 
 foreach ($local in $localContacts) {{
-  try {{
-    $item = Find-Outlook-Contact $local $allContacts
-    if ($null -eq $item) {{
-      $item = $contactsFolder.Items.Add(2)
-      $allContacts.Add($item) | Out-Null
-      $createdCount++
-    }} else {{
-      $updatedCount++
+  $groupNames = New-Object System.Collections.Generic.List[string]
+  $seenGroupNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($rawGroupName in @($local.groups)) {{
+    $groupName = ([string]$rawGroupName).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($groupName) -and $seenGroupNames.Add($groupName)) {{
+      $groupNames.Add($groupName) | Out-Null
     }}
+  }}
 
-    Set-When-Present $item 'FirstName' $local.firstName
-    Set-When-Present $item 'LastName' $local.lastName
-    Set-When-Present $item 'FullName' $local.displayName
-    Set-When-Present $item 'Email1Address' $local.email
-    Set-When-Present $item 'BusinessTelephoneNumber' $local.phone
-    Set-When-Present $item 'MobileTelephoneNumber' $local.mobilePhone
-    Set-When-Present $item 'BusinessAddressStreet' $local.street
-    Set-When-Present $item 'BusinessAddressPostalCode' $local.postalCode
-    Set-When-Present $item 'BusinessAddressCity' $local.city
-    Set-When-Present $item 'BusinessAddressCountry' $local.country
-    Set-When-Present $item 'Body' $local.notes
-    $item.Save()
+  $destinations = New-Object System.Collections.Generic.List[object]
+  if ($groupNames.Count -eq 0) {{
+    try {{ $destinations.Add((Get-OrCreate-Contact-Folder 'Gesammelte Adressen')) | Out-Null }} catch {{ $errorCount++ }}
+  }} else {{
+    foreach ($groupName in $groupNames) {{
+      try {{ $destinations.Add((Get-OrCreate-Contact-Folder $groupName)) | Out-Null }} catch {{ $errorCount++ }}
+    }}
+  }}
 
+  $linkRecorded = $false
+  $exportedContact = $false
+  foreach ($destination in $destinations) {{
+    try {{
+      $allContacts = Get-Cached-Folder-Contacts $destination
+      $item = Find-Outlook-Contact-In-Folder $local $allContacts $destination
+      if ($null -eq $item) {{
+        $item = $destination.Items.Add(2)
+        $allContacts.Add($item) | Out-Null
+        $createdCount++
+      }} else {{
+        $updatedCount++
+      }}
+
+      Set-When-Present $item 'FirstName' $local.firstName
+      Set-When-Present $item 'LastName' $local.lastName
+      Set-When-Present $item 'FullName' $local.displayName
+      Set-When-Present $item 'Email1Address' $local.email
+      Set-When-Present $item 'BusinessTelephoneNumber' $local.phone
+      Set-When-Present $item 'MobileTelephoneNumber' $local.mobilePhone
+      Set-When-Present $item 'BusinessAddressStreet' $local.street
+      Set-When-Present $item 'BusinessAddressPostalCode' $local.postalCode
+      Set-When-Present $item 'BusinessAddressCity' $local.city
+      Set-When-Present $item 'BusinessAddressCountry' $local.country
+      Set-When-Present $item 'Body' $local.notes
+      $item.Save()
+      $contactCopyCount++
+      $exportedContact = $true
+
+      if (-not $linkRecorded) {{
+        $links.Add([pscustomobject]@{{
+          localId = [string](Get-Scalar $local.id)
+          entryId = [string]$item.EntryID
+          storeId = [string]$destination.StoreID
+        }}) | Out-Null
+        $linkRecorded = $true
+      }}
+    }} catch {{
+      $errorCount++
+    }}
+  }}
+
+  if ($exportedContact) {{
     $autocompleteEmail = ([string](Get-Scalar $local.email)).Trim()
     if (-not [string]::IsNullOrWhiteSpace($autocompleteEmail)) {{
       $autocompleteCandidates.Add($autocompleteEmail) | Out-Null
     }}
-
-    $localId = [string](Get-Scalar $local.id)
-    $links.Add([pscustomobject]@{{
-      localId = $localId
-      entryId = [string]$item.EntryID
-      storeId = [string]$contactsFolder.StoreID
-    }}) | Out-Null
-  }} catch {{
-    $errorCount++
   }}
 }}
 
@@ -3460,6 +3635,9 @@ if ($autocompleteCandidates.Count -gt 0) {{
   links = $links
   created = $createdCount
   updated = $updatedCount
+  contactCopies = $contactCopyCount
+  foldersCreated = $foldersCreatedCount
+  foldersUsed = $folderCache.Count
   errors = $errorCount
   autocompleteResolved = $autocompleteResolvedCount
   autocompleteErrors = $autocompleteErrorCount
@@ -3511,10 +3689,13 @@ if ($autocompleteCandidates.Count -gt 0) {{
     tx.commit().map_err(|err| err.to_string())?;
 
     Ok(OutlookPushResult {
-        total: contacts.len(),
+        total: contact_total,
         created: data.created,
         updated: data.updated,
         linked: data.links.len(),
+        contact_copies: data.contact_copies,
+        folders_created: data.folders_created,
+        folders_used: data.folders_used,
         errors: data.errors,
         autocomplete_resolved: data.autocomplete_resolved,
         autocomplete_errors: data.autocomplete_errors,
@@ -4665,6 +4846,58 @@ mod tests {
     fn onboarding_runs_only_for_a_new_local_database() {
         assert_eq!(initial_onboarding_completion(false), "false");
         assert_eq!(initial_onboarding_completion(true), "true");
+    }
+
+    #[test]
+    fn outlook_export_preserves_active_groups_and_the_ungrouped_folder() {
+        let conn = Connection::open_in_memory().expect("in-memory database");
+        conn.execute_batch(
+            "
+            CREATE TABLE contacts (
+                id INTEGER PRIMARY KEY,
+                first_name TEXT NOT NULL DEFAULT '',
+                last_name TEXT NOT NULL DEFAULT '',
+                display_name TEXT NOT NULL DEFAULT '',
+                email TEXT NOT NULL DEFAULT '',
+                phone TEXT NOT NULL DEFAULT '',
+                mobile_phone TEXT NOT NULL DEFAULT '',
+                street TEXT NOT NULL DEFAULT '',
+                postal_code TEXT NOT NULL DEFAULT '',
+                city TEXT NOT NULL DEFAULT '',
+                country TEXT NOT NULL DEFAULT '',
+                short_info TEXT NOT NULL DEFAULT '',
+                notes TEXT NOT NULL DEFAULT '',
+                outlook_entry_id TEXT,
+                outlook_store_id TEXT,
+                updated_at TEXT NOT NULL,
+                deleted_at TEXT
+            );
+            CREATE TABLE groups (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT '',
+                deleted_at TEXT
+            );
+            CREATE TABLE contact_groups (contact_id INTEGER NOT NULL, group_id INTEGER NOT NULL);
+            INSERT INTO contacts (id, display_name, email, updated_at) VALUES
+                (1, 'Ohne Gruppe', 'ohne@example.org', '2026-01-01'),
+                (2, 'In zwei Gruppen', 'gruppen@example.org', '2026-01-02');
+            INSERT INTO groups (id, name) VALUES (1, 'Kontakte'), (2, 'Vorstand');
+            INSERT INTO groups (id, name, deleted_at) VALUES (3, 'Alt', '2026-01-03');
+            INSERT INTO contact_groups VALUES (2, 1), (2, 2), (2, 3);
+            ",
+        )
+        .expect("Outlook export test data");
+
+        let contacts = load_local_outlook_contacts(&conn).expect("contacts with groups");
+        assert_eq!(contacts.len(), 2);
+        assert!(contacts[0].groups.is_empty());
+        assert_eq!(contacts[1].groups, vec!["Kontakte", "Vorstand"]);
+
+        let folders = load_local_outlook_group_names(&conn).expect("active folders");
+        assert_eq!(folders, vec!["Gesammelte Adressen", "Kontakte", "Vorstand"]);
     }
 
     fn sample_contact(name: &str, email: &str, phone: &str) -> ContactInput {

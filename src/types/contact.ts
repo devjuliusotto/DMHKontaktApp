@@ -114,6 +114,9 @@ export interface OutlookContactExportResult {
   created: number;
   updated: number;
   linked: number;
+  contactCopies: number;
+  foldersCreated: number;
+  foldersUsed: number;
   errors: number;
   autocompleteResolved: number;
   autocompleteErrors: number;

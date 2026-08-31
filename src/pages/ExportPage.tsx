@@ -1,5 +1,5 @@
 import { save } from "@tauri-apps/plugin-dialog";
-import { CalendarDays, CheckCircle2, ContactRound, Download, LoaderCircle, Send, Sparkles, UsersRound } from "lucide-react";
+import { CalendarDays, CheckCircle2, ContactRound, Download, LoaderCircle, Send, UsersRound } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { StatusMessage } from "../components/StatusMessage";
 import { t } from "../i18n";
@@ -12,9 +12,10 @@ import { exportGeneralCsv, exportNewOutlookCsv, exportOutlookClassicCsv } from "
 
 type ContactExportKind = "classic" | "new" | "general";
 type CalendarExportTarget = "apple" | "google" | "teams" | "universal";
-type ExportChoice = "calendar" | "contacts";
+type ExportChoice = "outlook" | "calendar" | "contacts";
 
 const exportChoiceLabels: Record<ExportChoice, string> = {
+  outlook: "Kontakte an Outlook übertragen",
   calendar: "Kalender exportieren",
   contacts: "Kontaktlisten exportieren"
 };
@@ -147,7 +148,7 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
       } else if (result.errors > 0 || result.autocompleteErrors > 0) {
         setMessage(`${result.linked} von ${result.total} Kontakten wurden an Outlook übertragen. ${result.errors + result.autocompleteErrors} Einträge konnten nicht vollständig verarbeitet werden.`);
       } else {
-        setMessage(`${result.total} Kontakte wurden erfolgreich an Outlook übertragen und für die Empfängersuche vorbereitet.`);
+        setMessage(`${result.total} Kontakte wurden in ${result.foldersUsed} Gruppenordner übertragen und für die Empfängersuche vorbereitet.`);
       }
     } catch (error) {
       setMessage(`Direkte Outlook-Übertragung fehlgeschlagen: ${error}`);
@@ -158,6 +159,7 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
 
   const confirmExport = () => {
     if (!choice) return;
+    if (choice === "outlook") void runDirectOutlookExport();
     if (choice === "calendar") void runCalendarExport(calendarExportTarget);
     if (choice === "contacts") void runContactExport(contactExportKind);
   };
@@ -167,6 +169,8 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
     setSelectedGroupIds([]);
     setContactExportKind("classic");
     setCalendarExportTarget("universal");
+    setDirectOutlookResult(null);
+    setMessage("");
   };
 
   return (
@@ -182,50 +186,14 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
       <StatusMessage message={message} />
 
       {!choice && (
-        <>
-          <section className="outlook-direct-export" aria-labelledby="outlook-direct-export-title">
-            <div className="outlook-direct-export-icon"><Send size={34} aria-hidden="true" /></div>
-            <div className="outlook-direct-export-copy">
-              <p><Sparkles size={17} aria-hidden="true" /> Empfohlen · ohne CSV-Datei</p>
-              <h3 id="outlook-direct-export-title">Alle Kontakte mit einem Klick an Outlook</h3>
-              <span>Die Kontakte werden direkt in Outlook Classic gespeichert und erscheinen beim Eingeben von Empfängern in der Suche und den Vorschlägen.</span>
-
-              <div className="outlook-direct-export-features">
-                <span><CheckCircle2 size={18} /> Vorhandene Kontakte werden aktualisiert statt verdoppelt</span>
-                <span><CheckCircle2 size={18} /> Es wird keine E-Mail gesendet</span>
-              </div>
-
-              {mailAccounts.length > 0 ? (
-                <label className="outlook-direct-account">
-                  <span>Outlook-IMAP-Konto</span>
-                  <select value={selectedMailAccountId ?? ""} onChange={(event) => setSelectedMailAccountId(Number(event.target.value))} disabled={directOutlookBusy}>
-                    {mailAccounts.map((account) => <option key={account.id} value={account.id}>{account.accountName || account.email} · {account.email}</option>)}
-                  </select>
-                </label>
-              ) : (
-                <p className="outlook-direct-default-note"><ContactRound size={18} /> Der Standard-Kontaktordner des eingerichteten Outlook-Profils wird verwendet.</p>
-              )}
-
-              <button className="primary large outlook-direct-export-button" type="button" onClick={() => void runDirectOutlookExport()} disabled={directOutlookBusy}>
-                {directOutlookBusy ? <LoaderCircle className="spin" size={22} /> : <Send size={22} />}
-                {directOutlookBusy ? "Kontakte werden übertragen …" : "Jetzt alles an Outlook übertragen"}
-              </button>
-
-              {directOutlookResult && directOutlookResult.total > 0 && (
-                <div className="outlook-direct-result" role="status">
-                  <CheckCircle2 size={24} aria-hidden="true" />
-                  <div>
-                    <strong>{directOutlookResult.linked} Kontakte in {directOutlookResult.storeName || "Outlook"}</strong>
-                    <span>{directOutlookResult.created} neu · {directOutlookResult.updated} aktualisiert · {directOutlookResult.autocompleteResolved} für Vorschläge vorbereitet</span>
-                    {directOutlookResult.folderPath && <small>Ziel: {directOutlookResult.folderPath}</small>}
-                  </div>
-                </div>
-              )}
-            </div>
-          </section>
-
-          <div className="export-alternative-heading"><span>Oder als Datei speichern</span></div>
           <section className="export-choice-grid" aria-label="Exportart auswählen">
+            <button className="export-choice-card" type="button" onClick={() => setChoice("outlook")}>
+              <Send size={34} />
+              <span>
+                <strong>Direkt an Outlook übertragen</strong>
+                <small>Gruppen als Outlook-Ordner mit den zugehörigen Kontakten übernehmen</small>
+              </span>
+            </button>
             <button className="export-choice-card" type="button" onClick={() => setChoice("calendar")}>
               <CalendarDays size={34} />
               <span>
@@ -241,7 +209,6 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
               </span>
             </button>
           </section>
-        </>
       )}
 
       {choice && (
@@ -250,7 +217,7 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
             <div>
               <h3>{exportChoiceLabels[choice]}</h3>
               <p className="export-step-text">
-                {choice === "calendar" ? "1. Kalender prüfen · 2. Datei speichern" : "1. Format wählen · 2. Gruppen wählen · 3. Datei speichern"}
+                {choice === "outlook" ? "1. Konto wählen · 2. Übertragen" : choice === "calendar" ? "1. Kalender prüfen · 2. Datei speichern" : "1. Format wählen · 2. Gruppen wählen · 3. Datei speichern"}
               </p>
             </div>
             <button type="button" onClick={resetChoice}>Andere Exportart</button>
@@ -259,7 +226,32 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
           <div className="export-wizard-grid">
             <section className="export-step-box">
               <span className="export-step-number">1</span>
-              {choice === "calendar" ? (
+              {choice === "outlook" ? (
+                <>
+                  <h4>Outlook-Konto wählen</h4>
+                  <p>Jede Gruppe wird als eigener Kontaktordner übertragen.</p>
+                  {mailAccounts.length > 0 ? (
+                    <label className="outlook-direct-account">
+                      <span>Outlook-Konto</span>
+                      <select value={selectedMailAccountId ?? ""} onChange={(event) => setSelectedMailAccountId(Number(event.target.value))} disabled={directOutlookBusy}>
+                        {mailAccounts.map((account) => <option key={account.id} value={account.id}>{account.accountName || account.email} · {account.email}</option>)}
+                      </select>
+                    </label>
+                  ) : (
+                    <p className="outlook-direct-default-note"><ContactRound size={18} /> Das Standardkonto von Outlook wird verwendet.</p>
+                  )}
+                  {directOutlookResult && directOutlookResult.total > 0 && (
+                    <div className="outlook-direct-result" role="status">
+                      <CheckCircle2 size={24} aria-hidden="true" />
+                      <div>
+                        <strong>{directOutlookResult.linked} Kontakte · {directOutlookResult.foldersUsed} Gruppenordner</strong>
+                        <span>{directOutlookResult.contactCopies} Einträge · {directOutlookResult.created} neu · {directOutlookResult.updated} aktualisiert</span>
+                        {directOutlookResult.folderPath && <small>Ziel: {directOutlookResult.folderPath}</small>}
+                      </div>
+                    </div>
+                  )}
+                </>
+              ) : choice === "calendar" ? (
                 <>
                   <h4>Zielkalender wählen</h4>
                   <p>Termine und vollständige Serien werden als ICS-Datei gespeichert. Die Darstellung von Kategorienfarben bestimmt anschließend der Zielkalender.</p>
@@ -324,10 +316,14 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
 
       {choice && (
         <section className="export-confirm-panel">
-          <button className="primary large" type="button" onClick={confirmExport}>
-            <Download size={22} /> Datei speichern
+          <button className="primary large" type="button" onClick={confirmExport} disabled={directOutlookBusy}>
+            {choice === "outlook" ? (
+              <>{directOutlookBusy ? <LoaderCircle className="spin" size={22} /> : <Send size={22} />}{directOutlookBusy ? "Kontakte werden übertragen …" : "Jetzt an Outlook übertragen"}</>
+            ) : (
+              <><Download size={22} /> Datei speichern</>
+            )}
           </button>
-          <button className="large" type="button" onClick={resetChoice}>Abbrechen</button>
+          <button className="large" type="button" onClick={resetChoice} disabled={directOutlookBusy}>Abbrechen</button>
         </section>
       )}
     </div>
