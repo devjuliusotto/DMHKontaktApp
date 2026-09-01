@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { AlertTriangle, ArchiveRestore, CheckCircle2, ChevronDown, Download, Eye, EyeOff, Mail, RefreshCw, Search, Send, ShieldCheck, Sparkles, Trash2, X } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, Download, Eye, EyeOff, Mail, RefreshCw, Search, Send, ShieldCheck, Sparkles, Trash2, X } from "lucide-react";
 import { MigrationCaptureDialog } from "../components/MigrationCaptureDialog";
 import { PrinterSettings } from "../components/PrinterSettings";
 import { StatusMessage } from "../components/StatusMessage";
@@ -7,22 +7,17 @@ import type { SettingsSection } from "../components/SettingsSubtabs";
 import type { Page } from "../components/Sidebar";
 import {
   getAppSetting,
-  createAutomaticBackup,
-  getBackupData,
   importOutlookAccount,
   getMigrationCaptureStatus,
   listMailAccounts,
   revealMailPassword,
   removeMailAccount,
-  restoreAutomaticBackup,
-  resetLocalAppData,
-  restartApp,
   scanOutlookAccounts,
   setAppSetting,
   testMailConnection
 } from "../services/db";
 import type { MailAccount, MigrationCaptureResult, MigrationCaptureStatus, OutlookAccountCandidate } from "../types/mail";
-import { addBrowserDataToBackup, restoreBrowserDataFromBackup } from "../utils/backup";
+import { canManageDevelopmentFeatures } from "../utils/featureFlags";
 import { deletionConfirmationSettingKey } from "../utils/settings";
 
 interface SettingsPageProps {
@@ -39,6 +34,7 @@ interface SettingsSearchItem {
   page: Page;
   section: SettingsSection;
   targetId?: string;
+  adminOnly?: boolean;
 }
 
 const settingsSearchItems: SettingsSearchItem[] = [
@@ -48,12 +44,14 @@ const settingsSearchItems: SettingsSearchItem[] = [
   { id: "appearance", label: "Erscheinungsbild öffnen", description: "Erscheinungsbild → Darstellung", keywords: "erscheinungsbild thema farbe dunkel hell akzent", page: "appearance", section: "appearance" },
   { id: "import", label: "Import öffnen", description: "Import → Kontakte und Termine", keywords: "import outlook thunderbird kontakte termine", page: "simple-import", section: "import" },
   { id: "sync", label: "Synchronisierungen öffnen", description: "Synchronisierungen → Microsoft 365 und Datenbereiche", keywords: "synchronisierung sync microsoft 365 exchange kontakte kalender verbundene apps", page: "synchronizations", section: "sync" },
-  { id: "advanced", label: "Funktionen in Entwicklung", description: "Erweitert → noch nicht aktive Funktionen", keywords: "erweitert advanced entwicklung funktionen", page: "feature-development", section: "advanced" },
+  { id: "advanced", label: "Funktionen in Entwicklung", description: "Erweitert → optionale Funktionen", keywords: "erweitert advanced entwicklung funktionen", page: "feature-development", section: "advanced" },
+  { id: "admin-tools", label: "Admin-Werkzeuge", description: "Erweitert → Wartung und Wiederherstellung", keywords: "admin zurücksetzen wiederherstellen wartung app löschen", page: "feature-development", section: "advanced", adminOnly: true },
   { id: "trash", label: "Papierkorb öffnen", description: "Papierkorb → Gelöschte Daten", keywords: "papierkorb gelöscht wiederherstellen löschen", page: "trash", section: "trash" },
   { id: "edv", label: "Sicher an EDV senden", description: "Allgemein → Status", keywords: "edv umstellung migration sicher senden", page: "settings", section: "general", targetId: "settings-migration-status" }
 ];
 
 export function SettingsPage({ section = "general", onNavigate = () => undefined, onStartOnboarding = () => undefined }: SettingsPageProps) {
+  const administrativeToolsVisible = canManageDevelopmentFeatures();
   const [accounts, setAccounts] = useState<MailAccount[]>([]);
   const [candidates, setCandidates] = useState<OutlookAccountCandidate[]>([]);
   const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -61,8 +59,6 @@ export function SettingsPage({ section = "general", onNavigate = () => undefined
   const [messageType, setMessageType] = useState<"success" | "error" | "info">("info");
   const [migrationStatus, setMigrationStatus] = useState<MigrationCaptureStatus | null>(null);
   const [migrationDialogOpen, setMigrationDialogOpen] = useState(false);
-  const [automaticRestoreVisible, setAutomaticRestoreVisible] = useState(false);
-  const [hiddenRestoreClicks, setHiddenRestoreClicks] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchIndex, setSearchIndex] = useState(0);
   const [confirmDeletions, setConfirmDeletions] = useState(true);
@@ -81,9 +77,10 @@ export function SettingsPage({ section = "general", onNavigate = () => undefined
     const query = searchQuery.trim().toLocaleLowerCase("de-DE");
     if (!query) return [];
     return settingsSearchItems.filter((item) =>
-      `${item.label} ${item.description} ${item.keywords}`.toLocaleLowerCase("de-DE").includes(query)
+      (!item.adminOnly || administrativeToolsVisible)
+      && `${item.label} ${item.description} ${item.keywords}`.toLocaleLowerCase("de-DE").includes(query)
     );
-  }, [searchQuery]);
+  }, [administrativeToolsVisible, searchQuery]);
 
   const selectSearchItem = (item: SettingsSearchItem) => {
     setSearchQuery("");
@@ -140,87 +137,6 @@ export function SettingsPage({ section = "general", onNavigate = () => undefined
   const migrationFailed = (error: string) => {
     setMessageType("error");
     setMessage(`EDV-Übertragung fehlgeschlagen: ${error}`);
-  };
-
-  const resetApplication = async () => {
-    const confirmed = window.confirm(
-      "App vollständig zurücksetzen?\n\nDabei werden unwiderruflich alle lokalen Kontakte, Gruppen, Kalender, Papierkorb-Daten, E-Mail-Konten, vom App angelegten Credential-Manager-Einträge, Passwort-Speicher-Einträge, Einstellungen, Importverläufe, interne Sicherungen und Diagnoseberichte dieses Apps gelöscht. Die externe automatische Sicherung in Dokumente bleibt erhalten.\n\nDaten in Outlook und Exchange sowie die installierte App selbst bleiben unverändert."
-    );
-    if (!confirmed) return;
-    const typed = window.prompt(
-      "Letzte Sicherheitsabfrage: Tippen Sie ZURÜCKSETZEN, um alle lokalen App-Daten zu löschen."
-    );
-    if (typed !== "ZURÜCKSETZEN") {
-      setMessageType("info");
-      setMessage("Zurücksetzen wurde abgebrochen. Es wurden keine Daten gelöscht.");
-      return;
-    }
-
-    setBusyAction("reset-application");
-    setMessage("");
-    try {
-      // Capture browser-side calendar data before localStorage is cleared.
-      const backup = addBrowserDataToBackup(await getBackupData());
-      await createAutomaticBackup(backup, true);
-      await resetLocalAppData();
-      localStorage.clear();
-      await restartApp();
-    } catch (error) {
-      setMessageType("error");
-      setMessage(`App konnte nicht vollständig zurückgesetzt werden: ${error}`);
-      setBusyAction(null);
-    }
-  };
-
-  const revealAutomaticRestore = () => {
-    setHiddenRestoreClicks((clicks) => {
-      const nextClicks = clicks + 1;
-      if (nextClicks >= 7) {
-        setAutomaticRestoreVisible(true);
-        return 0;
-      }
-      return nextClicks;
-    });
-  };
-
-  const restoreAutomaticArchive = async () => {
-    const confirmed = window.confirm(
-      "Diese Funktion ist ausschließlich für eine Wiederherstellung zusammen mit der EDV im Büro vorgesehen. Nicht selbstständig ausführen.\n\nFortfahren?"
-    );
-    if (!confirmed) return;
-
-    const authorization = window.prompt(
-      "Geben Sie den von der EDV vor Ort mitgeteilten Freigabecode ein (Format EDV-...)."
-    );
-    if (!authorization?.trim()) return;
-
-    const finalConfirmation = window.prompt(
-      "Letzte Sicherheitsabfrage: Tippen Sie WIEDERHERSTELLEN, nachdem die EDV die aktuelle Sicherung geprüft hat."
-    );
-    if (finalConfirmation !== "WIEDERHERSTELLEN") {
-      setMessageType("info");
-      setMessage("Wiederherstellung abgebrochen. Es wurden keine Daten verändert.");
-      return;
-    }
-
-    setBusyAction("restore-automatic-backup");
-    setMessage("");
-    try {
-      const result = await restoreAutomaticBackup(authorization.trim());
-      restoreBrowserDataFromBackup(result);
-      setMessageType("success");
-      setMessage(
-        result.passwordsRestored
-          ? "Kontakte, Kalender und verschlüsselte Kennwort-Sicherung wurden wiederhergestellt. Die App wird neu geladen."
-          : "Kontakte und Kalender wurden wiederhergestellt. Eine Kennwort-Sicherung war nicht vorhanden. Die App wird neu geladen."
-      );
-      window.setTimeout(() => window.location.reload(), 700);
-    } catch (error) {
-      setMessageType("error");
-      setMessage(`Automatische Sicherung konnte nicht wiederhergestellt werden: ${error}`);
-    } finally {
-      setBusyAction(null);
-    }
   };
 
   useEffect(() => {
@@ -390,7 +306,7 @@ export function SettingsPage({ section = "general", onNavigate = () => undefined
     <div className="page settings-page">
       <header className="page-header settings-page-header">
         <div>
-          <h2 onClick={revealAutomaticRestore}>Einstellungen</h2>
+          <h2>Einstellungen</h2>
           <p>Verwalten Sie App-Einstellungen und lokale Daten.</p>
         </div>
       </header>
@@ -470,36 +386,6 @@ export function SettingsPage({ section = "general", onNavigate = () => undefined
             </article>
           </section>
 
-          {automaticRestoreVisible && (
-            <section className="form-panel settings-support-panel">
-              <div className="settings-task-heading">
-                <ArchiveRestore size={25} aria-hidden="true" />
-                <div>
-                  <h3>EDV-Wiederherstellung der automatischen Sicherung</h3>
-                  <p>Verdeckte Notfallfunktion. Nur zusammen mit der EDV im Büro und erst nach Prüfung der Sicherungsdatei verwenden. Kontakte, Kalender und verschlüsselte Kennwörter werden durch den Sicherungsstand ersetzt.</p>
-                </div>
-              </div>
-              <button type="button" onClick={restoreAutomaticArchive} disabled={busyAction !== null}>
-                <ArchiveRestore size={19} /> Automatische Sicherung mit EDV wiederherstellen
-              </button>
-            </section>
-          )}
-
-          <details className="form-panel settings-danger-zone settings-collapsible-danger">
-            <summary>App zurücksetzen</summary>
-            <section className="settings-reset-panel">
-              <div className="settings-task-heading">
-                <AlertTriangle size={25} aria-hidden="true" />
-                <div>
-                  <h3>App vollständig zurücksetzen</h3>
-                  <p>Löscht sämtliche lokalen App-Daten. Outlook und Exchange werden nicht verändert.</p>
-                </div>
-              </div>
-              <button className="danger-button" type="button" onClick={resetApplication} disabled={busyAction !== null}>
-                <Trash2 size={18} /> Alle lokalen Daten löschen und App neu starten
-              </button>
-            </section>
-          </details>
         </div>
       )}
 

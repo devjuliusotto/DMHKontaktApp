@@ -150,6 +150,14 @@ pub struct ImportResult {
     pub batch_id: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TrashPurgeResult {
+    pub contacts: usize,
+    pub groups: usize,
+    pub vault_entries: usize,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupData {
@@ -605,7 +613,11 @@ fn open_db(app: &AppHandle) -> Result<Connection, String> {
 }
 
 fn initial_onboarding_completion(database_already_existed: bool) -> &'static str {
-    if database_already_existed { "true" } else { "false" }
+    if database_already_existed {
+        "true"
+    } else {
+        "false"
+    }
 }
 
 fn init_db(app: &AppHandle) -> Result<(), String> {
@@ -805,8 +817,24 @@ const AUTOMATIC_BACKUP_FOLDER: &str = "DMH Kontakte und Kalender\\Automatische S
 const AUTOMATIC_BACKUP_ADMIN_TEST_FOLDER: &str =
     "DMH Kontakte und Kalender Admin Test\\Automatische Sicherung";
 const AUTOMATIC_BACKUP_LATEST: &str = "DMH-Kontakte-Kalender-Auto-Backup.json";
+const AUTOMATIC_BACKUP_SNAPSHOT_PREFIX: &str = "auto-backup-";
+const CALENDAR_ACTIVE_STORAGE_KEY: &str = "agendakontakte.calendarEvents";
+const CALENDAR_DELETED_STORAGE_KEY: &str = "agendakontakte.deletedCalendarEvents";
+const COLLECTED_ADDRESSES_HIDDEN_SETTING: &str = "collected_addresses_hidden";
+const COLLECTED_ADDRESSES_DELETED_AT_SETTING: &str = "collected_addresses_deleted_at";
 const DELETED_ELEMENT_MARKER: &str = "Gelöschtes Element";
 const BACKUP_REPLACE_ATTEMPTS: usize = 5;
+
+fn ensure_administrative_tools_available() -> Result<(), String> {
+    if cfg!(debug_assertions) || option_env!("DMH_RELEASE_CHANNEL") == Some("admin-test") {
+        Ok(())
+    } else {
+        Err(
+            "Diese Funktion ist ausschließlich in der administrativen App-Version verfügbar."
+                .to_string(),
+        )
+    }
+}
 
 fn automatic_backup_folder(release_channel: Option<&str>) -> &'static str {
     if release_channel == Some("admin-test") {
@@ -837,6 +865,45 @@ pub(crate) fn automatic_backup_app_data_dir(app: &AppHandle) -> Result<PathBuf, 
     fs::create_dir_all(&directory)
         .map_err(|error| format!("AppData-Backup-Ordner konnte nicht erstellt werden: {error}"))?;
     Ok(directory)
+}
+
+pub(crate) fn automatic_backup_file_paths(
+    app: &AppHandle,
+    latest_name: &str,
+    snapshot_prefix: &str,
+) -> Result<Vec<PathBuf>, String> {
+    let directories = [
+        automatic_backup_app_data_dir(app)?,
+        automatic_backup_dir(app)?,
+    ];
+    let mut paths = HashSet::new();
+    for directory in directories {
+        let latest = directory.join(latest_name);
+        if latest.is_file() {
+            paths.insert(latest);
+        }
+        let snapshots = directory.join("Snapshots");
+        if !snapshots.is_dir() {
+            continue;
+        }
+        for entry in fs::read_dir(&snapshots)
+            .map_err(|error| format!("Backup-Snapshots konnten nicht gelesen werden: {error}"))?
+        {
+            let path = entry
+                .map_err(|error| format!("Backup-Snapshot konnte nicht gelesen werden: {error}"))?
+                .path();
+            let is_matching_snapshot = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(snapshot_prefix) && name.ends_with(".json"));
+            if path.is_file() && is_matching_snapshot {
+                paths.insert(path);
+            }
+        }
+    }
+    let mut paths = paths.into_iter().collect::<Vec<_>>();
+    paths.sort();
+    Ok(paths)
 }
 
 fn append_deleted_element_marker(value: &str) -> String {
@@ -1520,6 +1587,251 @@ fn list_deleted_groups(app: AppHandle) -> Result<Vec<Group>, String> {
         .map_err(|err| err.to_string())
 }
 
+#[derive(Default)]
+struct TrashPurgeTargets {
+    contact_ids: HashSet<i64>,
+    group_ids: HashSet<i64>,
+    vault_entry_uuids: HashSet<String>,
+    calendar_event_ids: HashSet<String>,
+    collected_addresses: bool,
+}
+
+fn deleted_integer_ids(
+    conn: &Connection,
+    table: &str,
+    older_than: Option<&str>,
+) -> Result<HashSet<i64>, String> {
+    let query = if older_than.is_some() {
+        format!(
+            "SELECT id FROM {table} WHERE deleted_at IS NOT NULL AND julianday(deleted_at) <= julianday(?1)"
+        )
+    } else {
+        format!("SELECT id FROM {table} WHERE deleted_at IS NOT NULL")
+    };
+    let mut statement = conn.prepare(&query).map_err(|error| error.to_string())?;
+    let mut rows = match older_than {
+        Some(cutoff) => statement.query([cutoff]),
+        None => statement.query([]),
+    }
+    .map_err(|error| error.to_string())?;
+    let mut ids = HashSet::new();
+    while let Some(row) = rows.next().map_err(|error| error.to_string())? {
+        ids.insert(row.get(0).map_err(|error| error.to_string())?);
+    }
+    Ok(ids)
+}
+
+fn deleted_vault_entry_uuids(
+    conn: &Connection,
+    older_than: Option<&str>,
+) -> Result<HashSet<String>, String> {
+    let query = if older_than.is_some() {
+        "SELECT entry_uuid FROM vault_entries WHERE deleted_at IS NOT NULL AND julianday(deleted_at) <= julianday(?1)"
+    } else {
+        "SELECT entry_uuid FROM vault_entries WHERE deleted_at IS NOT NULL"
+    };
+    let mut statement = conn.prepare(query).map_err(|error| error.to_string())?;
+    let mut rows = match older_than {
+        Some(cutoff) => statement.query([cutoff]),
+        None => statement.query([]),
+    }
+    .map_err(|error| error.to_string())?;
+    let mut ids = HashSet::new();
+    while let Some(row) = rows.next().map_err(|error| error.to_string())? {
+        ids.insert(row.get(0).map_err(|error| error.to_string())?);
+    }
+    Ok(ids)
+}
+
+fn purge_targets(
+    conn: &Connection,
+    older_than: Option<&str>,
+    calendar_event_ids: Vec<String>,
+    collected_addresses: bool,
+) -> Result<TrashPurgeTargets, String> {
+    Ok(TrashPurgeTargets {
+        contact_ids: deleted_integer_ids(conn, "contacts", older_than)?,
+        group_ids: deleted_integer_ids(conn, "groups", older_than)?,
+        vault_entry_uuids: deleted_vault_entry_uuids(conn, older_than)?,
+        calendar_event_ids: calendar_event_ids.into_iter().collect(),
+        collected_addresses,
+    })
+}
+
+fn remove_calendar_events_from_backup(
+    storage: &mut HashMap<String, String>,
+    key: &str,
+    event_ids: &HashSet<String>,
+) -> Result<usize, String> {
+    let Some(raw_events) = storage.get(key) else {
+        return Ok(0);
+    };
+    let mut events = serde_json::from_str::<Vec<CalendarEvent>>(raw_events).map_err(|error| {
+        format!("Kalenderdaten im automatischen Backup sind beschädigt: {error}")
+    })?;
+    let previous_count = events.len();
+    events.retain(|event| !event_ids.contains(&event.id));
+    let removed = previous_count - events.len();
+    if removed > 0 {
+        storage.insert(
+            key.to_string(),
+            serde_json::to_string(&events).map_err(|error| error.to_string())?,
+        );
+    }
+    Ok(removed)
+}
+
+fn set_backup_setting(settings: &mut Vec<AppSetting>, key: &str, value: &str) -> bool {
+    if let Some(setting) = settings.iter_mut().find(|setting| setting.key == key) {
+        if setting.value == value {
+            return false;
+        }
+        setting.value = value.to_string();
+        true
+    } else {
+        settings.push(AppSetting {
+            key: key.to_string(),
+            value: value.to_string(),
+        });
+        true
+    }
+}
+
+fn purge_targets_from_backup_data(
+    backup: &mut BackupData,
+    targets: &TrashPurgeTargets,
+) -> Result<bool, String> {
+    let previous_contacts = backup.contacts.len();
+    backup.contacts.retain(|contact| {
+        !contact
+            .id
+            .is_some_and(|id| targets.contact_ids.contains(&id))
+    });
+    let previous_groups = backup.groups.len();
+    backup
+        .groups
+        .retain(|group| !group.id.is_some_and(|id| targets.group_ids.contains(&id)));
+
+    let removed_calendar_events = remove_calendar_events_from_backup(
+        &mut backup.browser_storage,
+        CALENDAR_ACTIVE_STORAGE_KEY,
+        &targets.calendar_event_ids,
+    )? + remove_calendar_events_from_backup(
+        &mut backup.browser_storage,
+        CALENDAR_DELETED_STORAGE_KEY,
+        &targets.calendar_event_ids,
+    )?;
+
+    let settings_changed = targets.collected_addresses
+        && (set_backup_setting(
+            &mut backup.settings,
+            COLLECTED_ADDRESSES_HIDDEN_SETTING,
+            "true",
+        ) | set_backup_setting(
+            &mut backup.settings,
+            COLLECTED_ADDRESSES_DELETED_AT_SETTING,
+            "",
+        ));
+    if settings_changed {
+        backup
+            .settings
+            .sort_by(|left, right| left.key.cmp(&right.key));
+    }
+
+    Ok(previous_contacts != backup.contacts.len()
+        || previous_groups != backup.groups.len()
+        || removed_calendar_events > 0
+        || settings_changed)
+}
+
+fn purge_targets_from_automatic_backups(
+    app: &AppHandle,
+    targets: &TrashPurgeTargets,
+) -> Result<(), String> {
+    for path in automatic_backup_file_paths(
+        app,
+        AUTOMATIC_BACKUP_LATEST,
+        AUTOMATIC_BACKUP_SNAPSHOT_PREFIX,
+    )? {
+        let content = fs::read_to_string(&path).map_err(|error| {
+            format!(
+                "Automatischer Backup konnte nicht gelesen werden ({}): {error}",
+                path.display()
+            )
+        })?;
+        let mut backup = serde_json::from_str::<BackupData>(&content).map_err(|error| {
+            format!(
+                "Automatischer Backup ist beschädigt ({}): {error}",
+                path.display()
+            )
+        })?;
+        if purge_targets_from_backup_data(&mut backup, targets)? {
+            let json = serde_json::to_string_pretty(&backup).map_err(|error| error.to_string())?;
+            replace_json_file(&path, &json)?;
+        }
+    }
+    Ok(())
+}
+
+fn purge_deleted_items_from_connection(
+    conn: &mut Connection,
+    older_than: Option<&str>,
+) -> Result<TrashPurgeResult, String> {
+    if let Some(cutoff) = older_than {
+        chrono::DateTime::parse_from_rfc3339(cutoff)
+            .map_err(|_| "Der ausgewählte Löschzeitraum ist ungültig.".to_string())?;
+    }
+
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    let delete_from = |table: &str| -> Result<usize, String> {
+        let query = if older_than.is_some() {
+            format!(
+                "DELETE FROM {table}
+                 WHERE deleted_at IS NOT NULL
+                   AND julianday(deleted_at) <= julianday(?1)"
+            )
+        } else {
+            format!("DELETE FROM {table} WHERE deleted_at IS NOT NULL")
+        };
+        match older_than {
+            Some(cutoff) => tx.execute(&query, [cutoff]),
+            None => tx.execute(&query, []),
+        }
+        .map_err(|error| error.to_string())
+    };
+
+    let result = TrashPurgeResult {
+        contacts: delete_from("contacts")?,
+        groups: delete_from("groups")?,
+        vault_entries: delete_from("vault_entries")?,
+    };
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(result)
+}
+
+#[tauri::command]
+fn purge_deleted_items(
+    app: AppHandle,
+    older_than: Option<String>,
+    calendar_event_ids: Vec<String>,
+    purge_collected_addresses: bool,
+) -> Result<TrashPurgeResult, String> {
+    if let Some(cutoff) = older_than.as_deref() {
+        chrono::DateTime::parse_from_rfc3339(cutoff)
+            .map_err(|_| "Der ausgewählte Löschzeitraum ist ungültig.".to_string())?;
+    }
+    let mut conn = open_db(&app)?;
+    let targets = purge_targets(
+        &conn,
+        older_than.as_deref(),
+        calendar_event_ids,
+        purge_collected_addresses,
+    )?;
+    purge_targets_from_automatic_backups(&app, &targets)?;
+    vault::purge_targets_from_automatic_backups(&app, &targets.vault_entry_uuids)?;
+    purge_deleted_items_from_connection(&mut conn, older_than.as_deref())
+}
+
 #[tauri::command]
 fn import_contacts(app: AppHandle, payload: ImportPayload) -> Result<ImportResult, String> {
     let mut conn = open_db(&app)?;
@@ -1803,6 +2115,7 @@ fn restore_automatic_backup(
     app: AppHandle,
     authorization: String,
 ) -> Result<AutomaticBackupRestoreResult, String> {
+    ensure_administrative_tools_available()?;
     let authorization = authorization.trim();
     if authorization.len() < 8 || !authorization.to_ascii_uppercase().starts_with("EDV-") {
         return Err(
@@ -1992,6 +2305,7 @@ fn remove_known_app_subdirectory(app_dir: &PathBuf, name: &str) -> Result<(), St
 
 #[tauri::command]
 fn reset_local_app_data(app: AppHandle) -> Result<(), String> {
+    ensure_administrative_tools_available()?;
     mail_accounts::remove_all_mail_credentials(&app).map_err(|error| {
         format!(
             "Die gespeicherten E-Mail-Kennwörter konnten nicht sicher entfernt werden. Es wurden noch keine App-Daten gelöscht. {error}"
@@ -2419,7 +2733,10 @@ fn extract_imported_email(values: &[&str]) -> String {
     for value in values {
         for candidate in value.split(|character: char| {
             character.is_whitespace()
-                || matches!(character, '<' | '>' | '"' | '\'' | '(' | ')' | ',' | ';' | ':')
+                || matches!(
+                    character,
+                    '<' | '>' | '"' | '\'' | '(' | ')' | ',' | ';' | ':'
+                )
         }) {
             let cleaned = candidate
                 .trim_matches(|character| matches!(character, '.' | ',' | ';' | ':' | '!' | '?'))
@@ -2494,19 +2811,12 @@ pub(crate) fn clean_imported_display_name(value: &str, email: &str) -> String {
 }
 
 pub(crate) fn clean_imported_contact_name(contact: &mut ContactInput) {
-    let fallback_name = format!(
-        "{} {}",
-        contact.first_name.trim(),
-        contact.last_name.trim()
-    )
-    .trim()
-    .to_string();
+    let fallback_name = format!("{} {}", contact.first_name.trim(), contact.last_name.trim())
+        .trim()
+        .to_string();
     let original_email = contact.email.trim().to_string();
-    let detected_email = extract_imported_email(&[
-        &original_email,
-        &contact.display_name,
-        &fallback_name,
-    ]);
+    let detected_email =
+        extract_imported_email(&[&original_email, &contact.display_name, &fallback_name]);
     let source_name = if !contact.display_name.trim().is_empty() {
         contact.display_name.clone()
     } else if !fallback_name.is_empty() {
@@ -2888,8 +3198,8 @@ async fn preview_outlook_classic_contacts(
     tauri::async_runtime::spawn_blocking(move || {
         preview_outlook_classic_contacts_blocking(app, clean_imported_names)
     })
-        .await
-        .map_err(|error| format!("Outlook-Kontaktprüfung wurde unerwartet beendet: {error}"))?
+    .await
+    .map_err(|error| format!("Outlook-Kontaktprüfung wurde unerwartet beendet: {error}"))?
 }
 
 fn import_selected_outlook_classic_contacts_blocking(
@@ -3113,9 +3423,7 @@ fn load_local_outlook_contacts(conn: &Connection) -> Result<Vec<LocalOutlookCont
 
 fn load_local_outlook_group_names(conn: &Connection) -> Result<Vec<String>, String> {
     let mut statement = conn
-        .prepare(
-            "SELECT name FROM groups WHERE deleted_at IS NULL ORDER BY name COLLATE NOCASE",
-        )
+        .prepare("SELECT name FROM groups WHERE deleted_at IS NULL ORDER BY name COLLATE NOCASE")
         .map_err(|error| error.to_string())?;
     let database_names = statement
         .query_map([], |row| row.get(0))
@@ -3123,9 +3431,11 @@ fn load_local_outlook_group_names(conn: &Connection) -> Result<Vec<String>, Stri
         .collect::<Result<Vec<String>, _>>()
         .map_err(|error| error.to_string())?;
     let mut names = vec!["Gesammelte Adressen".to_string()];
-    names.extend(database_names.into_iter().filter(|name| {
-        !name.trim().eq_ignore_ascii_case("Gesammelte Adressen")
-    }));
+    names.extend(
+        database_names
+            .into_iter()
+            .filter(|name| !name.trim().eq_ignore_ascii_case("Gesammelte Adressen")),
+    );
     Ok(names)
 }
 
@@ -4740,6 +5050,7 @@ pub fn run() {
             save_group,
             delete_group,
             restore_group,
+            purge_deleted_items,
             import_contacts,
             undo_last_import,
             undo_last_outlook_contact_import,
@@ -4924,7 +5235,10 @@ mod tests {
     #[test]
     fn cleans_imported_names_and_recognizes_email_fields() {
         assert_eq!(
-            clean_imported_display_name("\"max.mustermann@example.org\"", "max.mustermann@example.org"),
+            clean_imported_display_name(
+                "\"max.mustermann@example.org\"",
+                "max.mustermann@example.org"
+            ),
             "Max Mustermann"
         );
         assert_eq!(
@@ -5045,6 +5359,76 @@ mod tests {
             )
             .expect("deleted timestamp count");
         assert_eq!(deleted_with_timestamp, 2);
+    }
+
+    #[test]
+    fn trash_purge_removes_only_items_older_than_the_cutoff() {
+        let mut conn = Connection::open_in_memory().expect("in-memory database");
+        conn.execute_batch(
+            "
+            PRAGMA foreign_keys = ON;
+            CREATE TABLE contacts (id INTEGER PRIMARY KEY, deleted_at TEXT);
+            CREATE TABLE groups (id INTEGER PRIMARY KEY, deleted_at TEXT);
+            CREATE TABLE vault_entries (id INTEGER PRIMARY KEY, deleted_at TEXT);
+            CREATE TABLE contact_groups (
+                contact_id INTEGER REFERENCES contacts(id) ON DELETE CASCADE,
+                group_id INTEGER REFERENCES groups(id) ON DELETE CASCADE
+            );
+            INSERT INTO contacts VALUES
+                (1, NULL),
+                (2, '2025-01-01T00:00:00Z'),
+                (3, '2026-08-30T00:00:00Z');
+            INSERT INTO groups VALUES (1, '2025-06-01T00:00:00Z');
+            INSERT INTO vault_entries VALUES (1, '2026-08-31T10:00:00Z');
+            INSERT INTO contact_groups VALUES (2, 1);
+            ",
+        )
+        .expect("trash test data");
+
+        let result = purge_deleted_items_from_connection(&mut conn, Some("2026-01-01T00:00:00Z"))
+            .expect("purge old trash");
+
+        assert_eq!(
+            result,
+            TrashPurgeResult {
+                contacts: 1,
+                groups: 1,
+                vault_entries: 0,
+            }
+        );
+        let remaining_contacts: i64 = conn
+            .query_row("SELECT COUNT(*) FROM contacts", [], |row| row.get(0))
+            .expect("remaining contacts");
+        let remaining_links: i64 = conn
+            .query_row("SELECT COUNT(*) FROM contact_groups", [], |row| row.get(0))
+            .expect("remaining links");
+        assert_eq!(remaining_contacts, 2);
+        assert_eq!(remaining_links, 0);
+    }
+
+    #[test]
+    fn trash_purge_without_cutoff_empties_every_trash_table() {
+        let mut conn = Connection::open_in_memory().expect("in-memory database");
+        conn.execute_batch(
+            "
+            CREATE TABLE contacts (id INTEGER PRIMARY KEY, deleted_at TEXT);
+            CREATE TABLE groups (id INTEGER PRIMARY KEY, deleted_at TEXT);
+            CREATE TABLE vault_entries (id INTEGER PRIMARY KEY, deleted_at TEXT);
+            INSERT INTO contacts VALUES (1, NULL), (2, '2026-01-01T00:00:00Z');
+            INSERT INTO groups VALUES (1, '2026-01-01T00:00:00Z');
+            INSERT INTO vault_entries VALUES (1, '2026-01-01T00:00:00Z');
+            ",
+        )
+        .expect("trash test data");
+
+        let result =
+            purge_deleted_items_from_connection(&mut conn, None).expect("purge complete trash");
+
+        assert_eq!(result.contacts + result.groups + result.vault_entries, 3);
+        let active_contact: i64 = conn
+            .query_row("SELECT COUNT(*) FROM contacts", [], |row| row.get(0))
+            .expect("active contact");
+        assert_eq!(active_contact, 1);
     }
 
     #[test]
@@ -5389,6 +5773,126 @@ mod tests {
         assert_eq!(
             deleted_events[0].description,
             "Vorherige Beschreibung\nGelöschtes Element"
+        );
+    }
+
+    #[test]
+    fn permanent_deletion_removes_targets_even_from_pre_deletion_snapshots() {
+        let contact = |id: i64, name: &str| Contact {
+            id: Some(id),
+            first_name: name.to_string(),
+            last_name: String::new(),
+            display_name: name.to_string(),
+            email: format!("{}@example.org", name.to_lowercase()),
+            phone: String::new(),
+            mobile_phone: String::new(),
+            street: String::new(),
+            postal_code: String::new(),
+            city: String::new(),
+            country: String::new(),
+            short_info: String::new(),
+            notes: String::new(),
+            groups: Vec::new(),
+            created_at: "2026-01-01T10:00:00Z".to_string(),
+            updated_at: "2026-01-01T10:00:00Z".to_string(),
+            deleted_at: None,
+        };
+        let event = |id: &str| CalendarEvent {
+            id: id.to_string(),
+            updated_at: "2026-01-01T10:00:00Z".to_string(),
+            title: id.to_string(),
+            starts_at: "2026-01-01T10:00:00Z".to_string(),
+            ends_at: "2026-01-01T11:00:00Z".to_string(),
+            location: String::new(),
+            description: String::new(),
+            color: "blue".to_string(),
+            category: String::new(),
+            source: "test".to_string(),
+            recurrence: None,
+            excluded_dates: Vec::new(),
+            deleted_at: None,
+            recurrence_master_id: None,
+            recurrence_id: None,
+        };
+        let mut browser_storage = HashMap::new();
+        browser_storage.insert(
+            CALENDAR_ACTIVE_STORAGE_KEY.to_string(),
+            serde_json::to_string(&vec![event("remove-event"), event("keep-event")]).unwrap(),
+        );
+        let mut backup = BackupData {
+            version: "2.0.0".to_string(),
+            exported_at: "2026-01-01T10:00:00Z".to_string(),
+            contacts: vec![contact(7, "Remove"), contact(8, "Keep")],
+            groups: vec![
+                Group {
+                    id: Some(9),
+                    name: "Remove".to_string(),
+                    description: String::new(),
+                    created_at: "2026-01-01T10:00:00Z".to_string(),
+                    updated_at: "2026-01-01T10:00:00Z".to_string(),
+                    deleted_at: None,
+                },
+                Group {
+                    id: Some(10),
+                    name: "Keep".to_string(),
+                    description: String::new(),
+                    created_at: "2026-01-01T10:00:00Z".to_string(),
+                    updated_at: "2026-01-01T10:00:00Z".to_string(),
+                    deleted_at: None,
+                },
+            ],
+            settings: vec![AppSetting {
+                key: COLLECTED_ADDRESSES_HIDDEN_SETTING.to_string(),
+                value: "false".to_string(),
+            }],
+            browser_storage,
+        };
+        let targets = TrashPurgeTargets {
+            contact_ids: HashSet::from([7]),
+            group_ids: HashSet::from([9]),
+            calendar_event_ids: HashSet::from(["remove-event".to_string()]),
+            collected_addresses: true,
+            ..TrashPurgeTargets::default()
+        };
+
+        assert!(purge_targets_from_backup_data(&mut backup, &targets).unwrap());
+        assert_eq!(
+            backup
+                .contacts
+                .iter()
+                .map(|item| item.id)
+                .collect::<Vec<_>>(),
+            vec![Some(8)]
+        );
+        assert_eq!(
+            backup.groups.iter().map(|item| item.id).collect::<Vec<_>>(),
+            vec![Some(10)]
+        );
+        let events = parse_calendar_events(&backup.browser_storage, CALENDAR_ACTIVE_STORAGE_KEY);
+        assert_eq!(
+            events
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["keep-event"]
+        );
+        assert_eq!(
+            backup
+                .settings
+                .iter()
+                .find(|item| item.key == COLLECTED_ADDRESSES_HIDDEN_SETTING)
+                .unwrap()
+                .value,
+            "true"
+        );
+        assert_eq!(
+            backup
+                .settings
+                .iter()
+                .find(|item| item.key == COLLECTED_ADDRESSES_DELETED_AT_SETTING)
+                .unwrap()
+                .value,
+            ""
         );
     }
 

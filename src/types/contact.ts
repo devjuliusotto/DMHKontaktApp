@@ -50,6 +50,12 @@ export interface ImportResult {
   batchId: string;
 }
 
+export interface TrashPurgeResult {
+  contacts: number;
+  groups: number;
+  vaultEntries: number;
+}
+
 export interface OutlookOneTimeContactImportResult {
   found: number;
   imported: number;

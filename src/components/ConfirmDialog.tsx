@@ -6,11 +6,12 @@ interface ConfirmDialogProps {
   message: string;
   confirmLabel: string;
   busy?: boolean;
+  busyLabel?: string;
   onConfirm: () => void;
   onCancel: () => void;
 }
 
-export function ConfirmDialog({ open, title, message, confirmLabel, busy = false, onConfirm, onCancel }: ConfirmDialogProps) {
+export function ConfirmDialog({ open, title, message, confirmLabel, busy = false, busyLabel = "Wird verschoben …", onConfirm, onCancel }: ConfirmDialogProps) {
   if (!open) return null;
 
   return (
@@ -24,7 +25,7 @@ export function ConfirmDialog({ open, title, message, confirmLabel, busy = false
         <div className="button-row confirm-dialog-actions">
           <button type="button" onClick={onCancel} disabled={busy}>Abbrechen</button>
           <button className="danger-button" type="button" onClick={onConfirm} disabled={busy}>
-            {busy ? "Wird verschoben …" : confirmLabel}
+            {busy ? busyLabel : confirmLabel}
           </button>
         </div>
       </section>

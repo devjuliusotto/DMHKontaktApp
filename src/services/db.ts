@@ -11,6 +11,7 @@ import type {
   OutlookContactImportRequest,
   OutlookContactImportResult,
   OutlookContactExportResult,
+  TrashPurgeResult,
   ThunderbirdContactImportResult,
   ThunderbirdDataPreview
 } from "../types/contact";
@@ -110,6 +111,18 @@ export function deleteGroup(id: number): Promise<void> {
 
 export function restoreGroup(id: number): Promise<void> {
   return invoke("restore_group", { id });
+}
+
+export function purgeDeletedItems(
+  olderThan: string | undefined,
+  calendarEventIds: string[],
+  purgeCollectedAddresses: boolean
+): Promise<TrashPurgeResult> {
+  return invoke("purge_deleted_items", {
+    olderThan: olderThan || null,
+    calendarEventIds,
+    purgeCollectedAddresses
+  });
 }
 
 export function importContacts(sourceFile: string, contacts: ContactInput[]): Promise<ImportResult> {

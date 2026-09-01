@@ -1,5 +1,8 @@
 import type { Contact, ContactInput } from "../types/contact";
 
+export const collectedAddressesHiddenSettingKey = "collected_addresses_hidden";
+export const collectedAddressesDeletedAtSettingKey = "collected_addresses_deleted_at";
+
 export const emptyContact: ContactInput = {
   firstName: "",
   lastName: "",

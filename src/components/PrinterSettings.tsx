@@ -1,10 +1,11 @@
-import { CheckCircle2, LoaderCircle, Network, Printer, RefreshCw, Router, Share2, ShieldCheck } from "lucide-react";
+import { Building2, CheckCircle2, LoaderCircle, MapPin, Network, Printer, RefreshCw, Router, Share2, ShieldCheck, SlidersHorizontal } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { addNetworkPrinter, installDmhKopierraumPrinter, listPrinterDrivers, listPrinters } from "../services/db";
 import type { PrinterDriver, PrinterInfo } from "../types/printer";
 import { StatusMessage } from "./StatusMessage";
 
 type PrinterMode = "shared" | "ip";
+type PrinterArea = "aidlingen" | "villingen" | "advanced";
 
 function printerStatusLabel(status: string) {
   const normalized = status.trim().toLocaleLowerCase("de-DE");
@@ -18,6 +19,7 @@ export function PrinterSettings() {
   const [printers, setPrinters] = useState<PrinterInfo[]>([]);
   const [drivers, setDrivers] = useState<PrinterDriver[]>([]);
   const [mode, setMode] = useState<PrinterMode>("shared");
+  const [area, setArea] = useState<PrinterArea>("aidlingen");
   const [connectionName, setConnectionName] = useState("");
   const [ipAddress, setIpAddress] = useState("");
   const [printerName, setPrinterName] = useState("");
@@ -114,30 +116,52 @@ export function PrinterSettings() {
     <div className="settings-detail-view printer-settings">
       <StatusMessage message={message} type={messageType} />
 
-      <section className="form-panel printer-preset-panel">
-        <div className="printer-preset-copy">
-          <span className="printer-preset-icon"><Printer size={28} aria-hidden="true" /></span>
-          <div>
-            <span className="printer-preset-label">DMH-Drucker</span>
-            <h3>Kopierraum SH2 UG</h3>
-            <p>172.16.40.53 · Treiber enthalten</p>
-          </div>
-        </div>
-        <div className="printer-preset-action">
-          <button
-            className="primary large"
-            type="button"
-            onClick={() => void installKopierraum()}
-            disabled={loading || adding || installingKopierraum || kopierraumInstalled}
-          >
-            {installingKopierraum ? <LoaderCircle className="spin" size={21} /> : <ShieldCheck size={21} />}
-            {installingKopierraum ? "Wird hinzugefügt …" : kopierraumInstalled ? "Bereits installiert" : "Jetzt hinzufügen"}
-          </button>
-          {!kopierraumInstalled && <small>Windows fragt einmal nach Administratorrechten.</small>}
-        </div>
-      </section>
+      <nav className="printer-area-tabs" role="tablist" aria-label="Druckerstandort">
+        <button className={area === "aidlingen" ? "active" : ""} type="button" role="tab" aria-selected={area === "aidlingen"} onClick={() => setArea("aidlingen")}>
+          <MapPin size={22} /> Aidlingen
+        </button>
+        <button className={area === "villingen" ? "active" : ""} type="button" role="tab" aria-selected={area === "villingen"} onClick={() => setArea("villingen")}>
+          <Building2 size={22} /> Villingen
+        </button>
+        <button className={area === "advanced" ? "active" : ""} type="button" role="tab" aria-selected={area === "advanced"} onClick={() => setArea("advanced")}>
+          <SlidersHorizontal size={22} /> Erweiterte Funktionen
+        </button>
+      </nav>
 
-      <section className="form-panel printer-installed-panel">
+      {area === "aidlingen" && (
+        <section className="form-panel printer-preset-panel" role="tabpanel">
+          <div className="printer-preset-copy">
+            <span className="printer-preset-icon"><Printer size={28} aria-hidden="true" /></span>
+            <div>
+              <span className="printer-preset-label">Aidlingen</span>
+              <h3>Kopierraum SH2 UG</h3>
+              <p>172.16.40.53 · Treiber enthalten</p>
+            </div>
+          </div>
+          <div className="printer-preset-action">
+            <button
+              className="primary large"
+              type="button"
+              onClick={() => void installKopierraum()}
+              disabled={loading || adding || installingKopierraum || kopierraumInstalled}
+            >
+              {installingKopierraum ? <LoaderCircle className="spin" size={21} /> : <ShieldCheck size={21} />}
+              {installingKopierraum ? "Wird hinzugefügt …" : kopierraumInstalled ? "Bereits installiert" : "Jetzt hinzufügen"}
+            </button>
+            {!kopierraumInstalled && <small>Windows fragt einmal nach Administratorrechten.</small>}
+          </div>
+        </section>
+      )}
+
+      {area === "villingen" && (
+        <section className="form-panel printer-location-empty" role="tabpanel">
+          <Building2 size={28} aria-hidden="true" />
+          <h3>Villingen</h3>
+          <p>Keine Drucker hinterlegt.</p>
+        </section>
+      )}
+
+      {area === "advanced" && <div className="printer-advanced-content" role="tabpanel"><section className="form-panel printer-installed-panel">
         <div className="printer-panel-heading">
           <div className="settings-task-heading">
             <Printer size={25} aria-hidden="true" />
@@ -212,7 +236,7 @@ export function PrinterSettings() {
             {adding ? "Drucker wird hinzugefügt …" : "Drucker hinzufügen"}
           </button>
         </form>
-      </section>
+      </section></div>}
     </div>
   );
 }

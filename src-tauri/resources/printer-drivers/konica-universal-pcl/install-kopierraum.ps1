@@ -11,7 +11,6 @@ $driverName = "KONICA MINOLTA Universal PCL"
 $printerIp = "172.16.40.53"
 $portName = "IP_$printerIp"
 $printerName = "Kopierraum SH2 UG"
-$infPath = Join-Path $DriverDirectory "KOAWNJ__.inf"
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 function Write-InstallResult([string]$Value) {
@@ -19,6 +18,7 @@ function Write-InstallResult([string]$Value) {
 }
 
 try {
+    $infPath = Join-Path $DriverDirectory "KOAWNJ__.inf"
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {

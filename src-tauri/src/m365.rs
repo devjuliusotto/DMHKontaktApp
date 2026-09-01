@@ -22,6 +22,7 @@ pub struct Microsoft365Runtime {
     pending_device_flow: Mutex<Option<PendingDeviceFlow>>,
     access_token: Mutex<Option<CachedAccessToken>>,
     refresh_gate: tokio::sync::Mutex<()>,
+    sync_gate: tokio::sync::Mutex<()>,
 }
 
 struct CachedAccessToken {
@@ -1048,6 +1049,143 @@ fn local_calendar_events(backup: &crate::BackupData) -> Vec<crate::CalendarEvent
         .unwrap_or_default()
 }
 
+fn decode_html_entities(value: &str) -> String {
+    let chars = value.chars().collect::<Vec<_>>();
+    let mut decoded = String::with_capacity(value.len());
+    let mut index = 0usize;
+    while index < chars.len() {
+        if chars[index] != '&' {
+            decoded.push(chars[index]);
+            index += 1;
+            continue;
+        }
+        let Some(end) = chars[index + 1..]
+            .iter()
+            .position(|character| *character == ';')
+            .map(|offset| index + 1 + offset)
+        else {
+            decoded.push('&');
+            index += 1;
+            continue;
+        };
+        let entity = chars[index + 1..end].iter().collect::<String>();
+        let replacement = match entity.as_str() {
+            "amp" => Some('&'),
+            "lt" => Some('<'),
+            "gt" => Some('>'),
+            "quot" => Some('"'),
+            "apos" | "#39" => Some('\''),
+            "nbsp" => Some(' '),
+            _ if entity.starts_with("#x") || entity.starts_with("#X") => {
+                u32::from_str_radix(&entity[2..], 16)
+                    .ok()
+                    .and_then(char::from_u32)
+            }
+            _ if entity.starts_with('#') => {
+                entity[1..].parse::<u32>().ok().and_then(char::from_u32)
+            }
+            _ => None,
+        };
+        if let Some(character) = replacement {
+            decoded.push(character);
+            index = end + 1;
+        } else {
+            decoded.push('&');
+            index += 1;
+        }
+    }
+    decoded
+}
+
+fn html_to_plain_text(value: &str) -> String {
+    let chars = value.chars().collect::<Vec<_>>();
+    let mut text = String::with_capacity(value.len());
+    let mut index = 0usize;
+    let mut suppressed_tag: Option<String> = None;
+    while index < chars.len() {
+        if chars[index] != '<' {
+            if suppressed_tag.is_none() {
+                text.push(chars[index]);
+            }
+            index += 1;
+            continue;
+        }
+        let Some(end) = chars[index + 1..]
+            .iter()
+            .position(|character| *character == '>')
+            .map(|offset| index + 1 + offset)
+        else {
+            if suppressed_tag.is_none() {
+                text.push('<');
+            }
+            index += 1;
+            continue;
+        };
+        let raw_tag = chars[index + 1..end].iter().collect::<String>();
+        let trimmed = raw_tag.trim();
+        let closing = trimmed.starts_with('/');
+        let tag_name = trimmed
+            .trim_start_matches('/')
+            .split_ascii_whitespace()
+            .next()
+            .unwrap_or("")
+            .trim_end_matches('/')
+            .to_ascii_lowercase();
+        if matches!(tag_name.as_str(), "head" | "style" | "script") {
+            if closing {
+                if suppressed_tag.as_deref() == Some(tag_name.as_str()) {
+                    suppressed_tag = None;
+                }
+            } else if suppressed_tag.is_none() {
+                suppressed_tag = Some(tag_name.clone());
+            }
+        } else if suppressed_tag.is_none()
+            && matches!(
+                tag_name.as_str(),
+                "br" | "p"
+                    | "div"
+                    | "li"
+                    | "tr"
+                    | "table"
+                    | "ul"
+                    | "ol"
+                    | "h1"
+                    | "h2"
+                    | "h3"
+                    | "h4"
+                    | "h5"
+                    | "h6"
+            )
+        {
+            text.push('\n');
+        }
+        index = end + 1;
+    }
+
+    decode_html_entities(&text)
+        .lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn remote_event_description(value: &Value) -> String {
+    let Some(body) = value.get("body") else {
+        return String::new();
+    };
+    let content = body.get("content").and_then(Value::as_str).unwrap_or("");
+    if body
+        .get("contentType")
+        .and_then(Value::as_str)
+        .is_some_and(|content_type| content_type.eq_ignore_ascii_case("html"))
+    {
+        html_to_plain_text(content)
+    } else {
+        content.to_string()
+    }
+}
+
 fn deleted_calendar_events(backup: &crate::BackupData) -> Vec<crate::CalendarEvent> {
     backup
         .browser_storage
@@ -1061,6 +1199,67 @@ fn linked_calendar_remote_id<'a>(
     source_id: &str,
 ) -> Option<&'a str> {
     event.id.strip_prefix(&format!("m365:{source_id}:"))
+}
+
+fn normalized_duplicate_value(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn calendar_event_duplicate_key(event: &crate::CalendarEvent) -> Option<String> {
+    if event.title.trim().is_empty()
+        || event.starts_at.trim().is_empty()
+        || event.ends_at.trim().is_empty()
+    {
+        return None;
+    }
+    Some(format!(
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        normalized_duplicate_value(&event.title),
+        event.starts_at.trim(),
+        event.ends_at.trim(),
+        normalized_duplicate_value(&event.location),
+        normalized_duplicate_value(&html_to_plain_text(&event.description)),
+        normalized_duplicate_value(&event.category),
+        serde_json::to_string(&event.recurrence).unwrap_or_default(),
+        serde_json::to_string(&event.excluded_dates).unwrap_or_default(),
+        event.recurrence_id.as_deref().unwrap_or("")
+    ))
+}
+
+fn duplicate_calendar_event_ids(
+    events: &[crate::CalendarEvent],
+    sources: &[Microsoft365SyncSource],
+    export_target_id: Option<&str>,
+) -> HashSet<String> {
+    let mut groups = HashMap::<String, Vec<&crate::CalendarEvent>>::new();
+    for event in events {
+        if let Some(key) = calendar_event_duplicate_key(event) {
+            groups.entry(key).or_default().push(event);
+        }
+    }
+
+    let mut duplicate_ids = HashSet::new();
+    for group in groups.values().filter(|group| group.len() > 1) {
+        let keep =
+            group
+                .iter()
+                .min_by_key(|event| match linked_calendar_source_id(event, sources) {
+                    Some(source_id) if Some(source_id) == export_target_id => 0u8,
+                    Some(_) => 1u8,
+                    None => 2u8,
+                });
+        for event in group {
+            if keep.is_some_and(|kept| kept.id == event.id) {
+                continue;
+            }
+            duplicate_ids.insert(event.id.clone());
+        }
+    }
+    duplicate_ids
 }
 
 fn remote_event_key(value: &Value) -> String {
@@ -1177,12 +1376,7 @@ fn remote_event_to_local(
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
-        description: value
-            .get("body")
-            .and_then(|body| body.get("content"))
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
+        description: remote_event_description(value),
         color: if imported_color.is_empty() {
             existing
                 .map(|event| event.color.clone())
@@ -1297,7 +1491,7 @@ fn graph_event_payload(event: &crate::CalendarEvent) -> Value {
         "start": {"dateTime": event.starts_at, "timeZone": "W. Europe Standard Time"},
         "end": {"dateTime": event.ends_at, "timeZone": "W. Europe Standard Time"},
         "location": {"displayName": event.location},
-        "body": {"contentType": "text", "content": event.description},
+        "body": {"contentType": "text", "content": html_to_plain_text(&event.description)},
         "categories": categories
     })
 }
@@ -1312,6 +1506,60 @@ fn source_direction(request: &Microsoft365SyncPreviewRequest, source_id: &str) -
         .get(source_id)
         .cloned()
         .unwrap_or_else(|| request.direction.clone())
+}
+
+fn calendar_source_is_enabled(
+    request: &Microsoft365SyncPreviewRequest,
+    selected: &HashSet<&str>,
+    source: &Microsoft365SyncSource,
+) -> bool {
+    selected.contains(source.id.as_str())
+        && (!source.shared
+            || if source.mailbox.is_some() {
+                request.shared_mailboxes
+            } else {
+                request.shared_calendars
+            })
+}
+
+fn calendar_export_target_id<'a>(
+    request: &Microsoft365SyncPreviewRequest,
+    sources: &'a [Microsoft365SyncSource],
+    selected: &HashSet<&str>,
+) -> Option<&'a str> {
+    request.selected_calendar_source_ids.iter().find_map(|id| {
+        sources
+            .iter()
+            .find(|source| {
+                source.id.as_str() == id.as_str()
+                    && source.editable
+                    && calendar_source_is_enabled(request, selected, source)
+                    && source_direction(request, &source.id) != "import"
+            })
+            .map(|source| source.id.as_str())
+    })
+}
+
+fn linked_calendar_source_id<'a>(
+    event: &crate::CalendarEvent,
+    sources: &'a [Microsoft365SyncSource],
+) -> Option<&'a str> {
+    sources
+        .iter()
+        .find(|source| linked_calendar_remote_id(event, &source.id).is_some())
+        .map(|source| source.id.as_str())
+}
+
+fn local_event_belongs_to_calendar_source(
+    event: &crate::CalendarEvent,
+    source: &Microsoft365SyncSource,
+    sources: &[Microsoft365SyncSource],
+    export_target_id: Option<&str>,
+) -> bool {
+    match linked_calendar_source_id(event, sources) {
+        Some(linked_source_id) => linked_source_id == source.id,
+        None => export_target_id == Some(source.id.as_str()),
+    }
 }
 
 fn source_group_id(backup: &crate::BackupData, source: &Microsoft365SyncSource) -> Option<i64> {
@@ -1549,6 +1797,10 @@ async fn build_m365_sync_plan(
     let mut operations = Vec::new();
     let mut remote_contacts = 0usize;
     let mut remote_events = 0usize;
+    let calendar_export_target_id =
+        calendar_export_target_id(request, &sources.calendars, &selected_calendars);
+    let duplicate_calendar_event_ids =
+        duplicate_calendar_event_ids(&local_events, &sources.calendars, calendar_export_target_id);
     let master_category_colors = if request.calendars {
         m365_master_category_colors(access_token).await
     } else {
@@ -1854,15 +2106,59 @@ async fn build_m365_sync_plan(
     }
 
     if request.calendars {
-        for source in sources.calendars.iter().filter(|source| {
-            selected_calendars.contains(source.id.as_str())
-                && (!source.shared
-                    || if source.mailbox.is_some() {
-                        request.shared_mailboxes
-                    } else {
-                        request.shared_calendars
-                    })
-        }) {
+        let local_cleanup_source = calendar_export_target_id
+            .and_then(|target_id| {
+                sources
+                    .calendars
+                    .iter()
+                    .find(|source| source.id == target_id)
+            })
+            .or_else(|| {
+                sources
+                    .calendars
+                    .iter()
+                    .find(|source| calendar_source_is_enabled(request, &selected_calendars, source))
+            });
+        if let Some(cleanup_source) = local_cleanup_source {
+            for local in local_events.iter().filter(|event| {
+                duplicate_calendar_event_ids.contains(&event.id)
+                    && linked_calendar_source_id(event, &sources.calendars).is_none()
+            }) {
+                push_operation(
+                    &mut operations,
+                    PlannedOperation {
+                        change: Microsoft365SyncChange {
+                            id: operation_id(
+                                "calendar",
+                                &cleanup_source.id,
+                                &local.id,
+                                "duplicate",
+                            ),
+                            kind: "Kalender".to_string(),
+                            action: "deleteLocal".to_string(),
+                            source_id: cleanup_source.id.clone(),
+                            source_name: cleanup_source.name.clone(),
+                            title: local.title.clone(),
+                            detail: "Überzählige lokale Terminkopie entfernen; eine Kopie bleibt erhalten."
+                                .to_string(),
+                            local_summary: Some(event_summary(local)),
+                            remote_summary: None,
+                        },
+                        source: cleanup_source.clone(),
+                        payload: PlannedPayload::Calendar {
+                            local: Some(local.clone()),
+                            remote: None,
+                        },
+                    },
+                );
+            }
+        }
+
+        for source in sources
+            .calendars
+            .iter()
+            .filter(|source| calendar_source_is_enabled(request, &selected_calendars, source))
+        {
             let direction = source_direction(request, &source.id);
             let url = format!("{}/events?$select=id,subject,start,end,lastModifiedDateTime,location,body,categories,attendees,onlineMeeting,recurrence&$top=100", source.resource_path);
             let mut values = graph_collection(access_token, &url).await?;
@@ -1881,7 +2177,61 @@ async fn build_m365_sync_plan(
             let local_keys: HashSet<String> = local_events.iter().map(local_event_key).collect();
             let mut matched_remote_ids = HashSet::new();
 
+            for local in local_events.iter().filter(|event| {
+                duplicate_calendar_event_ids.contains(&event.id)
+                    && linked_calendar_remote_id(event, &source.id).is_some()
+            }) {
+                let remote = linked_calendar_remote_id(local, &source.id)
+                    .and_then(|remote_id| remote_by_id.get(remote_id).copied());
+                let (action, remote_summary) = if let Some(remote) = remote {
+                    if !source.editable {
+                        continue;
+                    }
+                    ("deleteRemote", Some(remote_event_summary(remote)))
+                } else {
+                    ("deleteLocal", None)
+                };
+                push_operation(
+                    &mut operations,
+                    PlannedOperation {
+                        change: Microsoft365SyncChange {
+                            id: operation_id(
+                                "calendar",
+                                &source.id,
+                                &local.id,
+                                "duplicate",
+                            ),
+                            kind: "Kalender".to_string(),
+                            action: action.to_string(),
+                            source_id: source.id.clone(),
+                            source_name: source.name.clone(),
+                            title: local.title.clone(),
+                            detail: "Überzählige Terminkopie in App und Exchange entfernen; eine Kopie bleibt erhalten."
+                                .to_string(),
+                            local_summary: Some(event_summary(local)),
+                            remote_summary,
+                        },
+                        source: source.clone(),
+                        payload: PlannedPayload::Calendar {
+                            local: Some(local.clone()),
+                            remote: remote.cloned(),
+                        },
+                    },
+                );
+            }
+
             for local in &local_events {
+                if duplicate_calendar_event_ids.contains(&local.id) {
+                    continue;
+                }
+                if !local_event_belongs_to_calendar_source(
+                    local,
+                    source,
+                    &sources.calendars,
+                    calendar_export_target_id,
+                ) {
+                    continue;
+                }
                 let linked_id = linked_calendar_remote_id(local, &source.id);
                 let remote = linked_id
                     .and_then(|remote_id| remote_by_id.get(remote_id).copied())
@@ -2158,6 +2508,11 @@ pub async fn apply_m365_sync(
     app: AppHandle,
     request: Microsoft365SyncApplyRequest,
 ) -> Result<Microsoft365SyncResult, String> {
+    // A manual sync can overlap the automatic change/poll sync. Building the
+    // second plan only after the first write is visible lets the remote-key
+    // matching relink the event instead of creating it a second time.
+    let runtime = app.state::<Microsoft365Runtime>();
+    let _sync_guard = runtime.sync_gate.lock().await;
     let started_at = Utc::now().to_rfc3339();
     let access_token = refreshed_access_token(&app).await?;
     if request.contacts && request.contact_groups {
@@ -2518,6 +2873,7 @@ pub async fn apply_m365_sync(
                 graph_write(&access_token, reqwest::Method::DELETE, &url, &Value::Null)
                     .await
                     .map(|_| {
+                        result.calendar_deletes.push(_local.id.clone());
                         result.deleted += 1;
                     })
             }
@@ -2938,12 +3294,194 @@ fn unprotect_secret(_protected_secret: &[u8]) -> Result<Vec<u8>, String> {
 mod tests {
     use super::*;
 
+    fn calendar_source(id: &str) -> Microsoft365SyncSource {
+        Microsoft365SyncSource {
+            id: id.to_string(),
+            name: id.to_string(),
+            kind: "calendar".to_string(),
+            editable: true,
+            shared: false,
+            resource_path: format!("/me/calendars/{id}/events"),
+            mailbox: None,
+        }
+    }
+
+    fn calendar_sync_request(selected_ids: &[&str]) -> Microsoft365SyncPreviewRequest {
+        Microsoft365SyncPreviewRequest {
+            direction: "bidirectional".to_string(),
+            base: "local".to_string(),
+            contacts: false,
+            contact_groups: false,
+            calendars: true,
+            shared_calendars: false,
+            shared_mailboxes: false,
+            shared_mailbox_addresses: Vec::new(),
+            selected_contact_source_ids: Vec::new(),
+            selected_calendar_source_ids: selected_ids.iter().map(|id| (*id).to_string()).collect(),
+            source_directions: HashMap::new(),
+            backup: crate::BackupData {
+                version: "test".to_string(),
+                exported_at: "2026-09-01T00:00:00Z".to_string(),
+                contacts: Vec::new(),
+                groups: Vec::new(),
+                settings: Vec::new(),
+                browser_storage: HashMap::new(),
+            },
+        }
+    }
+
+    fn calendar_event(id: &str) -> crate::CalendarEvent {
+        crate::CalendarEvent {
+            id: id.to_string(),
+            updated_at: "2026-09-01T00:00:00Z".to_string(),
+            title: "Besprechung".to_string(),
+            starts_at: "2026-09-01T09:00:00".to_string(),
+            ends_at: "2026-09-01T10:00:00".to_string(),
+            location: String::new(),
+            description: String::new(),
+            color: "blue".to_string(),
+            category: String::new(),
+            source: "AgendaKontakte".to_string(),
+            recurrence: None,
+            excluded_dates: Vec::new(),
+            deleted_at: None,
+            recurrence_master_id: None,
+            recurrence_id: None,
+        }
+    }
+
     #[test]
     fn form_values_are_encoded_without_losing_scopes() {
         assert_eq!(
             form_body(&[("scope", LOGIN_SCOPES)]),
             "scope=openid+profile+offline_access+User.Read+Contacts.ReadWrite+Contacts.ReadWrite.Shared+Calendars.ReadWrite+Calendars.ReadWrite.Shared+Calendars.Read.Shared+MailboxSettings.Read+Files.ReadWrite.All+Sites.Read.All"
         );
+    }
+
+    #[test]
+    fn exports_a_new_local_event_to_only_one_selected_calendar() {
+        let sources = vec![calendar_source("calendar-a"), calendar_source("calendar-b")];
+        let request = calendar_sync_request(&["calendar-a", "calendar-b"]);
+        let selected = request
+            .selected_calendar_source_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        let target = calendar_export_target_id(&request, &sources, &selected);
+        let event = calendar_event("local-event");
+
+        assert_eq!(target, Some("calendar-a"));
+        assert!(local_event_belongs_to_calendar_source(
+            &event,
+            &sources[0],
+            &sources,
+            target
+        ));
+        assert!(!local_event_belongs_to_calendar_source(
+            &event,
+            &sources[1],
+            &sources,
+            target
+        ));
+    }
+
+    #[test]
+    fn keeps_an_imported_event_bound_to_its_exchange_calendar() {
+        let sources = vec![calendar_source("calendar-a"), calendar_source("calendar-b")];
+        let request = calendar_sync_request(&["calendar-a", "calendar-b"]);
+        let selected = request
+            .selected_calendar_source_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        let target = calendar_export_target_id(&request, &sources, &selected);
+        let event = calendar_event("m365:calendar-b:remote-event");
+
+        assert!(!local_event_belongs_to_calendar_source(
+            &event,
+            &sources[0],
+            &sources,
+            target
+        ));
+        assert!(local_event_belongs_to_calendar_source(
+            &event,
+            &sources[1],
+            &sources,
+            target
+        ));
+    }
+
+    #[test]
+    fn skips_import_only_calendars_when_choosing_the_export_target() {
+        let sources = vec![calendar_source("calendar-a"), calendar_source("calendar-b")];
+        let mut request = calendar_sync_request(&["calendar-a", "calendar-b"]);
+        request
+            .source_directions
+            .insert("calendar-a".to_string(), "import".to_string());
+        let selected = request
+            .selected_calendar_source_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+
+        assert_eq!(
+            calendar_export_target_id(&request, &sources, &selected),
+            Some("calendar-b")
+        );
+    }
+
+    #[test]
+    fn converts_exchange_html_descriptions_to_readable_text() {
+        let source = calendar_source("calendar-a");
+        let event = remote_event_to_local(
+            &json!({
+                "id": "event-html",
+                "subject": "Besprechung",
+                "start": { "dateTime": "2026-09-01T09:00:00" },
+                "end": { "dateTime": "2026-09-01T10:00:00" },
+                "body": {
+                    "contentType": "html",
+                    "content": "<html><head><style>.x{color:red}</style></head><body><p>Hallo&nbsp;Team</p><div>Termin &amp; Planung<br>Raum 2</div></body></html>"
+                }
+            }),
+            &source,
+            None,
+        );
+
+        assert_eq!(event.description, "Hallo Team\nTermin & Planung\nRaum 2");
+
+        let mut local = calendar_event("local-html");
+        local.description = "<p>Lokaler&nbsp;Text</p>".to_string();
+        assert_eq!(
+            graph_event_payload(&local)["body"]["content"],
+            "Lokaler Text"
+        );
+    }
+
+    #[test]
+    fn marks_only_extra_calendar_copies_for_cleanup() {
+        let sources = vec![
+            calendar_source("calendar-a"),
+            calendar_source("calendar-b"),
+            calendar_source("calendar-c"),
+        ];
+        let kept = calendar_event("m365:calendar-a:event-1");
+        let duplicate_two = calendar_event("m365:calendar-b:event-2");
+        let duplicate_three = calendar_event("m365:calendar-c:event-3");
+        let mut single = calendar_event("m365:calendar-b:event-single");
+        single.title = "Einmaliger Termin".to_string();
+
+        let duplicate_ids = duplicate_calendar_event_ids(
+            &[kept, duplicate_two, duplicate_three, single],
+            &sources,
+            Some("calendar-a"),
+        );
+
+        assert_eq!(duplicate_ids.len(), 2);
+        assert!(duplicate_ids.contains("m365:calendar-b:event-2"));
+        assert!(duplicate_ids.contains("m365:calendar-c:event-3"));
+        assert!(!duplicate_ids.contains("m365:calendar-a:event-1"));
+        assert!(!duplicate_ids.contains("m365:calendar-b:event-single"));
     }
 
     #[test]

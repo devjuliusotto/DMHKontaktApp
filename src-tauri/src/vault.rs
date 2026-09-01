@@ -163,6 +163,7 @@ impl Drop for VaultEntrySecret {
 }
 
 const AUTOMATIC_PASSWORD_BACKUP_LATEST: &str = "DMH-Kennwörter-Auto-Backup.enc.json";
+const AUTOMATIC_PASSWORD_BACKUP_SNAPSHOT_PREFIX: &str = "auto-password-backup-";
 const AUTOMATIC_PASSWORD_BACKUP_VERSION: &str = "1.0.0";
 const DELETED_ELEMENT_MARKER: &str = "Gelöschtes Element";
 
@@ -433,6 +434,50 @@ fn read_automatic_password_backup(
         format!("Automatische Kennwort-Sicherung ist beschädigt oder unbekannt: {error}")
     })?;
     Ok(Some(backup))
+}
+
+fn purge_targets_from_password_backup(
+    backup: &mut AutomaticPasswordBackup,
+    entry_uuids: &std::collections::HashSet<String>,
+) -> bool {
+    let previous_count = backup.entries.len();
+    backup
+        .entries
+        .retain(|entry| !entry_uuids.contains(&entry.entry_uuid));
+    previous_count != backup.entries.len()
+}
+
+pub(crate) fn purge_targets_from_automatic_backups(
+    app: &AppHandle,
+    entry_uuids: &std::collections::HashSet<String>,
+) -> Result<(), String> {
+    if entry_uuids.is_empty() {
+        return Ok(());
+    }
+    for path in crate::automatic_backup_file_paths(
+        app,
+        AUTOMATIC_PASSWORD_BACKUP_LATEST,
+        AUTOMATIC_PASSWORD_BACKUP_SNAPSHOT_PREFIX,
+    )? {
+        let content = std::fs::read_to_string(&path).map_err(|error| {
+            format!(
+                "Automatische Kennwort-Sicherung konnte nicht gelesen werden ({}): {error}",
+                path.display()
+            )
+        })?;
+        let mut backup =
+            serde_json::from_str::<AutomaticPasswordBackup>(&content).map_err(|error| {
+                format!(
+                    "Automatische Kennwort-Sicherung ist beschädigt ({}): {error}",
+                    path.display()
+                )
+            })?;
+        if purge_targets_from_password_backup(&mut backup, entry_uuids) {
+            let json = serde_json::to_string_pretty(&backup).map_err(|error| error.to_string())?;
+            crate::replace_json_file(&path, &json)?;
+        }
+    }
+    Ok(())
 }
 
 fn decode_automatic_password_entry(
@@ -1215,12 +1260,14 @@ fn normalize_recovery_email(email: &str) -> Result<String, String> {
     let email = email.trim().to_ascii_lowercase();
     let valid = email.len() <= 254
         && email.matches('@').count() == 1
-        && email
-            .split_once('@')
-            .is_some_and(|(local, domain)| !local.is_empty() && domain.contains('.') && !domain.ends_with('.'))
-        && !email
-            .chars()
-            .any(|character| character.is_control() || character.is_whitespace() || matches!(character, ';' | ',' | '"'));
+        && email.split_once('@').is_some_and(|(local, domain)| {
+            !local.is_empty() && domain.contains('.') && !domain.ends_with('.')
+        })
+        && !email.chars().any(|character| {
+            character.is_control()
+                || character.is_whitespace()
+                || matches!(character, ';' | ',' | '"')
+        });
     if !valid {
         return Err("Bitte geben Sie eine gültige E-Mail-Adresse ein.".to_string());
     }
@@ -1235,10 +1282,9 @@ pub fn request_local_account_password_recovery(
     let email = normalize_recovery_email(&email)?;
     {
         let state = app.state::<AppState>();
-        let runtime = state
-            .vault
-            .lock()
-            .map_err(|_| "Die Kennwort-Wiederherstellung konnte nicht vorbereitet werden.".to_string())?;
+        let runtime = state.vault.lock().map_err(|_| {
+            "Die Kennwort-Wiederherstellung konnte nicht vorbereitet werden.".to_string()
+        })?;
         if runtime
             .local_account_recovery
             .as_ref()
@@ -1257,10 +1303,9 @@ pub fn request_local_account_password_recovery(
 
     let now = Instant::now();
     let state = app.state::<AppState>();
-    let mut runtime = state
-        .vault
-        .lock()
-        .map_err(|_| "Die Kennwort-Wiederherstellung konnte nicht gespeichert werden.".to_string())?;
+    let mut runtime = state.vault.lock().map_err(|_| {
+        "Die Kennwort-Wiederherstellung konnte nicht gespeichert werden.".to_string()
+    })?;
     runtime.local_account_recovery = Some(LocalAccountRecoveryChallenge {
         email: email.clone(),
         challenge: RecoveryChallenge {
@@ -1291,11 +1336,14 @@ pub fn complete_local_account_password_recovery(
         .vault
         .lock()
         .map_err(|_| "Die Kennwort-Wiederherstellung konnte nicht geprüft werden.".to_string())?;
-    let recovery = runtime.local_account_recovery.as_mut().ok_or_else(|| {
-        "Fordern Sie zuerst einen neuen Wiederherstellungscode an.".to_string()
-    })?;
+    let recovery = runtime
+        .local_account_recovery
+        .as_mut()
+        .ok_or_else(|| "Fordern Sie zuerst einen neuen Wiederherstellungscode an.".to_string())?;
     if !recovery.email.eq_ignore_ascii_case(&email) {
-        return Err("Der Wiederherstellungscode gehört zu einer anderen E-Mail-Adresse.".to_string());
+        return Err(
+            "Der Wiederherstellungscode gehört zu einer anderen E-Mail-Adresse.".to_string(),
+        );
     }
     if Instant::now() > recovery.challenge.expires_at {
         runtime.local_account_recovery = None;
@@ -1562,6 +1610,31 @@ mod tests {
             merged.vault.expect("current vault").protected_key,
             "aktueller-geschuetzter-schluessel"
         );
+    }
+
+    #[test]
+    fn permanent_deletion_removes_password_from_pre_deletion_snapshot() {
+        let entry = |entry_uuid: &str| AutomaticPasswordEntry {
+            entry_uuid: entry_uuid.to_string(),
+            nonce: "snapshot-value".to_string(),
+            ciphertext: "snapshot-value".to_string(),
+            created_at: "2026-01-01T10:00:00Z".to_string(),
+            updated_at: "2026-01-01T10:00:00Z".to_string(),
+            deleted_at: None,
+        };
+        let mut backup = AutomaticPasswordBackup {
+            version: AUTOMATIC_PASSWORD_BACKUP_VERSION.to_string(),
+            exported_at: "2026-01-01T10:00:00Z".to_string(),
+            vault: None,
+            entries: vec![entry("remove-entry"), entry("keep-entry")],
+        };
+
+        assert!(purge_targets_from_password_backup(
+            &mut backup,
+            &std::collections::HashSet::from(["remove-entry".to_string()]),
+        ));
+        assert_eq!(backup.entries.len(), 1);
+        assert_eq!(backup.entries[0].entry_uuid, "keep-entry");
     }
 
     #[test]
