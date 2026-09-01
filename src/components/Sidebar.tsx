@@ -31,10 +31,9 @@ export function Sidebar({ activePage, onNavigate, compact = false, authenticator
   return (
     <aside className={compact ? "sidebar compact" : "sidebar"}>
       <div className="brand">
-        <img className="brand-logo" src="/dmh-kontakte-kalender.png" alt="Logo von DMH Kontakte und Kalender" />
+        <img className="brand-logo" src="/dmh-kontakte-kalender.png" alt="Logo von DMH Portal - Privat" />
         <div className="brand-copy">
           <h1>{t.appName}</h1>
-          <p>Kontakte und Termine lokal</p>
         </div>
       </div>
       <nav className="nav-list" aria-label="Hauptmenü">

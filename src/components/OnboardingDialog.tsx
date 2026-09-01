@@ -259,7 +259,7 @@ export function OnboardingDialog({ authenticatorEnabled, servicesEnabled, onComp
       <section className="onboarding-dialog" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
         <header className="onboarding-header">
           <span className="onboarding-logo"><img src="/dmh-kontakte-kalender.png" alt="" /></span>
-          <div><strong>DMH Kontakte und Kalender</strong><small>Einfach anfangen</small></div>
+          <div><strong>DMH Portal - Privat</strong><small>Einfach anfangen</small></div>
           <div className="onboarding-progress" aria-label="Fortschritt">
             {["welcome", "tour", "import", "finished"].map((item, index) => <span className={stage === item ? "active" : ""} key={item}>{index + 1}</span>)}
           </div>

@@ -1624,11 +1624,15 @@ fn deleted_integer_ids(
 fn deleted_vault_entry_uuids(
     conn: &Connection,
     older_than: Option<&str>,
+    selected_ids: &HashSet<i64>,
 ) -> Result<HashSet<String>, String> {
+    if selected_ids.is_empty() {
+        return Ok(HashSet::new());
+    }
     let query = if older_than.is_some() {
-        "SELECT entry_uuid FROM vault_entries WHERE deleted_at IS NOT NULL AND julianday(deleted_at) <= julianday(?1)"
+        "SELECT id, entry_uuid FROM vault_entries WHERE deleted_at IS NOT NULL AND julianday(deleted_at) <= julianday(?1)"
     } else {
-        "SELECT entry_uuid FROM vault_entries WHERE deleted_at IS NOT NULL"
+        "SELECT id, entry_uuid FROM vault_entries WHERE deleted_at IS NOT NULL"
     };
     let mut statement = conn.prepare(query).map_err(|error| error.to_string())?;
     let mut rows = match older_than {
@@ -1638,7 +1642,10 @@ fn deleted_vault_entry_uuids(
     .map_err(|error| error.to_string())?;
     let mut ids = HashSet::new();
     while let Some(row) = rows.next().map_err(|error| error.to_string())? {
-        ids.insert(row.get(0).map_err(|error| error.to_string())?);
+        let id: i64 = row.get(0).map_err(|error| error.to_string())?;
+        if selected_ids.contains(&id) {
+            ids.insert(row.get(1).map_err(|error| error.to_string())?);
+        }
     }
     Ok(ids)
 }
@@ -1648,14 +1655,24 @@ fn purge_targets(
     older_than: Option<&str>,
     calendar_event_ids: Vec<String>,
     collected_addresses: bool,
+    category: &str,
+    vault_entry_ids: Vec<i64>,
 ) -> Result<TrashPurgeTargets, String> {
-    Ok(TrashPurgeTargets {
-        contact_ids: deleted_integer_ids(conn, "contacts", older_than)?,
-        group_ids: deleted_integer_ids(conn, "groups", older_than)?,
-        vault_entry_uuids: deleted_vault_entry_uuids(conn, older_than)?,
-        calendar_event_ids: calendar_event_ids.into_iter().collect(),
-        collected_addresses,
-    })
+    let mut targets = TrashPurgeTargets::default();
+    match category {
+        "calendar" => targets.calendar_event_ids = calendar_event_ids.into_iter().collect(),
+        "contacts" => targets.contact_ids = deleted_integer_ids(conn, "contacts", older_than)?,
+        "groups" => {
+            targets.group_ids = deleted_integer_ids(conn, "groups", older_than)?;
+            targets.collected_addresses = collected_addresses;
+        }
+        "passwords" | "totp" => {
+            let selected_ids = vault_entry_ids.into_iter().collect();
+            targets.vault_entry_uuids = deleted_vault_entry_uuids(conn, older_than, &selected_ids)?;
+        }
+        _ => return Err("Der ausgewählte Papierkorb-Bereich ist ungültig.".to_string()),
+    }
+    Ok(targets)
 }
 
 fn remove_calendar_events_from_backup(
@@ -1776,6 +1793,8 @@ fn purge_targets_from_automatic_backups(
 fn purge_deleted_items_from_connection(
     conn: &mut Connection,
     older_than: Option<&str>,
+    category: &str,
+    vault_entry_ids: &[i64],
 ) -> Result<TrashPurgeResult, String> {
     if let Some(cutoff) = older_than {
         chrono::DateTime::parse_from_rfc3339(cutoff)
@@ -1800,11 +1819,32 @@ fn purge_deleted_items_from_connection(
         .map_err(|error| error.to_string())
     };
 
-    let result = TrashPurgeResult {
-        contacts: delete_from("contacts")?,
-        groups: delete_from("groups")?,
-        vault_entries: delete_from("vault_entries")?,
+    let mut result = TrashPurgeResult {
+        contacts: 0,
+        groups: 0,
+        vault_entries: 0,
     };
+    match category {
+        "calendar" => {}
+        "contacts" => result.contacts = delete_from("contacts")?,
+        "groups" => result.groups = delete_from("groups")?,
+        "passwords" | "totp" => {
+            let selected_ids: HashSet<i64> = vault_entry_ids.iter().copied().collect();
+            for id in selected_ids {
+                let query = if older_than.is_some() {
+                    "DELETE FROM vault_entries WHERE id = ?1 AND deleted_at IS NOT NULL AND julianday(deleted_at) <= julianday(?2)"
+                } else {
+                    "DELETE FROM vault_entries WHERE id = ?1 AND deleted_at IS NOT NULL"
+                };
+                result.vault_entries += match older_than {
+                    Some(cutoff) => tx.execute(query, params![id, cutoff]),
+                    None => tx.execute(query, params![id]),
+                }
+                .map_err(|error| error.to_string())?;
+            }
+        }
+        _ => return Err("Der ausgewählte Papierkorb-Bereich ist ungültig.".to_string()),
+    }
     tx.commit().map_err(|error| error.to_string())?;
     Ok(result)
 }
@@ -1815,6 +1855,8 @@ fn purge_deleted_items(
     older_than: Option<String>,
     calendar_event_ids: Vec<String>,
     purge_collected_addresses: bool,
+    category: String,
+    vault_entry_ids: Vec<i64>,
 ) -> Result<TrashPurgeResult, String> {
     if let Some(cutoff) = older_than.as_deref() {
         chrono::DateTime::parse_from_rfc3339(cutoff)
@@ -1826,10 +1868,17 @@ fn purge_deleted_items(
         older_than.as_deref(),
         calendar_event_ids,
         purge_collected_addresses,
+        &category,
+        vault_entry_ids.clone(),
     )?;
     purge_targets_from_automatic_backups(&app, &targets)?;
     vault::purge_targets_from_automatic_backups(&app, &targets.vault_entry_uuids)?;
-    purge_deleted_items_from_connection(&mut conn, older_than.as_deref())
+    purge_deleted_items_from_connection(
+        &mut conn,
+        older_than.as_deref(),
+        &category,
+        &vault_entry_ids,
+    )
 }
 
 #[tauri::command]
@@ -2881,9 +2930,22 @@ fn outlook_store_name(record: &OutlookContactRecord) -> String {
     }
 }
 
+fn outlook_folder_name_without_local_only_suffix(value: &str) -> String {
+    let mut name = value.trim().to_string();
+    for suffix in ["(nur dieser computer)", "(this computer only)"] {
+        if name.to_lowercase().ends_with(suffix) {
+            name.truncate(name.len().saturating_sub(suffix.len()));
+            name = name.trim().to_string();
+            break;
+        }
+    }
+    name
+}
+
 fn original_outlook_folder_name(folder_path: &str) -> String {
     let trimmed = folder_path.trim().trim_end_matches(['\\', '/']);
     let folder_name = trimmed.rsplit(['\\', '/']).next().unwrap_or(trimmed).trim();
+    let folder_name = outlook_folder_name_without_local_only_suffix(folder_name);
     if folder_name.is_empty() {
         "Kontakte".to_string()
     } else {
@@ -3415,7 +3477,8 @@ fn load_local_outlook_contacts(conn: &Connection) -> Result<Vec<LocalOutlookCont
     for contact in &mut contacts {
         contact.groups = read_groups_for_contact(conn, contact.id)?
             .into_iter()
-            .map(|group| group.name)
+            .map(|group| outlook_folder_name_without_local_only_suffix(&group.name))
+            .filter(|name| !name.is_empty())
             .collect();
     }
     Ok(contacts)
@@ -3431,11 +3494,12 @@ fn load_local_outlook_group_names(conn: &Connection) -> Result<Vec<String>, Stri
         .collect::<Result<Vec<String>, _>>()
         .map_err(|error| error.to_string())?;
     let mut names = vec!["Gesammelte Adressen".to_string()];
-    names.extend(
-        database_names
-            .into_iter()
-            .filter(|name| !name.trim().eq_ignore_ascii_case("Gesammelte Adressen")),
-    );
+    let mut known = HashSet::from(["gesammelte adressen".to_string()]);
+    names.extend(database_names.into_iter().filter_map(|name| {
+        let name = outlook_folder_name_without_local_only_suffix(&name);
+        let key = name.to_lowercase();
+        (!name.is_empty() && known.insert(key)).then_some(name)
+    }));
     Ok(names)
 }
 
@@ -3478,7 +3542,8 @@ fn load_local_outlook_contact(
     .map(|mut contact| {
         contact.groups = read_groups_for_contact(conn, contact.id)?
             .into_iter()
-            .map(|group| group.name)
+            .map(|group| outlook_folder_name_without_local_only_suffix(&group.name))
+            .filter(|name| !name.is_empty())
             .collect();
         Ok(contact)
     })
@@ -5148,7 +5213,7 @@ pub fn run() {
             vault::complete_local_account_password_recovery
         ])
         .run(tauri::generate_context!())
-        .expect("Fehler beim Starten von DMH Kontakte und Kalender");
+        .expect("Fehler beim Starten von DMH Portal - Privat");
 }
 
 #[cfg(test)]
@@ -5197,7 +5262,9 @@ mod tests {
             INSERT INTO contacts (id, display_name, email, updated_at) VALUES
                 (1, 'Ohne Gruppe', 'ohne@example.org', '2026-01-01'),
                 (2, 'In zwei Gruppen', 'gruppen@example.org', '2026-01-02');
-            INSERT INTO groups (id, name) VALUES (1, 'Kontakte'), (2, 'Vorstand');
+            INSERT INTO groups (id, name) VALUES
+                (1, 'Kontakte (Nur dieser Computer)'),
+                (2, 'Vorstand (This computer only)');
             INSERT INTO groups (id, name, deleted_at) VALUES (3, 'Alt', '2026-01-03');
             INSERT INTO contact_groups VALUES (2, 1), (2, 2), (2, 3);
             ",
@@ -5211,6 +5278,10 @@ mod tests {
 
         let folders = load_local_outlook_group_names(&conn).expect("active folders");
         assert_eq!(folders, vec!["Gesammelte Adressen", "Kontakte", "Vorstand"]);
+        assert_eq!(
+            original_outlook_folder_name(r"\\konto\Kontakte (Nur dieser Computer)"),
+            "Kontakte"
+        );
     }
 
     fn sample_contact(name: &str, email: &str, phone: &str) -> ContactInput {
@@ -5385,14 +5456,19 @@ mod tests {
         )
         .expect("trash test data");
 
-        let result = purge_deleted_items_from_connection(&mut conn, Some("2026-01-01T00:00:00Z"))
-            .expect("purge old trash");
+        let result = purge_deleted_items_from_connection(
+            &mut conn,
+            Some("2026-01-01T00:00:00Z"),
+            "contacts",
+            &[],
+        )
+        .expect("purge old contacts");
 
         assert_eq!(
             result,
             TrashPurgeResult {
                 contacts: 1,
-                groups: 1,
+                groups: 0,
                 vault_entries: 0,
             }
         );
@@ -5404,10 +5480,17 @@ mod tests {
             .expect("remaining links");
         assert_eq!(remaining_contacts, 2);
         assert_eq!(remaining_links, 0);
+        let remaining_groups: i64 = conn
+            .query_row("SELECT COUNT(*) FROM groups", [], |row| row.get(0))
+            .expect("remaining groups");
+        assert_eq!(
+            remaining_groups, 1,
+            "other trash areas must remain unchanged"
+        );
     }
 
     #[test]
-    fn trash_purge_without_cutoff_empties_every_trash_table() {
+    fn trash_purge_without_cutoff_only_empties_the_selected_trash_area() {
         let mut conn = Connection::open_in_memory().expect("in-memory database");
         conn.execute_batch(
             "
@@ -5421,14 +5504,32 @@ mod tests {
         )
         .expect("trash test data");
 
-        let result =
-            purge_deleted_items_from_connection(&mut conn, None).expect("purge complete trash");
-
-        assert_eq!(result.contacts + result.groups + result.vault_entries, 3);
+        let contacts_result = purge_deleted_items_from_connection(&mut conn, None, "contacts", &[])
+            .expect("purge contacts");
+        assert_eq!(contacts_result.contacts, 1);
+        assert_eq!(contacts_result.groups, 0);
+        assert_eq!(contacts_result.vault_entries, 0);
         let active_contact: i64 = conn
             .query_row("SELECT COUNT(*) FROM contacts", [], |row| row.get(0))
             .expect("active contact");
         assert_eq!(active_contact, 1);
+
+        let untouched_groups: i64 = conn
+            .query_row("SELECT COUNT(*) FROM groups", [], |row| row.get(0))
+            .expect("groups before their own purge");
+        let untouched_vault_entries: i64 = conn
+            .query_row("SELECT COUNT(*) FROM vault_entries", [], |row| row.get(0))
+            .expect("vault entries before their own purge");
+        assert_eq!(untouched_groups, 1);
+        assert_eq!(untouched_vault_entries, 1);
+
+        let groups_result = purge_deleted_items_from_connection(&mut conn, None, "groups", &[])
+            .expect("purge groups");
+        assert_eq!(groups_result.groups, 1);
+
+        let vault_result = purge_deleted_items_from_connection(&mut conn, None, "passwords", &[1])
+            .expect("purge selected vault entries");
+        assert_eq!(vault_result.vault_entries, 1);
     }
 
     #[test]

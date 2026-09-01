@@ -37,7 +37,7 @@ type TrashCategory = "calendar" | "contacts" | "groups" | "passwords" | "totp";
 type TrashPurgePeriod = "all" | "year" | "six-months" | "month" | "week" | "day" | "hour";
 
 const trashPurgePeriods: Array<{ value: TrashPurgePeriod; label: string; description: string }> = [
-  { value: "all", label: "Gesamten Papierkorb", description: "alle gelöschten Elemente" },
+  { value: "all", label: "Alles in dieser Ansicht", description: "alle Elemente in dieser Ansicht" },
   { value: "year", label: "Älter als 1 Jahr", description: "Elemente, die älter als 1 Jahr sind" },
   { value: "six-months", label: "Älter als 6 Monate", description: "Elemente, die älter als 6 Monate sind" },
   { value: "month", label: "Älter als 1 Monat", description: "Elemente, die älter als 1 Monat sind" },
@@ -45,6 +45,14 @@ const trashPurgePeriods: Array<{ value: TrashPurgePeriod; label: string; descrip
   { value: "day", label: "Älter als 1 Tag", description: "Elemente, die älter als 1 Tag sind" },
   { value: "hour", label: "Älter als 1 Stunde", description: "Elemente, die älter als 1 Stunde sind" }
 ];
+
+const trashCategoryLabels: Record<TrashCategory, string> = {
+  calendar: "Termine",
+  contacts: "Kontakte",
+  groups: "Gruppen",
+  passwords: "Passwörter",
+  totp: "2FA-Codes"
+};
 
 function cutoffForPeriod(period: TrashPurgePeriod): string | null {
   if (period === "all") return null;
@@ -108,25 +116,38 @@ export function TrashPage() {
 
   const purgePreview = useMemo(() => {
     const cutoff = cutoffForPeriod(purgePeriod);
-    const count = [
-      ...deletedEvents,
-      ...deletedContacts,
-      ...deletedGroups,
-      ...deletedVaultEntries,
-      ...(deletedCollectedAddressesAt ? [{ deletedAt: deletedCollectedAddressesAt }] : [])
-    ].filter((entry) => wasDeletedBefore(entry.deletedAt, cutoff)).length;
+    const candidates = category === "calendar"
+      ? deletedEvents
+      : category === "contacts"
+        ? deletedContacts
+        : category === "groups"
+          ? [...deletedGroups, ...(deletedCollectedAddressesAt ? [{ deletedAt: deletedCollectedAddressesAt }] : [])]
+          : category === "passwords"
+            ? deletedPasswords
+            : deletedTotpEntries;
+    const eligible = candidates.filter((entry) => wasDeletedBefore(entry.deletedAt, cutoff));
+    const vaultEntryIds = (category === "passwords" || category === "totp")
+      ? (eligible as VaultEntry[]).map((entry) => entry.id)
+      : [];
     const period = trashPurgePeriods.find((entry) => entry.value === purgePeriod) ?? trashPurgePeriods[0];
-    return { cutoff, count, period };
-  }, [deletedCollectedAddressesAt, deletedContacts, deletedEvents, deletedGroups, deletedVaultEntries, purgePeriod]);
+    return { cutoff, count: eligible.length, period, vaultEntryIds };
+  }, [category, deletedCollectedAddressesAt, deletedContacts, deletedEvents, deletedGroups, deletedPasswords, deletedTotpEntries, purgePeriod]);
 
   const refresh = async () => {
+    setDeletedEvents(readCalendarEvents(calendarTrashStorageKey));
+    if (!("__TAURI_INTERNALS__" in window)) {
+      setDeletedContacts([]);
+      setDeletedGroups([]);
+      setDeletedVaultEntries([]);
+      setDeletedCollectedAddressesAt(null);
+      return;
+    }
     const [contacts, groups, vaultEntries, collectedAddressesDeletedAt] = await Promise.all([
       listDeletedContacts(),
       listDeletedGroups(),
       listDeletedVaultEntries(),
       getAppSetting(collectedAddressesDeletedAtSettingKey)
     ]);
-    setDeletedEvents(readCalendarEvents(calendarTrashStorageKey));
     setDeletedContacts(contacts);
     setDeletedGroups(groups);
     setDeletedVaultEntries(vaultEntries);
@@ -239,104 +260,136 @@ export function TrashPage() {
     if (purgePreview.count === 0) return;
     setPurging(true);
     try {
-      const purgeCollectedAddresses = wasDeletedBefore(deletedCollectedAddressesAt, purgePreview.cutoff);
-      const purgedEvents = deletedEvents.filter((event) =>
-        wasDeletedBefore(event.deletedAt, purgePreview.cutoff)
-      );
-      const result = await purgeDeletedItems(
-        purgePreview.cutoff ?? undefined,
-        purgedEvents.map((event) => event.id),
-        purgeCollectedAddresses && Boolean(deletedCollectedAddressesAt)
-      );
-      if (purgeCollectedAddresses && deletedCollectedAddressesAt) {
+      const purgeCollectedAddresses = category === "groups"
+        && Boolean(deletedCollectedAddressesAt)
+        && wasDeletedBefore(deletedCollectedAddressesAt, purgePreview.cutoff);
+      const purgedEvents = category === "calendar"
+        ? deletedEvents.filter((event) => wasDeletedBefore(event.deletedAt, purgePreview.cutoff))
+        : [];
+      const result = "__TAURI_INTERNALS__" in window
+        ? await purgeDeletedItems(
+          purgePreview.cutoff ?? undefined,
+          purgedEvents.map((event) => event.id),
+          purgeCollectedAddresses,
+          category,
+          purgePreview.vaultEntryIds
+        )
+        : { contacts: 0, groups: 0, vaultEntries: 0 };
+      if (purgeCollectedAddresses && deletedCollectedAddressesAt && "__TAURI_INTERNALS__" in window) {
         await setAppSetting(collectedAddressesDeletedAtSettingKey, "");
       }
-      const remainingEvents = deletedEvents.filter(
-        (event) => !wasDeletedBefore(event.deletedAt, purgePreview.cutoff)
-      );
+      const remainingEvents = category === "calendar"
+        ? deletedEvents.filter((event) => !wasDeletedBefore(event.deletedAt, purgePreview.cutoff))
+        : deletedEvents;
       const removedEvents = deletedEvents.length - remainingEvents.length;
-      writeCalendarEvents(calendarTrashStorageKey, remainingEvents);
+      if (category === "calendar") writeCalendarEvents(calendarTrashStorageKey, remainingEvents);
       const removed = removedEvents + result.contacts + result.groups + result.vaultEntries + (purgeCollectedAddresses && deletedCollectedAddressesAt ? 1 : 0);
       setSelectedContactIds(new Set());
       setContactSelectionMode(false);
       setConfirmPurge(false);
       setShowPurgeOptions(false);
-      setMessage(`${removed} ${removed === 1 ? "Element wurde" : "Elemente wurden"} endgültig gelöscht.`);
+      setMessage(`${removed} ${removed === 1 ? "Element wurde" : "Elemente wurden"} aus „${trashCategoryLabels[category]}“ endgültig gelöscht.`);
       await refresh();
       window.dispatchEvent(new Event(calendarChangedEventName));
     } catch (error) {
-      setMessage(`Der Papierkorb konnte nicht geleert werden: ${error}`);
+      setMessage(`${trashCategoryLabels[category]} konnten nicht endgültig gelöscht werden: ${error}`);
     } finally {
       setPurging(false);
     }
   };
+
+  const selectCategory = (nextCategory: TrashCategory) => {
+    setCategory(nextCategory);
+    setShowPurgeOptions(false);
+    setConfirmPurge(false);
+    setPurgePeriod("all");
+  };
+
+  const categoryCount = category === "calendar"
+    ? deletedEvents.length
+    : category === "contacts"
+      ? deletedContacts.length
+      : category === "groups"
+        ? deletedGroups.length + (deletedCollectedAddressesAt ? 1 : 0)
+        : category === "passwords"
+          ? deletedPasswords.length
+          : deletedTotpEntries.length;
+
+  const purgeControls = showPurgeOptions && (
+    <div className="trash-purge-panel" id="trash-purge-options">
+      <div>
+        <h4>{trashCategoryLabels[category]} endgültig löschen</h4>
+        <p>Nur diese Ansicht wird gelöscht. Andere Bereiche bleiben unverändert.</p>
+      </div>
+      <label className="trash-purge-period" htmlFor="trash-purge-period">
+        <span>Welche löschen?</span>
+        <select
+          id="trash-purge-period"
+          value={purgePeriod}
+          onChange={(event) => setPurgePeriod(event.target.value as TrashPurgePeriod)}
+        >
+          {trashPurgePeriods.map((period) => (
+            <option key={period.value} value={period.value}>{period.label}</option>
+          ))}
+        </select>
+      </label>
+      <strong>{purgePreview.count} {purgePreview.count === 1 ? "Element" : "Elemente"}</strong>
+      <div className="button-row">
+        <button type="button" onClick={() => setShowPurgeOptions(false)}>Abbrechen</button>
+        <button className="danger-button" type="button" disabled={purgePreview.count === 0} onClick={() => setConfirmPurge(true)}>
+          <Trash2 size={18} /> Löschen
+        </button>
+      </div>
+    </div>
+  );
+
+  const purgeButton = (
+    <button
+      className="danger-button trash-category-delete"
+      type="button"
+      disabled={categoryCount === 0}
+      aria-expanded={showPurgeOptions}
+      aria-controls="trash-purge-options"
+      onClick={() => setShowPurgeOptions((visible) => !visible)}
+    >
+      <Trash2 size={18} /> {trashCategoryLabels[category]} löschen
+    </button>
+  );
 
   return (
     <div className="page trash-page-clean">
       <header className="page-header">
         <div>
           <h2>Papierkorb</h2>
-          <p>Wählen Sie einen Bereich aus.</p>
+          <p>Gelöschte Elemente wiederherstellen oder endgültig entfernen.</p>
         </div>
-        <button
-          className="danger-button"
-          type="button"
-          aria-expanded={showPurgeOptions}
-          aria-controls="trash-purge-options"
-          onClick={() => setShowPurgeOptions((visible) => !visible)}
-        >
-          <Trash2 size={19} /> Endgültig löschen
-        </button>
       </header>
       <StatusMessage message={message} />
-      {showPurgeOptions && (
-        <section className="form-panel trash-purge-panel" id="trash-purge-options">
-          <div>
-            <h3>Papierkorb leeren</h3>
-            <p>Zeitraum auswählen. Dies gilt für alle Bereiche.</p>
-          </div>
-          <label className="trash-purge-period" htmlFor="trash-purge-period">
-            <span>Löschen</span>
-            <select
-              id="trash-purge-period"
-              value={purgePeriod}
-              onChange={(event) => setPurgePeriod(event.target.value as TrashPurgePeriod)}
-            >
-              {trashPurgePeriods.map((period) => (
-                <option key={period.value} value={period.value}>{period.label}</option>
-              ))}
-            </select>
-          </label>
-          <strong>{purgePreview.count} {purgePreview.count === 1 ? "Element" : "Elemente"}</strong>
-          <div className="button-row">
-            <button type="button" onClick={() => setShowPurgeOptions(false)}>Abbrechen</button>
-            <button className="danger-button" type="button" disabled={purgePreview.count === 0} onClick={() => setConfirmPurge(true)}>
-              <Trash2 size={18} /> Löschen
-            </button>
-          </div>
-        </section>
-      )}
       <nav className="trash-category-grid" aria-label="Bereiche im Papierkorb">
-        <button className={category === "calendar" ? "active" : ""} type="button" onClick={() => setCategory("calendar")}>
+        <button className={category === "calendar" ? "active" : ""} type="button" onClick={() => selectCategory("calendar")}>
           <CalendarDays size={22} /><span><strong>Termine</strong><small>{deletedEvents.length}</small></span>
         </button>
-        <button className={category === "contacts" ? "active" : ""} type="button" onClick={() => setCategory("contacts")}>
+        <button className={category === "contacts" ? "active" : ""} type="button" onClick={() => selectCategory("contacts")}>
           <Users size={22} /><span><strong>Kontakte</strong><small>{deletedContacts.length}</small></span>
         </button>
-        <button className={category === "groups" ? "active" : ""} type="button" onClick={() => setCategory("groups")}>
+        <button className={category === "groups" ? "active" : ""} type="button" onClick={() => selectCategory("groups")}>
           <FolderClosed size={22} /><span><strong>Gruppen</strong><small>{deletedGroups.length + (deletedCollectedAddressesAt ? 1 : 0)}</small></span>
         </button>
-        <button className={category === "passwords" ? "active" : ""} type="button" onClick={() => setCategory("passwords")}>
+        <button className={category === "passwords" ? "active" : ""} type="button" onClick={() => selectCategory("passwords")}>
           <KeyRound size={22} /><span><strong>Passwörter</strong><small>{deletedPasswords.length}</small></span>
         </button>
-        <button className={category === "totp" ? "active" : ""} type="button" onClick={() => setCategory("totp")}>
+        <button className={category === "totp" ? "active" : ""} type="button" onClick={() => selectCategory("totp")}>
           <KeyRound size={22} /><span><strong>2FA-Codes</strong><small>{deletedTotpEntries.length}</small></span>
         </button>
       </nav>
 
       <section className="trash-panel trash-content-panel">
           {category === "calendar" && <section className="trash-section">
-            <div className="trash-section-title"><CalendarDays size={21} /><h3>Gelöschte Termine</h3></div>
+            <div className="trash-section-heading">
+              <div className="trash-section-title"><CalendarDays size={21} /><h3>Gelöschte Termine</h3></div>
+              {purgeButton}
+            </div>
+            {purgeControls}
             {deletedEvents.length === 0 && <p>Keine gelöschten Termine.</p>}
             {deletedEvents.map((event) => (
               <div className="trash-row" key={event.id}>
@@ -358,8 +411,10 @@ export function TrashPage() {
                 <button type="button" onClick={restoreAllDeletedContacts} disabled={deletedContactIds.length === 0}>
                   Alle wiederherstellen
                 </button>
+                {purgeButton}
               </div>
             </div>
+            {purgeControls}
             {contactSelectionMode && (
               <div className="trash-selection-toolbar">
                 <button type="button" onClick={toggleSelectAllDeletedContacts} disabled={deletedContactIds.length === 0}>
@@ -393,7 +448,11 @@ export function TrashPage() {
           </section>}
 
           {category === "groups" && <section className="trash-section">
-            <div className="trash-section-title"><FolderClosed size={21} /><h3>Gelöschte Gruppen</h3></div>
+            <div className="trash-section-heading">
+              <div className="trash-section-title"><FolderClosed size={21} /><h3>Gelöschte Gruppen</h3></div>
+              {purgeButton}
+            </div>
+            {purgeControls}
             {deletedGroups.length === 0 && !deletedCollectedAddressesAt && <p>Keine gelöschten Gruppen.</p>}
             {deletedCollectedAddressesAt && (
               <div className="trash-row">
@@ -414,7 +473,11 @@ export function TrashPage() {
           </section>}
 
           {(category === "passwords" || category === "totp") && <section className="trash-section">
-            <div className="trash-section-title"><KeyRound size={21} /><h3>{category === "totp" ? "Gelöschte 2FA-Codes" : "Gelöschte Passwörter"}</h3></div>
+            <div className="trash-section-heading">
+              <div className="trash-section-title"><KeyRound size={21} /><h3>{category === "totp" ? "Gelöschte 2FA-Codes" : "Gelöschte Passwörter"}</h3></div>
+              {purgeButton}
+            </div>
+            {purgeControls}
             {(category === "totp" ? deletedTotpEntries : deletedPasswords).length === 0 && <p>{category === "totp" ? "Keine gelöschten 2FA-Codes." : "Keine gelöschten Passwörter."}</p>}
             {(category === "totp" ? deletedTotpEntries : deletedPasswords).map((entry) => (
               <div className="trash-row" key={entry.id}>
@@ -428,8 +491,8 @@ export function TrashPage() {
       </section>
       <ConfirmDialog
         open={confirmPurge}
-        title="Endgültig löschen?"
-        message={`${purgePreview.count} ${purgePreview.count === 1 ? "Element" : "Elemente"} werden endgültig gelöscht (${purgePreview.period.description}). Dies kann nicht rückgängig gemacht werden.`}
+        title={`${trashCategoryLabels[category]} endgültig löschen?`}
+        message={`${purgePreview.count} ${purgePreview.count === 1 ? "Element" : "Elemente"} aus „${trashCategoryLabels[category]}“ werden endgültig gelöscht (${purgePreview.period.description}). Andere Bereiche bleiben unverändert. Dies kann nicht rückgängig gemacht werden.`}
         confirmLabel="Endgültig löschen"
         busy={purging}
         busyLabel="Wird gelöscht …"

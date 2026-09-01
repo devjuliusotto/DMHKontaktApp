@@ -18,7 +18,7 @@ function Write-InstallResult([string]$Value) {
 }
 
 try {
-    $infPath = Join-Path $DriverDirectory "KOAWNJ__.inf"
+    $infPath = Join-Path $DriverDirectory "KOAWOJ__.inf"
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {

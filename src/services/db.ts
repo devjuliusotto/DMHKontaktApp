@@ -116,12 +116,16 @@ export function restoreGroup(id: number): Promise<void> {
 export function purgeDeletedItems(
   olderThan: string | undefined,
   calendarEventIds: string[],
-  purgeCollectedAddresses: boolean
+  purgeCollectedAddresses: boolean,
+  category: "calendar" | "contacts" | "groups" | "passwords" | "totp",
+  vaultEntryIds: number[]
 ): Promise<TrashPurgeResult> {
   return invoke("purge_deleted_items", {
     olderThan: olderThan || null,
     calendarEventIds,
-    purgeCollectedAddresses
+    purgeCollectedAddresses,
+    category,
+    vaultEntryIds
   });
 }
 

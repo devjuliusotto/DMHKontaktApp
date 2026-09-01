@@ -756,7 +756,7 @@ export function ContactsPage() {
               </div>
               <label className="checkbox-row email-default-option">
                 <input type="checkbox" checked={rememberEmailApp} onChange={(event) => setRememberEmailApp(event.target.checked)} />
-                Diese Anwendung als Standard für E-Mails in DMH Kontakte und Kalender verwenden
+                Diese Anwendung als Standard für E-Mails in DMH Portal - Privat verwenden
               </label>
               <div className="button-row">
                 <button className="primary" type="button" onClick={sendEmail}>E-Mail öffnen</button>

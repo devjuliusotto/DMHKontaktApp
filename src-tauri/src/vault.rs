@@ -1376,8 +1376,8 @@ $ErrorActionPreference = 'Stop'
 $outlook = New-Object -ComObject Outlook.Application
 $mail = $outlook.CreateItem(0)
 $mail.To = $env:DMH_VAULT_RECOVERY_EMAIL
-$mail.Subject = 'DMH Kontakte und Kalender - Wiederherstellungscode'
-$mail.Body = "Hallo,`r`n`r`nfür den Benutzer '$($env:DMH_VAULT_RECOVERY_USER)' wurde ein Wiederherstellungscode angefordert.`r`n`r`nCode: $($env:DMH_VAULT_RECOVERY_CODE)`r`n`r`nDer Code ist 10 Minuten gültig. Wenn Sie ihn nicht angefordert haben, können Sie diese E-Mail ignorieren.`r`n`r`nDMH Kontakte und Kalender"
+$mail.Subject = 'DMH Portal - Privat - Wiederherstellungscode'
+$mail.Body = "Hallo,`r`n`r`nfür den Benutzer '$($env:DMH_VAULT_RECOVERY_USER)' wurde ein Wiederherstellungscode angefordert.`r`n`r`nCode: $($env:DMH_VAULT_RECOVERY_CODE)`r`n`r`nDer Code ist 10 Minuten gültig. Wenn Sie ihn nicht angefordert haben, können Sie diese E-Mail ignorieren.`r`n`r`nDMH Portal - Privat"
 $mail.Send()
 "#;
     let mut output = hidden_command("powershell")

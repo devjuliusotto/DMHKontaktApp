@@ -8,9 +8,9 @@ export function WelcomePage({ onNavigate }: WelcomePageProps) {
   return (
     <div className="page">
       <article className="readme-page">
-        <h1>DMH Kontakte und Kalender</h1>
+        <h1>DMH Portal - Privat</h1>
         <p className="readme-lead">
-          DMH Kontakte und Kalender ist eine lokale Windows-App für Kontakte, Gruppen, Outlook-Importe und Kalendertermine.
+          DMH Portal - Privat ist eine Windows-App für Kontakte, Gruppen, Outlook-Importe und Kalendertermine.
           Alle Kontaktdaten bleiben auf diesem PC. Die zeitlich begrenzte Übergabe einer E-Mail-Konfiguration für die Exchange-Migration wird ausschließlich manuell unter Einstellungen gestartet und vor der Übertragung lokal verschlüsselt.
         </p>
 

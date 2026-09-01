@@ -291,7 +291,7 @@ export default function App() {
   if (!vaultStatus) {
     return (
       <main className="app-startup-screen">
-        <img src="/dmh-kontakte-kalender.png" alt="DMH Kontakte und Kalender" />
+        <img src="/dmh-kontakte-kalender.png" alt="DMH Portal - Privat" />
         {startupError ? (
           <>
             <h1>App konnte nicht sicher geöffnet werden</h1>

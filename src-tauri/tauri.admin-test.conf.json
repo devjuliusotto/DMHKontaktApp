@@ -6,13 +6,13 @@
         "height": 780,
         "minHeight": 600,
         "minWidth": 760,
-        "title": "DMH Kontakte und Kalender [ADMIN TEST]",
+        "title": "DMH Portal - Privat [ADMIN TEST]",
         "width": 1180
       }
     ]
   },
   "bundle": {
-    "longDescription": "Isolierter Testkanal für DMH Kontakte und Kalender.",
+    "longDescription": "Isolierter Testkanal für DMH Portal - Privat.",
     "shortDescription": "Admin-Testversion der lokalen Kontakt- und Kalenderverwaltung",
     "targets": [
       "nsis"
@@ -26,5 +26,5 @@
       ]
     }
   },
-  "productName": "DMH Kontakte und Kalender Admin Test"
+  "productName": "DMH Portal - Privat Admin Test"
 }

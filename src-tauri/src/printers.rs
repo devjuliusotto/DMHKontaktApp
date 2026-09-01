@@ -227,7 +227,7 @@ fn konica_resource_root(app: &AppHandle) -> Result<PathBuf, String> {
     konica_resource_candidates(app)
         .into_iter()
         .find(|candidate| {
-            candidate.join("KOAWNJ__.inf").is_file()
+            candidate.join("KOAWOJ__.inf").is_file()
                 && candidate
                     .parent()
                     .is_some_and(|parent| parent.join(KONICA_INSTALL_SCRIPT).is_file())
