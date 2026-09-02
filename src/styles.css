@@ -3077,6 +3077,8 @@ table {
   background: var(--surface);
   min-height: 112px;
   padding: 0.4rem;
+  position: relative;
+  user-select: none;
 }
 
 .calendar-day.outside {
@@ -3086,6 +3088,15 @@ table {
 
 .calendar-day.today {
   box-shadow: inset 0 0 0 2px var(--primary);
+}
+
+.calendar-day.range-selected {
+  background: color-mix(in srgb, var(--primary) 12%, var(--surface));
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--primary) 70%, transparent);
+}
+
+.calendar-day.drag-ready {
+  cursor: copy;
 }
 
 .calendar-day-number {
@@ -3130,6 +3141,16 @@ table {
 
 .calendar-event-chip:hover {
   filter: brightness(0.97);
+}
+
+.calendar-event-chip[draggable="true"] {
+  cursor: grab;
+}
+
+.calendar-event-chip.dragging,
+.calendar-week-timed-event.dragging {
+  cursor: grabbing;
+  opacity: 0.55;
 }
 
 .calendar-event-chip time {
@@ -3282,6 +3303,25 @@ table {
   position: absolute;
   top: -3px;
   width: 8px;
+}
+
+.calendar-time-selection {
+  background: color-mix(in srgb, var(--primary) 18%, var(--surface));
+  border: 2px solid var(--primary);
+  border-radius: 5px;
+  color: var(--primary-dark);
+  left: 3px;
+  min-height: 15px;
+  padding: 0.18rem 0.32rem;
+  pointer-events: none;
+  position: absolute;
+  right: 3px;
+  z-index: 2;
+}
+
+.calendar-time-selection strong {
+  font-size: 0.7rem;
+  line-height: 1;
 }
 
 .calendar-week-timed-event {

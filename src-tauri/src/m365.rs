@@ -526,6 +526,7 @@ pub(crate) async fn graph_json(access_token: &str, url: &str) -> Result<Value, S
     let response = http_client()
         .get(url)
         .bearer_auth(access_token)
+        .header("Prefer", "outlook.timezone=\"W. Europe Standard Time\"")
         .send()
         .await
         .map_err(|_| {
@@ -2453,15 +2454,33 @@ async fn graph_write(
     let response = http_client()
         .request(method, url)
         .bearer_auth(access_token)
+        .header("Prefer", "outlook.timezone=\"W. Europe Standard Time\"")
         .json(body)
         .send()
         .await
         .map_err(|_| "Microsoft Graph ist derzeit nicht erreichbar.".to_string())?;
     let status = response.status();
     if !status.is_success() {
+        let detail = response.json::<Value>().await.ok().and_then(|value| {
+            let code = value
+                .pointer("/error/code")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let message = value
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let safe = format!("{code}: {message}")
+                .chars()
+                .filter(|character| !character.is_control())
+                .take(240)
+                .collect::<String>();
+            (!safe.trim_matches([':', ' ']).is_empty()).then_some(safe)
+        });
         return Err(format!(
-            "Microsoft Graph hat die Änderung abgelehnt (HTTP {}).",
-            status.as_u16()
+            "Microsoft Graph hat die Änderung abgelehnt (HTTP {}){}.",
+            status.as_u16(),
+            detail.map(|value| format!(", {value}")).unwrap_or_default()
         ));
     }
     if status.as_u16() == 204 {

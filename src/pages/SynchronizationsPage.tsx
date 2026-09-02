@@ -20,7 +20,7 @@ import type { Microsoft365ConflictDecision, Microsoft365ConnectionStatus, Micros
 import { defaultSyncConfig, parseSyncConfig, type SyncConfig, type SyncDirection } from "../types/sync";
 import { addBrowserDataToBackup } from "../utils/backup";
 import { calendarStorageKey, calendarTrashStorageKey, mergeImportedCalendarCategories } from "../utils/calendar";
-import { synchronizationConfigKey as syncConfigKey, synchronizationHistoryKey as syncHistoryKey } from "../utils/automaticCalendarSync";
+import { calendarChangedEventName, synchronizationConfigKey as syncConfigKey, synchronizationHistoryKey as syncHistoryKey } from "../utils/automaticCalendarSync";
 import type { CalendarEvent } from "../types/calendar";
 
 interface SynchronizationsPageProps {
@@ -122,6 +122,7 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
       const savedConfig = { ...config, runOnClose: false };
       setConfig(savedConfig);
       await setAppSetting(syncConfigKey, JSON.stringify(savedConfig));
+      if (savedConfig.enabled && savedConfig.calendars) window.dispatchEvent(new Event(calendarChangedEventName));
       setMessageType("success");
       setMessage(savedConfig.enabled
         ? "Einstellungen gespeichert. Neue Kalenderänderungen werden automatisch synchronisiert."

@@ -212,7 +212,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (!("__TAURI_INTERNALS__" in window) || !vaultStatus || (vaultStatus.protectionEnabled && !vaultStatus.unlocked)) return;
+    if (!("__TAURI_INTERNALS__" in window) || !signedInAccount) return;
     let debounceTimer: number | undefined;
     const queueChangedCalendarSync = () => {
       if (debounceTimer !== undefined) window.clearTimeout(debounceTimer);
@@ -234,7 +234,7 @@ export default function App() {
       window.clearInterval(pollingTimer);
       if (debounceTimer !== undefined) window.clearTimeout(debounceTimer);
     };
-  }, [runCalendarSync, vaultStatus]);
+  }, [runCalendarSync, signedInAccount]);
 
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;

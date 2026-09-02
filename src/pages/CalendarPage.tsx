@@ -1,5 +1,5 @@
 import { CalendarDays, ChevronLeft, ChevronRight, Filter, ListChecks, MoreHorizontal, Plus, Rows3, Trash2, Undo2, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { CalendarEventForm } from "../components/CalendarEventForm";
 import { StatusMessage } from "../components/StatusMessage";
 import type { CalendarEvent } from "../types/calendar";
@@ -125,6 +125,17 @@ interface WeekEventLayout {
   lanes: number;
 }
 
+interface CalendarTimeSelection {
+  dayKey: string;
+  anchorMinutes: number;
+  currentMinutes: number;
+}
+
+interface CalendarMonthSelection {
+  anchorIndex: number;
+  currentIndex: number;
+}
+
 function storedCalendarView(): CalendarView {
   const stored = localStorage.getItem(calendarViewStorageKey);
   return stored === "day" || stored === "week" || stored === "month" ? stored : "month";
@@ -212,6 +223,10 @@ export function CalendarPage() {
   const [duplicateCleanupBackup, setDuplicateCleanupBackup] = useState<CalendarDuplicateCleanupBackup | null>(
     () => readDuplicateCleanupBackup()
   );
+  const [draggedEventId, setDraggedEventId] = useState<string | null>(null);
+  const [timeSelection, setTimeSelection] = useState<CalendarTimeSelection | null>(null);
+  const [monthSelection, setMonthSelection] = useState<CalendarMonthSelection | null>(null);
+  const draggedEventIdRef = useRef<string | null>(null);
   const timeGridScrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -437,6 +452,13 @@ export function CalendarPage() {
     setEditingIsNew(true);
   };
 
+  const openNewEventRange = (starts: Date, ends: Date) => {
+    const event = { ...blankEvent(starts), endsAt: toLocalDateTime(ends.toISOString()) };
+    const firstCategory = categories[0];
+    setEditingEvent(firstCategory ? { ...event, category: firstCategory.name, color: firstCategory.color } : event);
+    setEditingIsNew(true);
+  };
+
   const navigateCalendar = (direction: -1 | 1) => {
     if (view === "month") {
       setCursor(new Date(cursor.getFullYear(), cursor.getMonth() + direction, 1));
@@ -448,25 +470,72 @@ export function CalendarPage() {
   const minutesFromPointer = (element: HTMLElement, clientY: number) => {
     const rect = element.getBoundingClientRect();
     const rawMinutes = ((clientY - rect.top) / compactCalendarHourHeight) * 60;
-    return Math.max(0, Math.min(23 * 60, Math.round(rawMinutes / 15) * 15));
+    return Math.max(0, Math.min(23 * 60 + 45, Math.round(rawMinutes / 15) * 15));
   };
 
-  const openNewEventAtPointer = (day: Date, pointer: ReactMouseEvent<HTMLDivElement>) => {
-    const starts = startOfDay(day);
-    starts.setMinutes(minutesFromPointer(pointer.currentTarget, pointer.clientY));
-    openNewEvent(starts, true);
+  const selectionBounds = (selection: CalendarTimeSelection) => {
+    const startMinutes = Math.min(selection.anchorMinutes, selection.currentMinutes);
+    const endMinutes = selection.anchorMinutes === selection.currentMinutes
+      ? Math.min(1_440, startMinutes + 30)
+      : Math.max(selection.anchorMinutes, selection.currentMinutes);
+    return { startMinutes, endMinutes: Math.max(startMinutes + 15, endMinutes) };
   };
 
-  const moveEventToPointer = (day: Date, event: ReactDragEvent<HTMLDivElement>) => {
+  const beginTimeSelection = (day: Date, event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || (event.target as HTMLElement).closest(".calendar-week-timed-event")) return;
     event.preventDefault();
-    const id = event.dataTransfer.getData("text/dmh-calendar-event");
+    const minutes = minutesFromPointer(event.currentTarget, event.clientY);
+    setTimeSelection({ dayKey: dateInputValue(day), anchorMinutes: minutes, currentMinutes: minutes });
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const updateTimeSelection = (day: Date, event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!timeSelection || timeSelection.dayKey !== dateInputValue(day)) return;
+    setTimeSelection((current) => current ? {
+      ...current,
+      currentMinutes: minutesFromPointer(event.currentTarget, event.clientY)
+    } : null);
+  };
+
+  const finishTimeSelection = (day: Date, event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!timeSelection || timeSelection.dayKey !== dateInputValue(day)) return;
+    const completed = {
+      ...timeSelection,
+      currentMinutes: minutesFromPointer(event.currentTarget, event.clientY)
+    };
+    const { startMinutes, endMinutes } = selectionBounds(completed);
+    const starts = startOfDay(day);
+    const ends = startOfDay(day);
+    starts.setMinutes(startMinutes);
+    ends.setMinutes(endMinutes);
+    setTimeSelection(null);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    openNewEventRange(starts, ends);
+  };
+
+  const beginEventDrag = (event: ReactDragEvent<HTMLElement>, id: string) => {
+    draggedEventIdRef.current = id;
+    setDraggedEventId(id);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", id);
+    event.dataTransfer.setData("text/dmh-calendar-event", id);
+  };
+
+  const finishEventDrag = () => {
+    draggedEventIdRef.current = null;
+    setDraggedEventId(null);
+  };
+
+  const draggedIdFromEvent = (event: ReactDragEvent<HTMLElement>) => draggedEventIdRef.current
+    || event.dataTransfer.getData("text/dmh-calendar-event")
+    || event.dataTransfer.getData("text/plain");
+
+  const persistMovedEvent = (id: string, nextStart: Date) => {
     const existing = events.find((entry) => entry.id === id);
     if (!existing || existing.recurrence) return;
     const oldStart = eventDate(existing);
     const oldEnd = eventEndDate(existing);
     if (!oldStart || !oldEnd) return;
-    const nextStart = startOfDay(day);
-    nextStart.setMinutes(minutesFromPointer(event.currentTarget, event.clientY));
     const duration = Math.max(15 * 60_000, oldEnd.getTime() - oldStart.getTime());
     const nextEnd = new Date(nextStart.getTime() + duration);
     persist(events.map((entry) => entry.id === id ? {
@@ -477,6 +546,48 @@ export function CalendarPage() {
     } : entry));
     setMessage(`Termin „${existing.title}“ wurde auf ${new Intl.DateTimeFormat("de-DE", { weekday: "short", hour: "2-digit", minute: "2-digit" }).format(nextStart)} verschoben.`);
     window.dispatchEvent(new Event(calendarChangedEventName));
+  };
+
+  const allowEventDrop = (event: ReactDragEvent<HTMLElement>) => {
+    if (!draggedEventIdRef.current && !event.dataTransfer.types.includes("text/plain") && !event.dataTransfer.types.includes("text/dmh-calendar-event")) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+  };
+
+  const moveEventToPointer = (day: Date, event: ReactDragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const id = draggedIdFromEvent(event);
+    const nextStart = startOfDay(day);
+    nextStart.setMinutes(minutesFromPointer(event.currentTarget, event.clientY));
+    finishEventDrag();
+    persistMovedEvent(id, nextStart);
+  };
+
+  const moveEventToDay = (day: Date, event: ReactDragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const id = draggedIdFromEvent(event);
+    const existing = events.find((entry) => entry.id === id);
+    const oldStart = existing ? eventDate(existing) : null;
+    if (!oldStart) {
+      finishEventDrag();
+      return;
+    }
+    const nextStart = startOfDay(day);
+    nextStart.setHours(oldStart.getHours(), oldStart.getMinutes(), 0, 0);
+    finishEventDrag();
+    persistMovedEvent(id, nextStart);
+  };
+
+  const finishMonthSelection = (endIndex: number) => {
+    if (!monthSelection) return;
+    const firstIndex = Math.min(monthSelection.anchorIndex, endIndex);
+    const lastIndex = Math.max(monthSelection.anchorIndex, endIndex);
+    setMonthSelection(null);
+    if (firstIndex === lastIndex) {
+      openNewEvent(monthDays[firstIndex]);
+      return;
+    }
+    openNewEventRange(startOfDay(monthDays[firstIndex]), startOfDay(addDays(monthDays[lastIndex], 1)));
   };
 
   const openEvent = (event: CalendarEvent) => {
@@ -694,14 +805,49 @@ export function CalendarPage() {
       {view === "month" && (
         <section className="calendar-grid month-view">
           {weekdays.map((day) => <div className="calendar-weekday" key={day}>{day}</div>)}
-          {monthDays.map((day) => {
+          {monthDays.map((day, dayIndex) => {
             const dayEvents = eventsForDay(day);
-            const classes = ["calendar-day", day.getMonth() !== cursor.getMonth() ? "outside" : "", sameDay(day, new Date()) ? "today" : ""].filter(Boolean).join(" ");
+            const monthRangeStart = monthSelection ? Math.min(monthSelection.anchorIndex, monthSelection.currentIndex) : -1;
+            const monthRangeEnd = monthSelection ? Math.max(monthSelection.anchorIndex, monthSelection.currentIndex) : -1;
+            const classes = [
+              "calendar-day",
+              day.getMonth() !== cursor.getMonth() ? "outside" : "",
+              sameDay(day, new Date()) ? "today" : "",
+              dayIndex >= monthRangeStart && dayIndex <= monthRangeEnd ? "range-selected" : "",
+              draggedEventId ? "drag-ready" : ""
+            ].filter(Boolean).join(" ");
             return (
-              <div className={classes} key={day.toISOString()} onDoubleClick={() => openNewEvent(day)}>
+              <div
+                className={classes}
+                key={day.toISOString()}
+                onPointerDown={(event) => {
+                  if (event.button !== 0 || (event.target as HTMLElement).closest(".calendar-event-chip")) return;
+                  event.preventDefault();
+                  setMonthSelection({ anchorIndex: dayIndex, currentIndex: dayIndex });
+                }}
+                onPointerEnter={(event) => {
+                  if (monthSelection && event.buttons === 1) setMonthSelection((current) => current ? { ...current, currentIndex: dayIndex } : null);
+                }}
+                onPointerUp={() => finishMonthSelection(dayIndex)}
+                onDragOver={allowEventDrop}
+                onDrop={(event) => moveEventToDay(day, event)}
+              >
                 <span className="calendar-day-number">{day.getDate()}</span>
                 <div className="calendar-day-events">
-                  {dayEvents.slice(0, 3).map((event) => <button className="calendar-event-chip" style={calendarColorStyle(event.color)} type="button" title={`${event.title} - ${event.location}`} key={event.id} onClick={(click) => { click.stopPropagation(); openEvent(event); }}><time>{eventTime(event)}</time> {event.title}</button>)}
+                  {dayEvents.slice(0, 3).map((event) => {
+                    const canDrag = !event.recurrenceMasterId && !event.recurrence;
+                    return <button
+                      className={draggedEventId === event.id ? "calendar-event-chip dragging" : "calendar-event-chip"}
+                      style={calendarColorStyle(event.color)}
+                      type="button"
+                      title={`${event.title} - ${event.location}${canDrag ? "\nZum Verschieben ziehen" : ""}`}
+                      key={event.id}
+                      draggable={canDrag}
+                      onClick={(click) => { click.stopPropagation(); openEvent(event); }}
+                      onDragStart={(dragEvent) => canDrag && beginEventDrag(dragEvent, event.id)}
+                      onDragEnd={finishEventDrag}
+                    ><time>{eventTime(event)}</time> {event.title}</button>;
+                  })}
                   {dayEvents.length > 3 && <small>+ {dayEvents.length - 3} weitere</small>}
                 </div>
               </div>
@@ -738,12 +884,19 @@ export function CalendarPage() {
                       className={sameDay(day, now) ? "calendar-week-day-track today" : "calendar-week-day-track"}
                       key={day.toISOString()}
                       role="gridcell"
-                      aria-label={`${new Intl.DateTimeFormat("de-DE", { weekday: "long", day: "numeric", month: "long" }).format(day)}. Freie Uhrzeit anklicken, um einen Termin zu erstellen.`}
-                      onClick={(event) => openNewEventAtPointer(day, event)}
-                      onDragOver={(event) => { if (event.dataTransfer.types.includes("text/dmh-calendar-event")) event.preventDefault(); }}
+                      aria-label={`${new Intl.DateTimeFormat("de-DE", { weekday: "long", day: "numeric", month: "long" }).format(day)}. Freien Zeitraum markieren, um einen Termin zu erstellen.`}
+                      onPointerDown={(event) => beginTimeSelection(day, event)}
+                      onPointerMove={(event) => updateTimeSelection(day, event)}
+                      onPointerUp={(event) => finishTimeSelection(day, event)}
+                      onPointerCancel={() => setTimeSelection(null)}
+                      onDragOver={allowEventDrop}
                       onDrop={(event) => moveEventToPointer(day, event)}
                     >
                       {sameDay(day, now) && <span className="calendar-current-time-line" style={{ top: `${(nowMinutes / 60) * compactCalendarHourHeight}px` }}><i /></span>}
+                      {timeSelection?.dayKey === dateInputValue(day) && (() => {
+                        const bounds = selectionBounds(timeSelection);
+                        return <span className="calendar-time-selection" style={{ top: `${(bounds.startMinutes / 60) * compactCalendarHourHeight}px`, height: `${((bounds.endMinutes - bounds.startMinutes) / 60) * compactCalendarHourHeight}px` }}><strong>{eventTimeRange({ ...blankEvent(new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, bounds.startMinutes)), endsAt: toLocalDateTime(new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, bounds.endMinutes).toISOString()) })}</strong></span>;
+                      })()}
                       {weekLayouts[dayIndex].map((layout) => {
                         const durationHeight = ((layout.endMinutes - layout.startMinutes) / 60) * compactCalendarHourHeight;
                         const eventStyle = {
@@ -756,18 +909,15 @@ export function CalendarPage() {
                         const canDrag = !layout.event.recurrenceMasterId && !layout.event.recurrence;
                         return (
                           <button
-                            className="calendar-week-timed-event"
+                            className={draggedEventId === layout.event.id ? "calendar-week-timed-event dragging" : "calendar-week-timed-event"}
                             style={eventStyle}
                             type="button"
                             key={layout.event.id}
                             draggable={canDrag}
                             title={`${layout.event.title}\n${eventTimeRange(layout.event)}${layout.event.location ? `\n${layout.event.location}` : ""}${canDrag ? "\nZum Verschieben ziehen" : ""}`}
                             onClick={(event) => { event.stopPropagation(); openEvent(layout.event); }}
-                            onDragStart={(event) => {
-                              if (!canDrag) return;
-                              event.dataTransfer.effectAllowed = "move";
-                              event.dataTransfer.setData("text/dmh-calendar-event", layout.event.id);
-                            }}
+                            onDragStart={(event) => canDrag && beginEventDrag(event, layout.event.id)}
+                            onDragEnd={finishEventDrag}
                           >
                             <strong>{layout.event.title || "Ohne Titel"}</strong>
                             <time>{eventTimeRange(layout.event)}</time>
@@ -781,7 +931,7 @@ export function CalendarPage() {
               </div>
             </div>
           </div>
-          <p className="calendar-week-help">Freie Uhrzeit anklicken: Termin erstellen · Termin ziehen: verschieben</p>
+          <p className="calendar-week-help">Freien Zeitraum markieren: Termin erstellen · Termin ziehen: verschieben</p>
         </section>
       )}
 
@@ -806,15 +956,22 @@ export function CalendarPage() {
               <div
                 className={sameDay(cursor, new Date()) ? "calendar-week-day-track calendar-day-track today" : "calendar-week-day-track calendar-day-track"}
                 role="gridcell"
-                aria-label={`${new Intl.DateTimeFormat("de-DE", { weekday: "long", day: "numeric", month: "long" }).format(cursor)}. Freie Uhrzeit anklicken, um einen Termin zu erstellen.`}
-                onClick={(event) => openNewEventAtPointer(cursor, event)}
-                onDragOver={(event) => { if (event.dataTransfer.types.includes("text/dmh-calendar-event")) event.preventDefault(); }}
+                aria-label={`${new Intl.DateTimeFormat("de-DE", { weekday: "long", day: "numeric", month: "long" }).format(cursor)}. Freien Zeitraum markieren, um einen Termin zu erstellen.`}
+                onPointerDown={(event) => beginTimeSelection(cursor, event)}
+                onPointerMove={(event) => updateTimeSelection(cursor, event)}
+                onPointerUp={(event) => finishTimeSelection(cursor, event)}
+                onPointerCancel={() => setTimeSelection(null)}
+                onDragOver={allowEventDrop}
                 onDrop={(event) => moveEventToPointer(cursor, event)}
               >
                 {sameDay(cursor, new Date()) && (() => {
                   const now = new Date();
                   const nowMinutes = now.getHours() * 60 + now.getMinutes();
                   return <span className="calendar-current-time-line" style={{ top: `${(nowMinutes / 60) * compactCalendarHourHeight}px` }}><i /></span>;
+                })()}
+                {timeSelection?.dayKey === dateInputValue(cursor) && (() => {
+                  const bounds = selectionBounds(timeSelection);
+                  return <span className="calendar-time-selection" style={{ top: `${(bounds.startMinutes / 60) * compactCalendarHourHeight}px`, height: `${((bounds.endMinutes - bounds.startMinutes) / 60) * compactCalendarHourHeight}px` }}><strong>{eventTimeRange({ ...blankEvent(new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate(), 0, bounds.startMinutes)), endsAt: toLocalDateTime(new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate(), 0, bounds.endMinutes).toISOString()) })}</strong></span>;
                 })()}
                 {dayLayouts.map((layout) => {
                   const durationHeight = ((layout.endMinutes - layout.startMinutes) / 60) * compactCalendarHourHeight;
@@ -828,18 +985,15 @@ export function CalendarPage() {
                   const canDrag = !layout.event.recurrenceMasterId && !layout.event.recurrence;
                   return (
                     <button
-                      className="calendar-week-timed-event calendar-day-timed-event"
+                      className={draggedEventId === layout.event.id ? "calendar-week-timed-event calendar-day-timed-event dragging" : "calendar-week-timed-event calendar-day-timed-event"}
                       style={eventStyle}
                       type="button"
                       key={layout.event.id}
                       draggable={canDrag}
                       title={`${layout.event.title}\n${eventTimeRange(layout.event)}${layout.event.location ? `\n${layout.event.location}` : ""}${canDrag ? "\nZum Verschieben ziehen" : ""}`}
                       onClick={(event) => { event.stopPropagation(); openEvent(layout.event); }}
-                      onDragStart={(event) => {
-                        if (!canDrag) return;
-                        event.dataTransfer.effectAllowed = "move";
-                        event.dataTransfer.setData("text/dmh-calendar-event", layout.event.id);
-                      }}
+                      onDragStart={(event) => canDrag && beginEventDrag(event, layout.event.id)}
+                      onDragEnd={finishEventDrag}
                     >
                       <strong>{layout.event.title || "Ohne Titel"}</strong>
                       <time>{eventTimeRange(layout.event)}</time>
@@ -851,7 +1005,7 @@ export function CalendarPage() {
               </div>
             </div>
           </div>
-          <p className="calendar-week-help">Freie Uhrzeit anklicken: Termin erstellen · Termin ziehen: verschieben</p>
+          <p className="calendar-week-help">Freien Zeitraum markieren: Termin erstellen · Termin ziehen: verschieben</p>
         </section>
       )}
       </section>
