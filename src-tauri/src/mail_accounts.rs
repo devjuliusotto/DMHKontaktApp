@@ -390,7 +390,7 @@ fn run_helper<T: DeserializeOwned>(app: &AppHandle, arguments: &[String]) -> Res
 
     if !found_helper {
         return Err(
-            "Outlook-Hilfsprogramm fehlt. Installieren oder bauen Sie DMH Portal - Privat erneut."
+            "Outlook-Hilfsprogramm fehlt. Installieren oder bauen Sie DMH Backup erneut."
                 .to_string(),
         );
     }
@@ -445,7 +445,7 @@ fn run_secret_helper(
 
     if !found_helper {
         return Err(
-            "Outlook-Hilfsprogramm fehlt. Installieren oder bauen Sie DMH Portal - Privat erneut."
+            "Outlook-Hilfsprogramm fehlt. Installieren oder bauen Sie DMH Backup erneut."
                 .to_string(),
         );
     }

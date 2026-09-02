@@ -9,7 +9,7 @@
         "height": 780,
         "minHeight": 600,
         "minWidth": 760,
-        "title": "DMH Portal - Privat",
+        "title": "DMH Backup",
         "width": 1180
       }
     ]
@@ -27,12 +27,12 @@
     "icon": [
       "icons/icon.ico"
     ],
-    "longDescription": "DMH Portal - Privat verwaltet Kontakte, Gruppen und Termine auf dem Windows-PC.",
+    "longDescription": "DMH Backup sichert Kontakte, Gruppen und Termine für die bevorstehende Migration.",
     "publisher": "Diakonissenmutterhaus Aidlingen e.V.",
     "resources": [
       "resources/**/*"
     ],
-    "shortDescription": "Lokale Kontakt- und Kalenderverwaltung",
+    "shortDescription": "Lokale Sicherung für die DMH-Migration",
     "targets": [
       "msi",
       "nsis"
@@ -50,6 +50,6 @@
       }
     }
   },
-  "productName": "DMH Portal - Privat",
+  "productName": "DMH Backup",
   "version": "0.0.25"
 }

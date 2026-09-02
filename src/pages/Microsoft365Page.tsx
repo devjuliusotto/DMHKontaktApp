@@ -204,7 +204,7 @@ export function Microsoft365Page() {
             <h3>Einrichtung durch die EDV erforderlich</h3>
             <p>
               Die Microsoft-Anwendung ist in diesem Build noch nicht hinterlegt. Die EDV muss
-              einmalig Mandanten-ID und Anwendungs-ID für DMH Portal - Privat eintragen.
+              einmalig Mandanten-ID und Anwendungs-ID für DMH Backup eintragen.
               Lokale Funktionen bleiben vollständig verfügbar.
             </p>
           </div>

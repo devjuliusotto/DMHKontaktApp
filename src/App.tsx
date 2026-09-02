@@ -1,8 +1,7 @@
 import { LoaderCircle, RefreshCw } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { AppLockScreen } from "./components/AppLockScreen";
-import { WelcomeSignIn } from "./components/WelcomeSignIn";
+import { EdvAccessDialog } from "./components/EdvAccessDialog";
 import { Sidebar, type Page } from "./components/Sidebar";
 import { SettingsSubtabs, type SettingsSection } from "./components/SettingsSubtabs";
 import { ContactsPage } from "./pages/ContactsPage";
@@ -17,13 +16,12 @@ import { BackupPage } from "./pages/BackupPage";
 import { Microsoft365Page } from "./pages/Microsoft365Page";
 import { SynchronizationsPage } from "./pages/SynchronizationsPage";
 import { DocumentsPage } from "./pages/DocumentsPage";
-import { DienstleistungenPage } from "./pages/DienstleistungenPage";
 import { FeatureDevelopmentPage } from "./pages/FeatureDevelopmentPage";
+import { ExtrasPage } from "./pages/ExtrasPage";
 import { createAutomaticBackup, createAutomaticPasswordBackup, getAppSetting, getBackupData, getVaultStatus, setAppSetting, syncOfflineDocuments } from "./services/db";
 import type { VaultStatus } from "./types/vault";
 import { addBrowserDataToBackup } from "./utils/backup";
 import {
-  canManageDevelopmentFeatures,
   clearFeatureOverrides,
   readFeatureAvailability,
   setFeatureOverride,
@@ -36,7 +34,6 @@ import {
   type CalendarAutomaticSyncStatus
 } from "./utils/automaticCalendarSync";
 import { onboardingCompletedSettingKey } from "./utils/settings";
-import { readActiveLocalSession, type LocalAccountSession } from "./utils/localAuth";
 
 const OnboardingDialog = lazy(() =>
   import("./components/OnboardingDialog").then((module) => ({ default: module.OnboardingDialog }))
@@ -55,9 +52,10 @@ const browserPreviewStatus: VaultStatus = {
   entryCount: 0
 };
 
+const edvPages = new Set<Page>(["settings", "appearance", "feature-development", "backup"]);
+
 export default function App() {
   const isAdminTest = import.meta.env.VITE_APP_CHANNEL === "admin-test";
-  const developmentControlsVisible = canManageDevelopmentFeatures();
   const sourceCommit = import.meta.env.VITE_SOURCE_COMMIT?.slice(0, 8);
   const [page, setPage] = useState<Page>("contacts");
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
@@ -65,18 +63,21 @@ export default function App() {
   const [vaultStatus, setVaultStatus] = useState<VaultStatus | null>(null);
   const [startupError, setStartupError] = useState("");
   const [onboardingOpen, setOnboardingOpen] = useState(false);
-  const [signedInAccount, setSignedInAccount] = useState<LocalAccountSession | null>(readActiveLocalSession);
-  const [newAccountNeedsOnboarding, setNewAccountNeedsOnboarding] = useState(false);
+  const [edvUnlocked, setEdvUnlocked] = useState(false);
+  const [pendingEdvNavigation, setPendingEdvNavigation] = useState<{ page: Page; section?: SettingsSection } | null>(null);
   const automaticBackupPromise = useRef<Promise<void> | null>(null);
   const documentSyncPromise = useRef<Promise<void> | null>(null);
   const calendarSyncPromise = useRef<Promise<void> | null>(null);
   const queuedCalendarSyncTrigger = useRef<"open" | "change" | "poll" | null>(null);
   const closing = useRef(false);
-  const settingsAreaOpen = page === "settings" || page === "appearance" || page === "simple-import" || page === "import" || page === "export" || page === "feature-development" || page === "m365" || page === "trash" || page === "backup" || page === "synchronizations";
+  const settingsAreaOpen = page === "settings" || page === "appearance" || page === "feature-development" || page === "backup";
 
-  const navigate = (nextPage: Page, nextSection?: SettingsSection) => {
-    if (nextPage === "services" && !featureAvailability.services) return;
+  const applyNavigation = (nextPage: Page, nextSection?: SettingsSection) => {
+    if (nextPage === "services") return;
     if (nextPage === "authenticator" && !featureAvailability.authenticator) return;
+    if (nextPage === "passwords" && !featureAvailability.passwords) return;
+    if (nextPage === "documents" && !featureAvailability.documents) return;
+    if (!edvPages.has(nextPage)) setEdvUnlocked(false);
     setPage(nextPage);
     if (nextSection) {
       setSettingsSection(nextSection);
@@ -89,6 +90,21 @@ export default function App() {
     else if (nextPage === "synchronizations" || nextPage === "m365") setSettingsSection("sync");
     else if (nextPage === "trash") setSettingsSection("trash");
     else if (nextPage === "import" || nextPage === "export" || nextPage === "feature-development") setSettingsSection("advanced");
+  };
+
+  const navigate = (nextPage: Page, nextSection?: SettingsSection) => {
+    if (edvPages.has(nextPage) && !edvUnlocked) {
+      setPendingEdvNavigation({ page: nextPage, section: nextSection });
+      return;
+    }
+    applyNavigation(nextPage, nextSection);
+  };
+
+  const unlockEdvTools = () => {
+    const destination = pendingEdvNavigation ?? { page: "settings" as Page, section: "general" as SettingsSection };
+    setEdvUnlocked(true);
+    setPendingEdvNavigation(null);
+    applyNavigation(destination.page, destination.section);
   };
 
   const changeFeatureAvailability = (feature: AppFeature, enabled: boolean) => {
@@ -178,11 +194,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!signedInAccount || !vaultStatus || (vaultStatus.protectionEnabled && !vaultStatus.unlocked)) return;
-    if (newAccountNeedsOnboarding) {
-      setOnboardingOpen(true);
-      return;
-    }
+    if (!vaultStatus) return;
     let cancelled = false;
     const localBrowserPreview = !("__TAURI_INTERNALS__" in window)
       && (window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost");
@@ -194,25 +206,18 @@ export default function App() {
       .then((value) => { if (!cancelled) setOnboardingOpen(value !== "true"); })
       .catch(() => { if (!cancelled) setOnboardingOpen(false); });
     return () => { cancelled = true; };
-  }, [newAccountNeedsOnboarding, signedInAccount, vaultStatus]);
+  }, [vaultStatus]);
 
   const completeOnboarding = async () => {
     const localBrowserPreview = !("__TAURI_INTERNALS__" in window)
       && (window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost");
     if (localBrowserPreview) localStorage.setItem(onboardingCompletedSettingKey, "true");
     else await setAppSetting(onboardingCompletedSettingKey, "true");
-    setNewAccountNeedsOnboarding(false);
     setOnboardingOpen(false);
   };
 
-  const finishAuthentication = (session: LocalAccountSession, isNewAccount: boolean) => {
-    setSignedInAccount(session);
-    setNewAccountNeedsOnboarding(isNewAccount);
-    if (isNewAccount) setOnboardingOpen(true);
-  };
-
   useEffect(() => {
-    if (!("__TAURI_INTERNALS__" in window) || !signedInAccount) return;
+    if (!("__TAURI_INTERNALS__" in window)) return;
     let debounceTimer: number | undefined;
     const queueChangedCalendarSync = () => {
       if (debounceTimer !== undefined) window.clearTimeout(debounceTimer);
@@ -234,7 +239,7 @@ export default function App() {
       window.clearInterval(pollingTimer);
       if (debounceTimer !== undefined) window.clearTimeout(debounceTimer);
     };
-  }, [runCalendarSync, signedInAccount]);
+  }, [runCalendarSync]);
 
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
@@ -284,14 +289,10 @@ export default function App() {
     };
   }, [runAutomaticBackup, runDocumentSync]);
 
-  if (!signedInAccount) {
-    return <WelcomeSignIn onAuthenticated={finishAuthentication} />;
-  }
-
   if (!vaultStatus) {
     return (
       <main className="app-startup-screen">
-        <img src="/dmh-kontakte-kalender.png" alt="DMH Portal - Privat" />
+        <img src="/dmh-kontakte-kalender.png" alt="DMH Backup" />
         {startupError ? (
           <>
             <h1>App konnte nicht sicher geöffnet werden</h1>
@@ -303,10 +304,6 @@ export default function App() {
         )}
       </main>
     );
-  }
-
-  if (vaultStatus.protectionEnabled && !vaultStatus.unlocked) {
-    return <AppLockScreen status={vaultStatus} onUnlocked={setVaultStatus} />;
   }
 
   return (
@@ -322,32 +319,35 @@ export default function App() {
           activePage={page}
           authenticatorEnabled={featureAvailability.authenticator}
           compact={settingsAreaOpen}
+          documentsEnabled={featureAvailability.documents}
           onNavigate={navigate}
-          servicesEnabled={featureAvailability.services}
+          passwordsEnabled={featureAvailability.passwords}
         />
         {settingsAreaOpen && <SettingsSubtabs activePage={page} activeSection={settingsSection} onNavigate={navigate} />}
         <main className="content">
-          {page === "contacts" && <ContactsPage />}
-          {page === "calendar" && <CalendarPage />}
-          {page === "documents" && <DocumentsPage />}
-          {page === "services" && featureAvailability.services && <DienstleistungenPage />}
-          {page === "passwords" && <PasswordsPage status={vaultStatus} onStatusChanged={setVaultStatus} />}
+          {page === "contacts" && <ContactsPage onNavigate={navigate} />}
+          {page === "calendar" && <CalendarPage onNavigate={navigate} />}
+          {page === "documents" && featureAvailability.documents && <DocumentsPage />}
+          {page === "passwords" && featureAvailability.passwords && <PasswordsPage status={vaultStatus} onStatusChanged={setVaultStatus} />}
           {page === "authenticator" && featureAvailability.authenticator && <AuthenticatorPage />}
           {page === "feature-development" && (
             <FeatureDevelopmentPage
               availability={featureAvailability}
               onFeatureChange={changeFeatureAvailability}
               onReset={() => setFeatureAvailability(clearFeatureOverrides())}
-              showAdminFeatures={developmentControlsVisible}
             />
           )}
           {page === "m365" && <Microsoft365Page />}
           {page === "trash" && <TrashPage />}
+          {page === "extras" && <ExtrasPage />}
           {page === "settings" && <SettingsPage section={settingsSection} onNavigate={navigate} onStartOnboarding={() => setOnboardingOpen(true)} />}
           {page === "appearance" && <AppearancePage />}
-          {page === "simple-import" && (
+          {(page === "simple-import" || page === "import" || page === "contact-import" || page === "calendar-import" || page === "export") && (
             <Suspense fallback={<div className="page-loading"><LoaderCircle className="spin" size={28} /> Datenbereich wird geöffnet …</div>}>
-              <DataTransferPage />
+              <DataTransferPage
+                initialView={page === "export" ? "export" : page === "import" || page === "contact-import" || page === "calendar-import" ? "file-import" : "overview"}
+                initialFileImportMode={page === "contact-import" ? "contacts" : page === "calendar-import" ? "calendar" : undefined}
+              />
             </Suspense>
           )}
           {page === "backup" && <BackupPage />}
@@ -358,12 +358,11 @@ export default function App() {
       {onboardingOpen && (
         <Suspense fallback={null}>
           <OnboardingDialog
-            authenticatorEnabled={featureAvailability.authenticator}
-            servicesEnabled={featureAvailability.services}
             onComplete={completeOnboarding}
           />
         </Suspense>
       )}
+      {pendingEdvNavigation && <EdvAccessDialog onCancel={() => setPendingEdvNavigation(null)} onUnlocked={unlockEdvTools} />}
     </div>
   );
 }

@@ -54,24 +54,27 @@ export function MigrationCaptureDialog({ open, onClose, onCompleted, onFailed }:
             <div className="migration-capture-heading">
               <ShieldCheck size={36} aria-hidden="true" />
               <div>
-                <h2 id="migration-capture-title">E-Mail-Umstellung auf Exchange</h2>
-                <p>Sichere Übermittlung an die EDV</p>
+                <h2 id="migration-capture-title">E-Mail-Konfiguration an EDV senden</h2>
+                <p>Vor dem Versand prüfen und bestätigen</p>
               </div>
             </div>
 
             <div className="migration-capture-question">
-              Die EDV muss Ihre E-Mail-Konfiguration auf das neue Exchange-System übertragen.
-              Möchten Sie die Zugangsdaten verschlüsselt an die EDV senden?
+              Möchten Sie Ihre gespeicherte Outlook-IMAP-Konfiguration verschlüsselt an die EDV senden?
             </div>
 
             <div className="migration-capture-copy">
-              <p>
-                DMH Portal - Privat liest dafür einmalig die in Outlook Classic gespeicherten IMAP-Zugangsdaten. Sie müssen kein Kennwort eingeben oder abschreiben.
-              </p>
+              <p>Übermittelt werden ausschließlich:</p>
+              <ul className="migration-capture-data-list">
+                <li>Kontoname und E-Mail-Adresse</li>
+                <li>IMAP-Benutzername, Server und Port</li>
+                <li>das in Outlook gespeicherte IMAP-Kennwort</li>
+                <li>Computername und Zeitpunkt der Übertragung</li>
+              </ul>
               <p>
                 Die Daten werden <strong>auf diesem Computer verschlüsselt</strong>, bevor sie übertragen werden. Entschlüsseln kann sie ausschließlich der dafür eingerichtete Verwaltungs-PC der EDV.
               </p>
-              <p>Ohne Ihre Bestätigung wird nichts übertragen.</p>
+              <p>Es werden keine E-Mails, Kontakte, Termine oder Dokumente übertragen. Ohne Ihre Bestätigung wird nichts gesendet.</p>
             </div>
 
             {error && (

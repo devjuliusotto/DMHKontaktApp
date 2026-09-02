@@ -1,4 +1,4 @@
-import { AlertTriangle, ArchiveRestore, FlaskConical, RotateCcw, ShieldCheck, Trash2, Wrench } from "lucide-react";
+import { AlertTriangle, ArchiveRestore, Files, KeyRound, RotateCcw, ShieldCheck, Trash2 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { StatusMessage } from "../components/StatusMessage";
 import {
@@ -16,7 +16,6 @@ interface FeatureDevelopmentPageProps {
   availability: AppFeatureAvailability;
   onFeatureChange: (feature: AppFeature, enabled: boolean) => void;
   onReset: () => void;
-  showAdminFeatures: boolean;
 }
 
 interface FeatureToggleCardProps {
@@ -50,18 +49,14 @@ function FeatureToggleCard({ checked, description, descriptionId, icon, onChange
   );
 }
 
-export function FeatureDevelopmentPage({ availability, onFeatureChange, onReset, showAdminFeatures }: FeatureDevelopmentPageProps) {
+export function FeatureDevelopmentPage({ availability, onFeatureChange, onReset }: FeatureDevelopmentPageProps) {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState<"success" | "error" | "info">("info");
 
-  const toggleServices = () => {
-    const enabled = !availability.services;
-    if (enabled && !window.confirm("Dienstleistungen ist noch nicht mit Azure SQL verbunden. Nur für eine Vorführung auf diesem Computer aktivieren?")) return;
-    onFeatureChange("services", enabled);
-  };
   const usesReleaseDefaults = availability.authenticator === releaseFeatureDefaults.authenticator
-    && (!showAdminFeatures || availability.services === releaseFeatureDefaults.services);
+    && availability.passwords === releaseFeatureDefaults.passwords
+    && availability.documents === releaseFeatureDefaults.documents;
 
   const restoreAutomaticArchive = async () => {
     const confirmed = window.confirm(
@@ -124,18 +119,18 @@ export function FeatureDevelopmentPage({ availability, onFeatureChange, onReset,
     <div className="page feature-development-page">
       <header className="page-header">
         <div>
-          <h2>Erweiterte Funktionen</h2>
-          <p>Testfunktionen und administrative Werkzeuge.</p>
+          <h2>Optionale Bereiche</h2>
+          <p>Zusätzliche Bereiche auf diesem Computer freischalten.</p>
         </div>
-        <span className="feature-development-badge"><FlaskConical size={17} /> {showAdminFeatures ? "Admin Test" : "Optional"}</span>
+        <span className="feature-development-badge"><ShieldCheck size={17} /> Nur EDV</span>
       </header>
 
       <section className="form-panel feature-development-note">
-        <strong>{showAdminFeatures ? "Testfunktionen kontrolliert freigeben" : "Sie entscheiden, was Sie verwenden"}</strong>
-        <p>Änderungen gelten nur auf diesem Computer. Neue Funktionen bleiben ausgeschaltet, bis sie hier aktiviert oder durch eine spätere Release allgemein freigegeben werden.</p>
+        <strong>Bereiche kontrolliert freigeben</strong>
+        <p>Änderungen gelten nur auf diesem Computer. Die Bereiche bleiben verborgen, bis die EDV sie hier aktiviert.</p>
       </section>
 
-      <section className="feature-toggle-list" aria-label="Funktionen in Entwicklung">
+      <section className="feature-toggle-list" aria-label="Optionale Bereiche">
         <FeatureToggleCard
           checked={availability.authenticator}
           description="Einmalcodes sicher auf diesem Computer speichern und erzeugen."
@@ -144,20 +139,25 @@ export function FeatureDevelopmentPage({ availability, onFeatureChange, onReset,
           onChange={() => onFeatureChange("authenticator", !availability.authenticator)}
           title="2FA-Authenticator"
         />
-        {showAdminFeatures ? (
-          <FeatureToggleCard
-            checked={availability.services}
-            description="Buchungen, Service-Tickets und Mahlzeiten. Noch ohne zentrale Azure-SQL-Speicherung."
-            descriptionId="services-feature-description"
-            icon={<Wrench size={25} aria-hidden="true" />}
-            onChange={toggleServices}
-            title="Dienstleistungen"
-          />
-        ) : null}
+        <FeatureToggleCard
+          checked={availability.passwords}
+          description="Passwörter lokal und verschlüsselt auf diesem Computer verwalten."
+          descriptionId="passwords-feature-description"
+          icon={<KeyRound size={25} aria-hidden="true" />}
+          onChange={() => onFeatureChange("passwords", !availability.passwords)}
+          title="Passwörter"
+        />
+        <FeatureToggleCard
+          checked={availability.documents}
+          description="Dokumente aus OneDrive und SharePoint im Explorer-Stil verwalten."
+          descriptionId="documents-feature-description"
+          icon={<Files size={25} aria-hidden="true" />}
+          onChange={() => onFeatureChange("documents", !availability.documents)}
+          title="Dokumente"
+        />
       </section>
 
-      {showAdminFeatures && (
-        <section className="feature-admin-tools" aria-labelledby="feature-admin-tools-title">
+      <section className="feature-admin-tools" aria-labelledby="feature-admin-tools-title">
           <div className="feature-admin-tools-heading">
             <div>
               <h2 id="feature-admin-tools-title">Admin-Werkzeuge</h2>
@@ -193,14 +193,13 @@ export function FeatureDevelopmentPage({ availability, onFeatureChange, onReset,
               <Trash2 size={18} /> App zurücksetzen
             </button>
           </section>
-        </section>
-      )}
+      </section>
 
       <footer className="feature-development-footer">
         <button type="button" onClick={onReset} disabled={usesReleaseDefaults}>
           <RotateCcw size={18} /> Release-Standard verwenden
         </button>
-        <small>Eine spätere offizielle Release kann diese Funktion automatisch für alle aktivieren.</small>
+        <small>Setzt alle optionalen Bereiche wieder auf „verborgen“.</small>
       </footer>
     </div>
   );

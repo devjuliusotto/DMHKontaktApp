@@ -5213,7 +5213,7 @@ pub fn run() {
             vault::complete_local_account_password_recovery
         ])
         .run(tauri::generate_context!())
-        .expect("Fehler beim Starten von DMH Portal - Privat");
+        .expect("Fehler beim Starten von DMH Backup");
 }
 
 #[cfg(test)]

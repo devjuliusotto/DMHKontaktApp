@@ -20,10 +20,11 @@ const suggestedCalendarCategories = ["Geburtstag", "Arbeit", "Sitzung", "Beratun
 
 interface ImportPageProps {
   embedded?: boolean;
+  initialMode?: ImportMode;
 }
 
-export function ImportPage({ embedded = false }: ImportPageProps) {
-  const [mode, setMode] = useState<ImportMode | null>(null);
+export function ImportPage({ embedded = false, initialMode }: ImportPageProps) {
+  const [mode, setMode] = useState<ImportMode | null>(initialMode ?? null);
   const [fileName, setFileName] = useState("");
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [pendingEvents, setPendingEvents] = useState<CalendarEvent[]>([]);

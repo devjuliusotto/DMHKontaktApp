@@ -6,14 +6,19 @@ import { SimpleImportPage } from "./SimpleImportPage";
 
 type TransferView = "overview" | "import" | "file-import" | "export";
 
+interface DataTransferPageProps {
+  initialView?: TransferView;
+  initialFileImportMode?: "contacts" | "calendar";
+}
+
 const viewTitles: Record<Exclude<TransferView, "overview">, string> = {
   import: "Daten importieren",
   "file-import": "Aus Datei importieren",
   export: "Daten exportieren"
 };
 
-export function DataTransferPage() {
-  const [view, setView] = useState<TransferView>("overview");
+export function DataTransferPage({ initialView = "overview", initialFileImportMode }: DataTransferPageProps) {
+  const [view, setView] = useState<TransferView>(initialView);
 
   return (
     <div className="page data-transfer-page">
@@ -55,7 +60,7 @@ export function DataTransferPage() {
             <strong id="data-transfer-view-title">{viewTitles[view]}</strong>
           </div>
           {view === "import" && <SimpleImportPage embedded onOpenFileImport={() => setView("file-import")} />}
-          {view === "file-import" && <ImportPage embedded />}
+          {view === "file-import" && <ImportPage embedded initialMode={initialFileImportMode} />}
           {view === "export" && <ExportPage embedded />}
         </section>
       )}

@@ -1,7 +1,9 @@
-import { CalendarDays, ChevronLeft, ChevronRight, Filter, ListChecks, MoreHorizontal, Plus, Rows3, Trash2, Undo2, X } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, Download, Filter, ListChecks, MoreHorizontal, Plus, Rows3, Trash2, Undo2, Upload, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { CalendarEventForm } from "../components/CalendarEventForm";
+import { EmptyImportState } from "../components/EmptyImportState";
 import { StatusMessage } from "../components/StatusMessage";
+import type { Page } from "../components/Sidebar";
 import type { CalendarEvent } from "../types/calendar";
 import { calendarCategoriesStorageKey, calendarColorOptions, calendarColorStyle, calendarColorValue, calendarStorageKey, calendarTrashStorageKey, defaultCalendarColor, expandCalendarEvents, formatCalendarDate, parseCalendarDate } from "../utils/calendar";
 import { findExactCalendarDuplicateGroups, removeExactCalendarDuplicates } from "../utils/calendarDuplicates";
@@ -113,7 +115,7 @@ function blankEvent(date = new Date()): CalendarEvent {
     description: "",
     color: defaultCalendarColor,
     category: "",
-    source: "DMH Portal - Privat"
+    source: "DMH Backup"
   };
 }
 
@@ -129,6 +131,34 @@ interface CalendarTimeSelection {
   dayKey: string;
   anchorMinutes: number;
   currentMinutes: number;
+}
+
+function safeCalendarMinutes(value: number, fallback = 0): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.min(1_440, Math.round(value / 15) * 15));
+}
+
+function calendarTimeSelectionBounds(selection: CalendarTimeSelection) {
+  const anchorMinutes = safeCalendarMinutes(selection.anchorMinutes);
+  const currentMinutes = safeCalendarMinutes(selection.currentMinutes, anchorMinutes);
+  const startMinutes = Math.min(anchorMinutes, currentMinutes);
+  const selectedEnd = anchorMinutes === currentMinutes
+    ? startMinutes + 30
+    : Math.max(anchorMinutes, currentMinutes);
+  const endMinutes = Math.min(1_440, Math.max(startMinutes + 15, selectedEnd));
+  return { startMinutes, endMinutes };
+}
+
+function formatCalendarMinutes(minutes: number): string {
+  const safeMinutes = safeCalendarMinutes(minutes);
+  const hours = Math.floor(safeMinutes / 60);
+  const minutePart = safeMinutes % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutePart).padStart(2, "0")}`;
+}
+
+function formatTimeSelection(selection: CalendarTimeSelection): string {
+  const { startMinutes, endMinutes } = calendarTimeSelectionBounds(selection);
+  return `${formatCalendarMinutes(startMinutes)}–${formatCalendarMinutes(endMinutes)}`;
 }
 
 interface CalendarMonthSelection {
@@ -206,8 +236,13 @@ function normalizeCategory(category: CalendarCategory): CalendarCategory {
   };
 }
 
-export function CalendarPage() {
+interface CalendarPageProps {
+  onNavigate: (page: Page) => void;
+}
+
+export function CalendarPage({ onNavigate }: CalendarPageProps) {
   const [events, setEvents] = useState<CalendarEvent[]>([]);
+  const [calendarLoaded, setCalendarLoaded] = useState(false);
   const [categories, setCategories] = useState<CalendarCategory[]>([]);
   const [message, setMessage] = useState("");
   const [view, setView] = useState<CalendarView>(storedCalendarView);
@@ -226,21 +261,31 @@ export function CalendarPage() {
   const [draggedEventId, setDraggedEventId] = useState<string | null>(null);
   const [timeSelection, setTimeSelection] = useState<CalendarTimeSelection | null>(null);
   const [monthSelection, setMonthSelection] = useState<CalendarMonthSelection | null>(null);
+  const timeSelectionRef = useRef<CalendarTimeSelection | null>(null);
   const draggedEventIdRef = useRef<string | null>(null);
   const timeGridScrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    const saved = localStorage.getItem(calendarStorageKey);
-    if (saved) {
-      const storedEvents = (JSON.parse(saved) as CalendarEvent[]).map(normalizeEvent);
-      setEvents(storedEvents);
+    try {
+      const saved = localStorage.getItem(calendarStorageKey);
+      if (saved) {
+        const storedEvents = (JSON.parse(saved) as CalendarEvent[]).map(normalizeEvent);
+        setEvents(storedEvents);
+      }
+    } catch {
+      setMessage("Die gespeicherten Kalenderdaten konnten nicht geladen werden.");
     }
 
-    const savedCategories = localStorage.getItem(calendarCategoriesStorageKey);
-    if (savedCategories) {
-      const storedCategories = (JSON.parse(savedCategories) as CalendarCategory[]).map(normalizeCategory).filter((category) => category.name);
-      setCategories(storedCategories);
+    try {
+      const savedCategories = localStorage.getItem(calendarCategoriesStorageKey);
+      if (savedCategories) {
+        const storedCategories = (JSON.parse(savedCategories) as CalendarCategory[]).map(normalizeCategory).filter((category) => category.name);
+        setCategories(storedCategories);
+      }
+    } catch {
+      setMessage("Die gespeicherten Kalenderkategorien konnten nicht geladen werden.");
     }
+    setCalendarLoaded(true);
   }, []);
 
   useEffect(() => {
@@ -252,6 +297,7 @@ export function CalendarPage() {
       try {
         const storedEvents = JSON.parse(localStorage.getItem(calendarStorageKey) ?? "[]") as CalendarEvent[];
         setEvents(storedEvents.map(normalizeEvent));
+        setCalendarLoaded(true);
       } catch {
         setMessage("Die von Microsoft 365 empfangenen Kalenderdaten konnten nicht angezeigt werden.");
       }
@@ -470,46 +516,54 @@ export function CalendarPage() {
   const minutesFromPointer = (element: HTMLElement, clientY: number) => {
     const rect = element.getBoundingClientRect();
     const rawMinutes = ((clientY - rect.top) / compactCalendarHourHeight) * 60;
-    return Math.max(0, Math.min(23 * 60 + 45, Math.round(rawMinutes / 15) * 15));
+    return Math.min(23 * 60 + 45, safeCalendarMinutes(rawMinutes));
   };
 
-  const selectionBounds = (selection: CalendarTimeSelection) => {
-    const startMinutes = Math.min(selection.anchorMinutes, selection.currentMinutes);
-    const endMinutes = selection.anchorMinutes === selection.currentMinutes
-      ? Math.min(1_440, startMinutes + 30)
-      : Math.max(selection.anchorMinutes, selection.currentMinutes);
-    return { startMinutes, endMinutes: Math.max(startMinutes + 15, endMinutes) };
+  const setActiveTimeSelection = (selection: CalendarTimeSelection | null) => {
+    timeSelectionRef.current = selection;
+    setTimeSelection(selection);
   };
 
   const beginTimeSelection = (day: Date, event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0 || (event.target as HTMLElement).closest(".calendar-week-timed-event")) return;
+    const target = event.target;
+    if (event.button !== 0 || (target instanceof Element && target.closest(".calendar-week-timed-event"))) return;
     event.preventDefault();
     const minutes = minutesFromPointer(event.currentTarget, event.clientY);
-    setTimeSelection({ dayKey: dateInputValue(day), anchorMinutes: minutes, currentMinutes: minutes });
-    event.currentTarget.setPointerCapture(event.pointerId);
+    setActiveTimeSelection({ dayKey: dateInputValue(day), anchorMinutes: minutes, currentMinutes: minutes });
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Some embedded webviews can finish the selection without pointer capture.
+    }
   };
 
   const updateTimeSelection = (day: Date, event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!timeSelection || timeSelection.dayKey !== dateInputValue(day)) return;
-    setTimeSelection((current) => current ? {
+    const current = timeSelectionRef.current;
+    if (!current || current.dayKey !== dateInputValue(day) || event.buttons !== 1) return;
+    setActiveTimeSelection({
       ...current,
       currentMinutes: minutesFromPointer(event.currentTarget, event.clientY)
-    } : null);
+    });
   };
 
   const finishTimeSelection = (day: Date, event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!timeSelection || timeSelection.dayKey !== dateInputValue(day)) return;
+    const current = timeSelectionRef.current;
+    if (!current || current.dayKey !== dateInputValue(day)) return;
     const completed = {
-      ...timeSelection,
+      ...current,
       currentMinutes: minutesFromPointer(event.currentTarget, event.clientY)
     };
-    const { startMinutes, endMinutes } = selectionBounds(completed);
+    const { startMinutes, endMinutes } = calendarTimeSelectionBounds(completed);
     const starts = startOfDay(day);
     const ends = startOfDay(day);
     starts.setMinutes(startMinutes);
     ends.setMinutes(endMinutes);
-    setTimeSelection(null);
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    setActiveTimeSelection(null);
+    try {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // The pointer may already have been released by the embedded webview.
+    }
     openNewEventRange(starts, ends);
   };
 
@@ -600,7 +654,7 @@ export function CalendarPage() {
     if (!editingEvent) return;
     const next = events.filter((event) => event.id !== editingEvent.id);
     const matchingCategory = categories.find((category) => category.name === editingEvent.category.trim());
-    persist([...next, normalizeEvent({ ...editingEvent, updatedAt: new Date().toISOString(), color: matchingCategory?.color ?? editingEvent.color, source: editingEvent.source || "DMH Portal - Privat" })]);
+    persist([...next, normalizeEvent({ ...editingEvent, updatedAt: new Date().toISOString(), color: matchingCategory?.color ?? editingEvent.color, source: editingEvent.source || "DMH Backup" })]);
     const date = eventDate(editingEvent);
     if (date) setCursor(startOfDay(date));
     setEditingEvent(null);
@@ -669,6 +723,8 @@ export function CalendarPage() {
               <MoreHorizontal size={21} />
             </button>
             {showActionsMenu && <div className="calendar-actions-menu" role="menu">
+              <button type="button" onClick={() => { setShowActionsMenu(false); onNavigate("import"); }}><Upload size={18} /> Termine importieren</button>
+              <button type="button" onClick={() => { setShowActionsMenu(false); onNavigate("export"); }}><Download size={18} /> Termine exportieren</button>
               <button type="button" onClick={() => { setShowActionsMenu(false); setShowCategoryDialog(true); }}><Plus size={18} /> Kategorie erstellen</button>
               <button type="button" onClick={() => { setShowActionsMenu(false); reviewExactDuplicates(); }}><ListChecks size={18} /> Exakte Duplikate prüfen</button>
               {duplicateCleanupBackup && <button type="button" onClick={() => { setShowActionsMenu(false); undoDuplicateCleanup(); }}><Undo2 size={18} /> Bereinigung rückgängig</button>}
@@ -768,7 +824,11 @@ export function CalendarPage() {
         </div>
       )}
 
-      <section className="calendar-shell">
+      {!calendarLoaded ? (
+        <div className="page-loading">Kalender wird geladen …</div>
+      ) : events.length === 0 ? (
+        <EmptyImportState kind="calendar" onEasyImport={() => onNavigate("extras")} onManualImport={() => onNavigate("calendar-import")} />
+      ) : <section className="calendar-shell">
         <section className="calendar-toolbar" aria-label="Kalendersteuerung">
           <div className="calendar-toolbar-navigation">
             <button type="button" onClick={() => setCursor(startOfDay(new Date()))}>Heute</button>
@@ -888,14 +948,15 @@ export function CalendarPage() {
                       onPointerDown={(event) => beginTimeSelection(day, event)}
                       onPointerMove={(event) => updateTimeSelection(day, event)}
                       onPointerUp={(event) => finishTimeSelection(day, event)}
-                      onPointerCancel={() => setTimeSelection(null)}
+                      onPointerCancel={() => setActiveTimeSelection(null)}
+                      onLostPointerCapture={() => { if (timeSelectionRef.current) setActiveTimeSelection(null); }}
                       onDragOver={allowEventDrop}
                       onDrop={(event) => moveEventToPointer(day, event)}
                     >
                       {sameDay(day, now) && <span className="calendar-current-time-line" style={{ top: `${(nowMinutes / 60) * compactCalendarHourHeight}px` }}><i /></span>}
                       {timeSelection?.dayKey === dateInputValue(day) && (() => {
-                        const bounds = selectionBounds(timeSelection);
-                        return <span className="calendar-time-selection" style={{ top: `${(bounds.startMinutes / 60) * compactCalendarHourHeight}px`, height: `${((bounds.endMinutes - bounds.startMinutes) / 60) * compactCalendarHourHeight}px` }}><strong>{eventTimeRange({ ...blankEvent(new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, bounds.startMinutes)), endsAt: toLocalDateTime(new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, bounds.endMinutes).toISOString()) })}</strong></span>;
+                        const bounds = calendarTimeSelectionBounds(timeSelection);
+                        return <span className="calendar-time-selection" style={{ top: `${(bounds.startMinutes / 60) * compactCalendarHourHeight}px`, height: `${((bounds.endMinutes - bounds.startMinutes) / 60) * compactCalendarHourHeight}px` }}><strong>{formatTimeSelection(timeSelection)}</strong></span>;
                       })()}
                       {weekLayouts[dayIndex].map((layout) => {
                         const durationHeight = ((layout.endMinutes - layout.startMinutes) / 60) * compactCalendarHourHeight;
@@ -960,7 +1021,8 @@ export function CalendarPage() {
                 onPointerDown={(event) => beginTimeSelection(cursor, event)}
                 onPointerMove={(event) => updateTimeSelection(cursor, event)}
                 onPointerUp={(event) => finishTimeSelection(cursor, event)}
-                onPointerCancel={() => setTimeSelection(null)}
+                onPointerCancel={() => setActiveTimeSelection(null)}
+                onLostPointerCapture={() => { if (timeSelectionRef.current) setActiveTimeSelection(null); }}
                 onDragOver={allowEventDrop}
                 onDrop={(event) => moveEventToPointer(cursor, event)}
               >
@@ -970,8 +1032,8 @@ export function CalendarPage() {
                   return <span className="calendar-current-time-line" style={{ top: `${(nowMinutes / 60) * compactCalendarHourHeight}px` }}><i /></span>;
                 })()}
                 {timeSelection?.dayKey === dateInputValue(cursor) && (() => {
-                  const bounds = selectionBounds(timeSelection);
-                  return <span className="calendar-time-selection" style={{ top: `${(bounds.startMinutes / 60) * compactCalendarHourHeight}px`, height: `${((bounds.endMinutes - bounds.startMinutes) / 60) * compactCalendarHourHeight}px` }}><strong>{eventTimeRange({ ...blankEvent(new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate(), 0, bounds.startMinutes)), endsAt: toLocalDateTime(new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate(), 0, bounds.endMinutes).toISOString()) })}</strong></span>;
+                  const bounds = calendarTimeSelectionBounds(timeSelection);
+                  return <span className="calendar-time-selection" style={{ top: `${(bounds.startMinutes / 60) * compactCalendarHourHeight}px`, height: `${((bounds.endMinutes - bounds.startMinutes) / 60) * compactCalendarHourHeight}px` }}><strong>{formatTimeSelection(timeSelection)}</strong></span>;
                 })()}
                 {dayLayouts.map((layout) => {
                   const durationHeight = ((layout.endMinutes - layout.startMinutes) / 60) * compactCalendarHourHeight;
@@ -1008,7 +1070,7 @@ export function CalendarPage() {
           <p className="calendar-week-help">Freien Zeitraum markieren: Termin erstellen · Termin ziehen: verschieben</p>
         </section>
       )}
-      </section>
+      </section>}
     </div>
   );
 }

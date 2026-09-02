@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Standardberechtigungen fuer DMH Portal - Privat",
+  "description": "Standardberechtigungen fuer DMH Backup",
   "windows": ["main"],
   "permissions": [
     "core:default",

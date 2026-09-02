@@ -6,18 +6,13 @@ import {
   Check,
   CheckCircle2,
   ContactRound,
-  Files,
   FolderSearch,
-  KeyRound,
   LoaderCircle,
   MonitorSmartphone,
-  Settings,
-  ShieldCheck,
   Sparkles,
-  UserRound,
-  Wrench
+  UserRound
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import {
   getMicrosoft365ConnectionStatus,
   importOutlookClassicAppointmentsOnce,
@@ -40,8 +35,6 @@ type OnboardingStage = "welcome" | "tour" | "import" | "finished";
 type ImportSelectionKey = "outlookContacts" | "outlookCalendars" | "thunderbirdContacts" | "thunderbirdCalendars";
 
 interface OnboardingDialogProps {
-  authenticatorEnabled: boolean;
-  servicesEnabled: boolean;
   onComplete: () => Promise<void>;
 }
 
@@ -76,9 +69,7 @@ interface ImportChoiceCardProps {
 const BASE_TOUR: TourItem[] = [
   { title: "Kontakte", description: "Personen, Telefonnummern, E-Mail-Adressen und Gruppen an einem Ort verwalten.", hint: "Mit „Neuer Kontakt“ können Sie jederzeit selbst jemanden hinzufügen.", icon: UserRound },
   { title: "Kalender", description: "Termine übersichtlich nach Tag, Woche oder Monat anzeigen und bearbeiten.", hint: "Ein Klick auf einen freien Zeitpunkt erstellt einen neuen Termin.", icon: CalendarDays },
-  { title: "Passwörter", description: "Kennwörter geschützt auf diesem Computer speichern und schnell wiederfinden.", hint: "Vor dem ersten Kennwort richten Sie den persönlichen Schutz ein.", icon: KeyRound },
-  { title: "Dokumente", description: "Dateien aus OneDrive und SharePoint ähnlich wie im Windows-Explorer öffnen.", hint: "Dokumente können auch für die Offline-Nutzung gespeichert werden.", icon: Files },
-  { title: "Einstellungen", description: "Konten, Synchronisierungen, Darstellung, Sicherungen und Importe verwalten.", hint: "Die Einführung kann dort später jederzeit erneut geöffnet werden.", icon: Settings }
+  { title: "DMH Backup", description: "Kontakte und Termine lokal sichern und für die bevorstehende Migration vorbereiten.", hint: "Die administrativen Einstellungen sind ausschließlich für die EDV zugänglich.", icon: MonitorSmartphone }
 ];
 
 const EMPTY_SELECTION: Record<ImportSelectionKey, boolean> = {
@@ -99,7 +90,7 @@ function ImportChoiceCard({ checked, count, description, disabled = false, icon:
   );
 }
 
-export function OnboardingDialog({ authenticatorEnabled, servicesEnabled, onComplete }: OnboardingDialogProps) {
+export function OnboardingDialog({ onComplete }: OnboardingDialogProps) {
   const [stage, setStage] = useState<OnboardingStage>("welcome");
   const [tourIndex, setTourIndex] = useState(0);
   const [scanning, setScanning] = useState(false);
@@ -109,12 +100,7 @@ export function OnboardingDialog({ authenticatorEnabled, servicesEnabled, onComp
   const [message, setMessage] = useState("");
   const [importSummary, setImportSummary] = useState<string[]>([]);
 
-  const tourItems = useMemo(() => {
-    const items = [...BASE_TOUR];
-    if (authenticatorEnabled) items.splice(3, 0, { title: "2FA-Authenticator", description: "Einmalcodes direkt am PC erzeugen, ohne jedes Mal das Handy zu suchen.", hint: "Neue Konten werden über einen QR-Code oder einen geheimen Schlüssel hinzugefügt.", icon: ShieldCheck });
-    if (servicesEnabled) items.splice(items.length - 1, 0, { title: "Dienstleistungen", description: "Buchungen, Serviceanfragen, Mahlzeiten und weitere interne Angebote öffnen.", hint: "Eigene Vorgänge stehen gesammelt in einer übersichtlichen Liste.", icon: Wrench });
-    return items;
-  }, [authenticatorEnabled, servicesEnabled]);
+  const tourItems = BASE_TOUR;
 
   const currentTourItem = tourItems[tourIndex] ?? tourItems[0];
   const CurrentTourIcon = currentTourItem?.icon ?? Sparkles;
@@ -259,7 +245,7 @@ export function OnboardingDialog({ authenticatorEnabled, servicesEnabled, onComp
       <section className="onboarding-dialog" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
         <header className="onboarding-header">
           <span className="onboarding-logo"><img src="/dmh-kontakte-kalender.png" alt="" /></span>
-          <div><strong>DMH Portal - Privat</strong><small>Einfach anfangen</small></div>
+          <div><strong>DMH Backup</strong><small>Sicher durch die Migration</small></div>
           <div className="onboarding-progress" aria-label="Fortschritt">
             {["welcome", "tour", "import", "finished"].map((item, index) => <span className={stage === item ? "active" : ""} key={item}>{index + 1}</span>)}
           </div>

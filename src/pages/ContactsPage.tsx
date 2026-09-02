@@ -1,10 +1,12 @@
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { Ellipsis, Inbox, Mail, Minus, Pencil, Plus, Search, Settings2, Trash2, UserPlus, UsersRound, X } from "lucide-react";
+import { Download, Ellipsis, Inbox, ListChecks, Mail, Minus, Pencil, Plus, Search, Settings2, Trash2, Upload, UserPlus, UsersRound, X } from "lucide-react";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ContactForm } from "../components/ContactForm";
 import { ContactTable } from "../components/ContactTable";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { EmptyImportState } from "../components/EmptyImportState";
 import { StatusMessage } from "../components/StatusMessage";
+import type { Page } from "../components/Sidebar";
 import { t } from "../i18n";
 import {
   clearContactGroups,
@@ -80,10 +82,15 @@ function contactInGroup(contact: Contact, groupId: number) {
   return contact.groups.some((group) => group.id === groupId);
 }
 
-export function ContactsPage() {
+interface ContactsPageProps {
+  onNavigate: (page: Page) => void;
+}
+
+export function ContactsPage({ onNavigate }: ContactsPageProps) {
   const notifyLocalM365Change = () => window.dispatchEvent(new Event(calendarChangedEventName));
   const [tab, setTab] = useState<ContactsTab>("all");
   const [contacts, setContacts] = useState<Contact[]>([]);
+  const [totalContactCount, setTotalContactCount] = useState<number | null>(null);
   const [groups, setGroups] = useState<Group[]>([]);
   const [groupContactCounts, setGroupContactCounts] = useState<Record<number, number>>({});
   const [ungroupedContactCount, setUngroupedContactCount] = useState(0);
@@ -148,6 +155,7 @@ export function ContactsPage() {
 
   const refresh = useCallback(async () => {
     const [groupRows, allContactRows] = await Promise.all([listGroups(), listContacts("")]);
+    setTotalContactCount(allContactRows.length);
     setGroups(groupRows);
     groupsRef.current = groupRows;
 
@@ -712,9 +720,13 @@ export function ContactsPage() {
               <Ellipsis size={20} />
             </button>
             {testMenuOpen && (
-              <div className="more-menu">
+              <div className="more-menu" role="menu">
+                <button type="button" onClick={() => { setTestMenuOpen(false); onNavigate("import"); }}><Upload size={18} /> Kontakte importieren</button>
+                <button type="button" onClick={() => { setTestMenuOpen(false); onNavigate("export"); }}><Download size={18} /> Kontakte exportieren</button>
+                <button type="button" onClick={() => { setTestMenuOpen(false); onNavigate("import"); }}><ListChecks size={18} /> Import &amp; Duplikate prüfen</button>
                 {tab === "all" && !selectionMode && <button type="button" onClick={startSelectionMode}>Auswählen</button>}
-                <button type="button" onClick={removeAllContacts}>Alle Kontakte löschen</button>
+                <span className="calendar-actions-separator" />
+                <button className="danger" type="button" onClick={removeAllContacts}><Trash2 size={18} /> Alle Kontakte löschen</button>
               </div>
             )}
           </div>
@@ -756,7 +768,7 @@ export function ContactsPage() {
               </div>
               <label className="checkbox-row email-default-option">
                 <input type="checkbox" checked={rememberEmailApp} onChange={(event) => setRememberEmailApp(event.target.checked)} />
-                Diese Anwendung als Standard für E-Mails in DMH Portal - Privat verwenden
+                Diese Anwendung als Standard für E-Mails in DMH Backup verwenden
               </label>
               <div className="button-row">
                 <button className="primary" type="button" onClick={sendEmail}>E-Mail öffnen</button>
@@ -879,7 +891,9 @@ export function ContactsPage() {
         </div>
       )}
 
-      {tab === "all" ? (
+      {tab === "all" && totalContactCount === 0 ? (
+        <EmptyImportState kind="contacts" onEasyImport={() => onNavigate("extras")} onManualImport={() => onNavigate("contact-import")} />
+      ) : tab === "all" ? (
         <ContactTable
           contacts={contacts}
           onEdit={(contact) => setEditing(toContactInput(contact))}
@@ -1007,7 +1021,7 @@ export function ContactsPage() {
         onConfirm={() => void confirmDeleteRequest()}
       />
 
-      <div className="contacts-font-control" role="group" aria-label="Schriftgröße der Kontakte">
+      {totalContactCount !== 0 && <div className="contacts-font-control" role="group" aria-label="Schriftgröße der Kontakte">
         <button
           type="button"
           onClick={() => changeContactsFontSize(-1)}
@@ -1026,7 +1040,7 @@ export function ContactsPage() {
         >
           <Plus size={22} aria-hidden="true" />
         </button>
-      </div>
+      </div>}
     </div>
   );
 }

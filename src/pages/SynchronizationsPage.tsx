@@ -9,8 +9,7 @@ import {
   PauseCircle,
   PlayCircle,
   Plus,
-  Save,
-  UploadCloud
+  Save
 } from "lucide-react";
 import { StatusMessage } from "../components/StatusMessage";
 import type { SettingsSection } from "../components/SettingsSubtabs";
@@ -75,7 +74,7 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
   const [sharedMailboxAddress, setSharedMailboxAddress] = useState("");
   const [conflictDecisions, setConflictDecisions] = useState<Record<string, Microsoft365ConflictDecision>>({});
   const [history, setHistory] = useState<Microsoft365SyncHistoryEntry[]>([]);
-  const [openProvider, setOpenProvider] = useState<"m365" | "outlook" | "thunderbird" | null>(null);
+  const [openProvider, setOpenProvider] = useState<"m365" | null>("m365");
 
   useEffect(() => {
     void getAppSetting(syncHistoryKey).then((raw) => setHistory(parseHistory(raw))).catch(() => setHistory([]));
@@ -293,7 +292,7 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
     ? `Verbunden${m365Status.account?.email ? ` · ${m365Status.account.email}` : ""}`
     : "Noch nicht verbunden";
 
-  const toggleProvider = (provider: "m365" | "outlook" | "thunderbird") => {
+  const toggleProvider = (provider: "m365") => {
     setOpenProvider((current) => current === provider ? null : provider);
   };
 
@@ -301,8 +300,8 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
     <div className="page synchronizations-page">
       <header className="page-header">
         <div>
-          <h2>Synchronisierungen</h2>
-          <p>Verbindungen einzeln öffnen und verwalten.</p>
+          <h2>Microsoft-365-Synchronisierung</h2>
+          <p>Kontakte und Termine mit Microsoft 365 abgleichen.</p>
         </div>
       </header>
 
@@ -409,20 +408,6 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
               </>
             )}
           </div>}
-        </article>
-
-        <article className={openProvider === "outlook" ? "sync-provider-card open" : "sync-provider-card"}>
-          <button className="sync-provider-summary" type="button" onClick={() => toggleProvider("outlook")} aria-expanded={openProvider === "outlook"}>
-            <span className="synchronization-icon"><UploadCloud size={23} /></span><span className="sync-provider-name"><strong>Outlook Classic</strong><small>Lokaler Einmalimport</small></span><span className="synchronization-status local">Import</span><ChevronDown className="sync-provider-chevron" size={20} />
-          </button>
-          {openProvider === "outlook" && <div className="sync-provider-content sync-provider-empty"><span>Outlook Classic wird derzeit einmalig importiert und nicht laufend synchronisiert.</span><button type="button" onClick={() => onNavigate("simple-import", "import")}>Import öffnen</button></div>}
-        </article>
-
-        <article className={openProvider === "thunderbird" ? "sync-provider-card open" : "sync-provider-card"}>
-          <button className="sync-provider-summary" type="button" onClick={() => toggleProvider("thunderbird")} aria-expanded={openProvider === "thunderbird"}>
-            <span className="synchronization-icon"><UploadCloud size={23} /></span><span className="sync-provider-name"><strong>Thunderbird</strong><small>Lokaler Einmalimport</small></span><span className="synchronization-status local">Import</span><ChevronDown className="sync-provider-chevron" size={20} />
-          </button>
-          {openProvider === "thunderbird" && <div className="sync-provider-content sync-provider-empty"><span>Thunderbird wird derzeit einmalig importiert und nicht laufend synchronisiert.</span><button type="button" onClick={() => onNavigate("simple-import", "import")}>Import öffnen</button></div>}
         </article>
       </section>
     </div>

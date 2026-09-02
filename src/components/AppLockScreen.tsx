@@ -76,7 +76,7 @@ export function AppLockScreen({ status, onUnlocked }: AppLockScreenProps) {
   return (
     <main className="app-lock-screen">
       <section className="app-lock-card" aria-labelledby="app-lock-title">
-        <img src="/dmh-kontakte-kalender.png" alt="DMH Portal - Privat" />
+        <img src="/dmh-kontakte-kalender.png" alt="DMH Backup" />
         <div className="app-lock-icon" aria-hidden="true">
           {mode === "login" ? <ShieldCheck size={32} /> : <Mail size={32} />}
         </div>

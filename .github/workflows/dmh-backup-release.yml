@@ -1,0 +1,138 @@
+name: DMH Backup für Windows veröffentlichen
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version des DMH Backup, zum Beispiel 0.0.31"
+        required: true
+        default: "0.0.31"
+        type: string
+      release_notes:
+        description: "Kurzer Hinweis für die Download-Seite"
+        required: false
+        default: "Vereinfachte DMH-Backup-Version für die bevorstehende Migration."
+        type: string
+
+concurrency:
+  group: release-dmh-backup
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    name: Windows-Installer erstellen und veröffentlichen
+    environment: production
+    permissions:
+      contents: write
+    runs-on: windows-latest
+
+    steps:
+      - name: Anfrage prüfen
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          if ("${{ github.ref }}" -ne "refs/heads/main") {
+            throw "DMH Backup darf ausschließlich vom Branch main veröffentlicht werden."
+          }
+          if ($env:RELEASE_VERSION -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Die Version muss das Format 0.0.31 ohne beta/rc-Zusatz haben."
+          }
+          gh release view "v$env:RELEASE_VERSION" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            throw "Die Release v$env:RELEASE_VERSION existiert bereits. Bitte eine neue Version wählen."
+          }
+          exit 0
+
+      - name: Quellcode auschecken
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Node.js installieren
+        uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Rust stable installieren
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: i686-pc-windows-msvc
+
+      - name: Rust-Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Abhängigkeiten installieren
+        run: npm ci
+
+      - name: Release-Version setzen
+        run: |
+          node scripts/set-version.mjs "${{ inputs.version }}"
+          node scripts/check-version.mjs "${{ inputs.version }}"
+
+      - name: Build-Konfiguration prüfen
+        shell: pwsh
+        env:
+          M365_CLIENT_ID: ${{ vars.M365_CLIENT_ID }}
+          M365_TENANT_ID: ${{ vars.M365_TENANT_ID }}
+          MIGRATION_CAPTURE_URL: ${{ secrets.MIGRATION_CAPTURE_URL }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:M365_CLIENT_ID)) {
+            throw "Repository variable M365_CLIENT_ID fehlt."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:M365_TENANT_ID)) {
+            throw "Repository variable M365_TENANT_ID fehlt."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:MIGRATION_CAPTURE_URL) -or -not $env:MIGRATION_CAPTURE_URL.StartsWith("https://")) {
+            throw "Repository secret MIGRATION_CAPTURE_URL fehlt oder ist keine HTTPS-Adresse."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            throw "Repository secret TAURI_SIGNING_PRIVATE_KEY fehlt."
+          }
+
+      - name: Oberfläche und Farbschema prüfen
+        run: |
+          npm run theme:check
+          npm run build
+
+      - name: Rust-Tests ausführen
+        env:
+          DMH_RELEASE_CHANNEL: stable
+          M365_CLIENT_ID: ${{ vars.M365_CLIENT_ID }}
+          M365_TENANT_ID: ${{ vars.M365_TENANT_ID }}
+          RUST_BACKTRACE: "1"
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+
+      - name: DMH Backup bauen und auf GitHub veröffentlichen
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          MIGRATION_CAPTURE_URL: ${{ secrets.MIGRATION_CAPTURE_URL }}
+          VITE_APP_CHANNEL: stable
+          VITE_FEATURE_AUTHENTICATOR_DEFAULT: "false"
+          VITE_FEATURE_SERVICES_DEFAULT: "false"
+          VITE_SOURCE_COMMIT: ${{ github.sha }}
+          DMH_RELEASE_CHANNEL: stable
+          M365_CLIENT_ID: ${{ vars.M365_CLIENT_ID }}
+          M365_TENANT_ID: ${{ vars.M365_TENANT_ID }}
+        with:
+          tagName: v${{ inputs.version }}
+          releaseName: DMH Backup v${{ inputs.version }}
+          releaseBody: |
+            ${{ inputs.release_notes }}
+
+            Enthaltene Windows-Downloads:
+            - EXE-Installer für die einfache Installation
+            - MSI-Installer für die Softwareverteilung
+
+            Quellstand: ${{ github.sha }}
+          releaseDraft: false
+          prerelease: false
+          updaterJsonPreferNsis: true

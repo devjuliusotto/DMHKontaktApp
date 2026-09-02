@@ -1,8 +1,9 @@
-export type AppFeature = "authenticator" | "services";
+export type AppFeature = "authenticator" | "passwords" | "documents";
 
 export interface AppFeatureAvailability {
   authenticator: boolean;
-  services: boolean;
+  passwords: boolean;
+  documents: boolean;
 }
 
 interface StoredFeatureOverrides {
@@ -10,11 +11,12 @@ interface StoredFeatureOverrides {
   overrides: Partial<AppFeatureAvailability>;
 }
 
-const storageKey = "dmh-feature-overrides-v1";
+const storageKey = "dmh-backup-feature-overrides-v1";
 
 export const releaseFeatureDefaults: AppFeatureAvailability = {
-  authenticator: import.meta.env.VITE_FEATURE_AUTHENTICATOR_DEFAULT === "true",
-  services: import.meta.env.VITE_FEATURE_SERVICES_DEFAULT === "true"
+  authenticator: false,
+  passwords: false,
+  documents: false
 };
 
 export function canManageDevelopmentFeatures(): boolean {
@@ -29,7 +31,8 @@ function readOverrides(): Partial<AppFeatureAvailability> {
     if (parsed.version !== 1 || typeof parsed.overrides !== "object" || parsed.overrides === null) return {};
     const overrides: Partial<AppFeatureAvailability> = {};
     if (typeof parsed.overrides.authenticator === "boolean") overrides.authenticator = parsed.overrides.authenticator;
-    if (canManageDevelopmentFeatures() && typeof parsed.overrides.services === "boolean") overrides.services = parsed.overrides.services;
+    if (typeof parsed.overrides.passwords === "boolean") overrides.passwords = parsed.overrides.passwords;
+    if (typeof parsed.overrides.documents === "boolean") overrides.documents = parsed.overrides.documents;
     return overrides;
   } catch {
     return {};
@@ -41,8 +44,6 @@ export function readFeatureAvailability(): AppFeatureAvailability {
 }
 
 export function setFeatureOverride(feature: AppFeature, enabled: boolean): AppFeatureAvailability {
-  if (feature === "services" && !canManageDevelopmentFeatures()) return readFeatureAvailability();
-
   const overrides = { ...readOverrides(), [feature]: enabled };
   const stored: StoredFeatureOverrides = { version: 1, overrides };
   try {

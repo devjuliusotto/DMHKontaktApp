@@ -1,4 +1,4 @@
-import { ArchiveRestore, ArrowLeftRight, ArrowUpDown, Home, Mail, Palette, Printer, Settings, SlidersHorizontal, Trash2 } from "lucide-react";
+import { ArchiveRestore, Home, Mail, Palette, Printer, Settings, SlidersHorizontal } from "lucide-react";
 import type { Page } from "./Sidebar";
 
 export type SettingsSection = "general" | "mail" | "printer" | "appearance" | "import" | "backup" | "sync" | "advanced" | "trash";
@@ -8,11 +8,8 @@ const items: Array<{ page: Page; section: SettingsSection; label: string; icon: 
   { page: "settings", section: "mail", label: "E-Mail & Konten", icon: Mail },
   { page: "settings", section: "printer", label: "Drucker", icon: Printer },
   { page: "appearance", section: "appearance", label: "Erscheinungsbild", icon: Palette },
-  { page: "simple-import", section: "import", label: "Import & Export", icon: ArrowUpDown },
   { page: "backup", section: "backup", label: "Sicherung", icon: ArchiveRestore },
-  { page: "synchronizations", section: "sync", label: "Synchronisierungen", icon: ArrowLeftRight, activePages: ["synchronizations", "m365"] },
-  { page: "feature-development", section: "advanced", label: "Erweitert", icon: SlidersHorizontal },
-  { page: "trash", section: "trash", label: "Papierkorb", icon: Trash2 }
+  { page: "feature-development", section: "advanced", label: "Erweitert", icon: SlidersHorizontal }
 ];
 
 interface SettingsSubtabsProps {
@@ -23,7 +20,7 @@ interface SettingsSubtabsProps {
 
 export function SettingsSubtabs({ activePage, activeSection, onNavigate }: SettingsSubtabsProps) {
   return (
-    <nav className="settings-subtabs" aria-label="Unterseiten der Einstellungen">
+    <nav className="settings-subtabs" aria-label="Unterseiten der EDV Tools">
       {items.map((item) => {
         const Icon = item.icon;
         const active = item.activePages?.includes(activePage) ?? (activePage === item.page && activeSection === item.section);

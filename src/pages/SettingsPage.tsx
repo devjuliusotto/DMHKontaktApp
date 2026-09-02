@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { AlertTriangle, CheckCircle2, ChevronDown, Download, Eye, EyeOff, Mail, RefreshCw, Search, Send, ShieldCheck, Sparkles, Trash2, X } from "lucide-react";
-import { MigrationCaptureDialog } from "../components/MigrationCaptureDialog";
+import { AlertTriangle, CheckCircle2, ChevronDown, Download, Eye, EyeOff, Mail, RefreshCw, Search, Sparkles, Trash2, X } from "lucide-react";
 import { PrinterSettings } from "../components/PrinterSettings";
 import { StatusMessage } from "../components/StatusMessage";
 import type { SettingsSection } from "../components/SettingsSubtabs";
@@ -8,7 +7,6 @@ import type { Page } from "../components/Sidebar";
 import {
   getAppSetting,
   importOutlookAccount,
-  getMigrationCaptureStatus,
   listMailAccounts,
   revealMailPassword,
   removeMailAccount,
@@ -16,8 +14,7 @@ import {
   setAppSetting,
   testMailConnection
 } from "../services/db";
-import type { MailAccount, MigrationCaptureResult, MigrationCaptureStatus, OutlookAccountCandidate } from "../types/mail";
-import { canManageDevelopmentFeatures } from "../utils/featureFlags";
+import type { MailAccount, OutlookAccountCandidate } from "../types/mail";
 import { deletionConfirmationSettingKey } from "../utils/settings";
 
 interface SettingsPageProps {
@@ -42,23 +39,17 @@ const settingsSearchItems: SettingsSearchItem[] = [
   { id: "printer", label: "Drucker hinzufügen", description: "Drucker → Netzwerkdrucker", keywords: "drucker printer netzwerk freigabe ip hinzufügen", page: "settings", section: "printer" },
   { id: "backup", label: "Sicherung öffnen", description: "Sicherung → Öffnen", keywords: "sicherung backup daten wiederherstellen export", page: "backup", section: "backup" },
   { id: "appearance", label: "Erscheinungsbild öffnen", description: "Erscheinungsbild → Darstellung", keywords: "erscheinungsbild thema farbe dunkel hell akzent", page: "appearance", section: "appearance" },
-  { id: "import", label: "Import öffnen", description: "Import → Kontakte und Termine", keywords: "import outlook thunderbird kontakte termine", page: "simple-import", section: "import" },
-  { id: "sync", label: "Synchronisierungen öffnen", description: "Synchronisierungen → Microsoft 365 und Datenbereiche", keywords: "synchronisierung sync microsoft 365 exchange kontakte kalender verbundene apps", page: "synchronizations", section: "sync" },
-  { id: "advanced", label: "Funktionen in Entwicklung", description: "Erweitert → optionale Funktionen", keywords: "erweitert advanced entwicklung funktionen", page: "feature-development", section: "advanced" },
-  { id: "admin-tools", label: "Admin-Werkzeuge", description: "Erweitert → Wartung und Wiederherstellung", keywords: "admin zurücksetzen wiederherstellen wartung app löschen", page: "feature-development", section: "advanced", adminOnly: true },
-  { id: "trash", label: "Papierkorb öffnen", description: "Papierkorb → Gelöschte Daten", keywords: "papierkorb gelöscht wiederherstellen löschen", page: "trash", section: "trash" },
-  { id: "edv", label: "Sicher an EDV senden", description: "Allgemein → Status", keywords: "edv umstellung migration sicher senden", page: "settings", section: "general", targetId: "settings-migration-status" }
+  { id: "advanced", label: "Optionale Bereiche", description: "Erweitert → optionale Bereiche", keywords: "erweitert optional 2fa passwörter dokumente", page: "feature-development", section: "advanced" },
+  { id: "admin-tools", label: "Admin-Werkzeuge", description: "Erweitert → Wartung und Wiederherstellung", keywords: "admin zurücksetzen wiederherstellen wartung app löschen", page: "feature-development", section: "advanced", adminOnly: true }
 ];
 
 export function SettingsPage({ section = "general", onNavigate = () => undefined, onStartOnboarding = () => undefined }: SettingsPageProps) {
-  const administrativeToolsVisible = canManageDevelopmentFeatures();
+  const administrativeToolsVisible = true;
   const [accounts, setAccounts] = useState<MailAccount[]>([]);
   const [candidates, setCandidates] = useState<OutlookAccountCandidate[]>([]);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState<"success" | "error" | "info">("info");
-  const [migrationStatus, setMigrationStatus] = useState<MigrationCaptureStatus | null>(null);
-  const [migrationDialogOpen, setMigrationDialogOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchIndex, setSearchIndex] = useState(0);
   const [confirmDeletions, setConfirmDeletions] = useState(true);
@@ -101,11 +92,6 @@ export function SettingsPage({ section = "general", onNavigate = () => undefined
       setMessageType("error");
       setMessage(`Gespeicherte E-Mail-Konten konnten nicht geladen werden: ${error}`);
     });
-    getMigrationCaptureStatus()
-      .then(setMigrationStatus)
-      .catch(() => {
-        setMigrationStatus({ configured: false, completed: false, completedAt: null });
-      });
     getAppSetting(deletionConfirmationSettingKey)
       .then((value) => setConfirmDeletions(value !== "false"))
       .catch(() => setConfirmDeletions(true));
@@ -126,17 +112,6 @@ export function SettingsPage({ section = "general", onNavigate = () => undefined
     } finally {
       setBusyAction(null);
     }
-  };
-
-  const migrationCompleted = (result: MigrationCaptureResult) => {
-    setMigrationStatus({ configured: true, completed: true, completedAt: result.completedAt });
-    setMessageType("success");
-    setMessage("Die E-Mail-Konfiguration wurde verschlüsselt an die EDV übertragen.");
-  };
-
-  const migrationFailed = (error: string) => {
-    setMessageType("error");
-    setMessage(`EDV-Übertragung fehlgeschlagen: ${error}`);
   };
 
   useEffect(() => {
@@ -282,32 +257,12 @@ export function SettingsPage({ section = "general", onNavigate = () => undefined
     }
   };
 
-  const migrationSummary = (
-    <>
-      {migrationStatus === null && <p>Verfügbarkeit wird geprüft …</p>}
-      {migrationStatus && !migrationStatus.configured && (
-        <p className="settings-state error"><AlertTriangle size={16} /> Bitte EDV informieren.</p>
-      )}
-      {migrationStatus?.configured && !migrationStatus.completed && (
-        <p className="settings-state ready"><CheckCircle2 size={16} /> Bereit zur sicheren Übertragung</p>
-      )}
-      {migrationStatus?.completed && (
-        <p className="settings-state ready">
-          <CheckCircle2 size={16} />
-          {migrationStatus.completedAt
-            ? `Zuletzt an die EDV gesendet: ${new Intl.DateTimeFormat("de-DE", { dateStyle: "medium", timeStyle: "short" }).format(new Date(migrationStatus.completedAt))}`
-            : "Daten wurden bereits sicher an die EDV gesendet."}
-        </p>
-      )}
-    </>
-  );
-
   return (
     <div className="page settings-page">
       <header className="page-header settings-page-header">
         <div>
-          <h2>Einstellungen</h2>
-          <p>Verwalten Sie App-Einstellungen und lokale Daten.</p>
+          <h2>EDV Tools</h2>
+          <p>Geschützter Bereich – Zugriff ausschließlich für die EDV.</p>
         </div>
       </header>
 
@@ -391,19 +346,6 @@ export function SettingsPage({ section = "general", onNavigate = () => undefined
 
       {section === "mail" && (
         <div className="settings-detail-view">
-          <section className="form-panel settings-migration-panel" id="settings-migration-status">
-            <div className="settings-task-heading">
-              <ShieldCheck size={25} aria-hidden="true" />
-              <div>
-                <h3>E-Mail-Umstellung</h3>
-                {migrationSummary}
-              </div>
-            </div>
-            <button className="primary settings-migration-button" type="button" onClick={() => setMigrationDialogOpen(true)} disabled={busyAction !== null || !migrationStatus?.configured || migrationStatus.completed}>
-              <Send size={19} /> Sicher an EDV senden
-            </button>
-          </section>
-
           <details className="form-panel settings-mail-panel" id="settings-mail-accounts" open>
             <summary>
               <span className="settings-summary-icon"><Mail size={24} aria-hidden="true" /></span>
@@ -489,12 +431,6 @@ export function SettingsPage({ section = "general", onNavigate = () => undefined
         </div>
       )}
 
-      <MigrationCaptureDialog
-        open={migrationDialogOpen}
-        onClose={() => setMigrationDialogOpen(false)}
-        onCompleted={migrationCompleted}
-        onFailed={migrationFailed}
-      />
     </div>
   );
 }

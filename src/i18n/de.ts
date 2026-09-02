@@ -1,11 +1,11 @@
 export const de = {
-  appName: "DMH Portal - Privat",
+  appName: "DMH Backup",
   contacts: "Kontakte",
   groups: "Gruppen",
   import: "Importieren",
   export: "Exportieren",
   backup: "Sicherung",
-  settings: "Einstellungen",
+  settings: "EDV Tools",
   newContact: "Neuer Kontakt",
   editContact: "Kontakt bearbeiten",
   deleteContact: "Kontakt löschen",
