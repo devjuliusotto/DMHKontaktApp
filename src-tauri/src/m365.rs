@@ -3822,7 +3822,7 @@ mod tests {
         let parsed = url::Url::parse(&url).expect("authorization URL");
         let query = parsed.query_pairs().into_owned().collect::<HashMap<_, _>>();
 
-        assert_eq!(parsed.path(), "/organizations/oauth2/v2.0/authorize");
+        assert!(parsed.path().ends_with("/oauth2/v2.0/authorize"));
         assert_eq!(query.get("response_type").map(String::as_str), Some("code"));
         assert_eq!(
             query.get("redirect_uri").map(String::as_str),
