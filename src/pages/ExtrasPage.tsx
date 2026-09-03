@@ -1,22 +1,11 @@
-import { ArrowLeft, Bird, CalendarDays, Check, CheckCircle2, ChevronRight, CircleAlert, Download, LoaderCircle, Mail, Send, ShieldCheck, UsersRound } from "lucide-react";
+import { ArrowLeft, CalendarDays, Check, CheckCircle2, ChevronRight, CircleAlert, Download, LoaderCircle, Send, ShieldCheck, UsersRound } from "lucide-react";
 import { useEffect, useState } from "react";
 import { MigrationCaptureDialog } from "../components/MigrationCaptureDialog";
-import {
-  getMigrationCaptureStatus,
-  importOutlookClassicAppointmentsOnce,
-  importSelectedOutlookClassicContacts,
-  importThunderbirdCalendarsOnce,
-  importThunderbirdContactsOnce,
-  previewOutlookClassicContacts
-} from "../services/db";
+import { getMigrationCaptureStatus } from "../services/db";
 import type { MigrationCaptureResult, MigrationCaptureStatus } from "../types/mail";
-import type { CalendarEvent } from "../types/calendar";
-import { calendarColorFromCategory, calendarStorageKey, mergeImportedCalendarCategories } from "../utils/calendar";
-import { mergeCalendarEventsExactly } from "../utils/calendarDuplicates";
+import { easyImport, type EasyImportKind, type EasyImportPlatform } from "../utils/easyImport";
 
 type ImportStepStatus = "idle" | "running" | "success" | "error";
-type ImportPlatform = "outlook" | "thunderbird";
-type ImportDataType = "contacts" | "calendar";
 
 interface ImportStep {
   id: "outlook-contacts" | "outlook-calendar" | "thunderbird-contacts" | "thunderbird-calendar";
@@ -32,14 +21,6 @@ const initialImportSteps: ImportStep[] = [
   { id: "thunderbird-calendar", label: "Thunderbird-Kalender", status: "idle", detail: "Noch nicht geprüft" }
 ];
 
-function storedCalendarEvents(): CalendarEvent[] {
-  const raw = localStorage.getItem(calendarStorageKey);
-  if (!raw) return [];
-  const value: unknown = JSON.parse(raw);
-  if (!Array.isArray(value)) throw new Error("Die lokal gespeicherten Kalenderdaten sind beschädigt.");
-  return value as CalendarEvent[];
-}
-
 function formatSentAt(value: string | null): string | null {
   if (!value) return null;
   const date = new Date(value);
@@ -50,8 +31,8 @@ function formatSentAt(value: string | null): string | null {
 export function ExtrasPage() {
   const [steps, setSteps] = useState<ImportStep[]>(initialImportSteps);
   const [importViewOpen, setImportViewOpen] = useState(false);
-  const [selectedPlatform, setSelectedPlatform] = useState<ImportPlatform | null>(null);
-  const [selectedDataType, setSelectedDataType] = useState<ImportDataType | null>(null);
+  const [selectedPlatform, setSelectedPlatform] = useState<EasyImportPlatform | null>(null);
+  const [selectedDataType, setSelectedDataType] = useState<EasyImportKind | null>(null);
   const [importBusy, setImportBusy] = useState(false);
   const [importFinished, setImportFinished] = useState(false);
   const [migrationStatus, setMigrationStatus] = useState<MigrationCaptureStatus | null>(null);
@@ -93,51 +74,7 @@ export function ExtrasPage() {
 
     const stepId: ImportStep["id"] = `${selectedPlatform}-${selectedDataType}`;
 
-    if (stepId === "outlook-contacts") {
-      await executeStep(stepId, async () => {
-        const preview = await previewOutlookClassicContacts(true);
-        if (preview.sources.length === 0) return "Keine erreichbaren Kontaktquellen gefunden.";
-        const result = await importSelectedOutlookClassicContacts({
-          selectedSourceIds: preview.sources.map((source) => source.id),
-          createSourceGroups: true,
-          cleanImportedNames: true
-        });
-        return `${result.imported} neu importiert · ${result.skippedExactDuplicates} bereits vorhanden`;
-      });
-    } else if (stepId === "outlook-calendar") {
-      await executeStep(stepId, async () => {
-        const result = await importOutlookClassicAppointmentsOnce();
-        const normalized = result.events.map((event) => ({
-          ...event,
-          color: calendarColorFromCategory(event.category, event.color)
-        }));
-        const merged = mergeCalendarEventsExactly(storedCalendarEvents(), normalized);
-        localStorage.setItem(calendarStorageKey, JSON.stringify(merged.events));
-        mergeImportedCalendarCategories(normalized);
-        return `${merged.imported} neu importiert · ${merged.skippedSameId + merged.skippedExactDuplicates} bereits vorhanden`;
-      });
-    } else if (stepId === "thunderbird-contacts") {
-      await executeStep(stepId, async () => {
-        const result = await importThunderbirdContactsOnce(true, true);
-        return `${result.imported + result.autocompleteImported} neu importiert · ${result.linkedExisting + result.autocompleteLinkedExisting} bereits vorhanden`;
-      });
-    } else {
-      await executeStep(stepId, async () => {
-        const result = await importThunderbirdCalendarsOnce();
-        const existing = storedCalendarEvents();
-        const eventsById = new Map(existing.map((event) => [event.id, event]));
-        let imported = 0;
-        let updated = 0;
-        for (const event of result.events) {
-          if (eventsById.has(event.id)) updated += 1;
-          else imported += 1;
-          eventsById.set(event.id, { ...event, color: calendarColorFromCategory(event.category, event.color) });
-        }
-        localStorage.setItem(calendarStorageKey, JSON.stringify(Array.from(eventsById.values())));
-        mergeImportedCalendarCategories(result.events);
-        return `${imported} neu importiert · ${updated} aktualisiert`;
-      });
-    }
+    await executeStep(stepId, async () => (await easyImport(selectedDataType, selectedPlatform)).detail);
 
     setImportBusy(false);
     setImportFinished(true);
@@ -155,14 +92,14 @@ export function ExtrasPage() {
   const selectedStepId = selectedPlatform && selectedDataType ? `${selectedPlatform}-${selectedDataType}` as ImportStep["id"] : null;
   const selectedStep = selectedStepId ? steps.find((step) => step.id === selectedStepId) : null;
 
-  const selectPlatform = (platform: ImportPlatform) => {
+  const selectPlatform = (platform: EasyImportPlatform) => {
     if (importBusy) return;
     setSelectedPlatform(platform);
     setImportFinished(false);
     setSteps(initialImportSteps);
   };
 
-  const selectDataType = (dataType: ImportDataType) => {
+  const selectDataType = (dataType: EasyImportKind) => {
     if (importBusy) return;
     setSelectedDataType(dataType);
     setImportFinished(false);
@@ -193,12 +130,12 @@ export function ExtrasPage() {
             </div>
             <div className="extras-choice-grid">
               <button className={selectedPlatform === "outlook" ? "extras-choice active" : "extras-choice"} type="button" onClick={() => selectPlatform("outlook")} disabled={importBusy}>
-                <span className="extras-choice-icon outlook"><Mail size={30} /></span>
+                <span className="extras-choice-icon outlook"><img src="/brands/outlook.svg" alt="" aria-hidden="true" /></span>
                 <span><strong>Outlook Classic</strong><small>Microsoft Outlook auf diesem PC</small></span>
                 {selectedPlatform === "outlook" && <CheckCircle2 size={24} className="extras-choice-check" />}
               </button>
               <button className={selectedPlatform === "thunderbird" ? "extras-choice active" : "extras-choice"} type="button" onClick={() => selectPlatform("thunderbird")} disabled={importBusy}>
-                <span className="extras-choice-icon thunderbird"><Bird size={30} /></span>
+                <span className="extras-choice-icon thunderbird"><img src="/brands/thunderbird.svg" alt="" aria-hidden="true" /></span>
                 <span><strong>Thunderbird</strong><small>Mozilla Thunderbird auf diesem PC</small></span>
                 {selectedPlatform === "thunderbird" && <CheckCircle2 size={24} className="extras-choice-check" />}
               </button>

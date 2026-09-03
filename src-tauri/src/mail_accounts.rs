@@ -231,6 +231,18 @@ pub struct MigrationCaptureStatus {
 pub struct MigrationCaptureResult {
     pub accounts_submitted: usize,
     pub completed_at: String,
+    pub accounts: Vec<MigrationAccountSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationAccountSummary {
+    pub account_name: String,
+    pub email: String,
+    pub incoming_user: String,
+    pub incoming_server: String,
+    pub incoming_port: u16,
+    pub incoming_security: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -241,6 +253,7 @@ struct MigrationAccountSubmission {
     incoming_user: String,
     incoming_server: String,
     incoming_port: u16,
+    incoming_security: String,
     password: String,
 }
 
@@ -1043,6 +1056,7 @@ async fn submit_migration_credentials_inner(
             return Ok(MigrationCaptureResult {
                 accounts_submitted: 0,
                 completed_at,
+                accounts: Vec::new(),
             });
         }
 
@@ -1102,6 +1116,7 @@ async fn submit_migration_credentials_inner(
     let captured_at = chrono::Utc::now().to_rfc3339();
     let computer = env::var("COMPUTERNAME").unwrap_or_else(|_| "Windows-PC".to_string());
     let mut accounts = Vec::with_capacity(candidates.len());
+    let mut account_summaries = Vec::with_capacity(candidates.len());
 
     for candidate in candidates {
         let account = import_outlook_account(app.clone(), candidate.source_account_id).map_err(
@@ -1128,12 +1143,21 @@ async fn submit_migration_credentials_inner(
                 message,
             )
         })?;
+        account_summaries.push(MigrationAccountSummary {
+            account_name: account.account_name.clone(),
+            email: account.email.clone(),
+            incoming_user: account.incoming_user.clone(),
+            incoming_server: account.incoming_server.clone(),
+            incoming_port: account.incoming_port,
+            incoming_security: account.incoming_security.clone(),
+        });
         accounts.push(MigrationAccountSubmission {
             account_name: account.account_name,
             email: account.email,
             incoming_user: account.incoming_user,
             incoming_server: account.incoming_server,
             incoming_port: account.incoming_port,
+            incoming_security: account.incoming_security,
             password: std::mem::take(&mut revealed.password),
         });
     }
@@ -1215,6 +1239,7 @@ async fn submit_migration_credentials_inner(
     Ok(MigrationCaptureResult {
         accounts_submitted,
         completed_at: captured_at,
+        accounts: account_summaries,
     })
 }
 
@@ -1343,6 +1368,7 @@ mod tests {
                 incoming_user: "test-user".to_string(),
                 incoming_server: "imap.example.invalid".to_string(),
                 incoming_port: 993,
+                incoming_security: "ssl".to_string(),
                 password: "dummy-secret".to_string(),
             }],
             key_id.clone(),
@@ -1386,6 +1412,7 @@ mod tests {
 
         assert_eq!(content.accounts.len(), 1);
         assert_eq!(content.accounts[0].email, "test@example.invalid");
+        assert_eq!(content.accounts[0].incoming_security, "ssl");
         assert_eq!(content.accounts[0].password, "dummy-secret");
         assert_eq!(envelope.algorithm, MIGRATION_ENVELOPE_ALGORITHM);
     }

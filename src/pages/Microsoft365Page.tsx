@@ -18,6 +18,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { StatusMessage } from "../components/StatusMessage";
 import {
   cancelMicrosoft365Connection,
+  connectMicrosoft365Interactively,
   disconnectMicrosoft365Account,
   getMicrosoft365ConnectionStatus,
   openMicrosoft365SignIn,
@@ -40,6 +41,7 @@ export function Microsoft365Page() {
   const [status, setStatus] = useState<Microsoft365ConnectionStatus | null>(null);
   const [deviceCode, setDeviceCode] = useState<Microsoft365DeviceCode | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [showCodeFallback, setShowCodeFallback] = useState(false);
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState<"success" | "error" | "info">("info");
   const pollingRef = useRef(false);
@@ -103,15 +105,33 @@ export function Microsoft365Page() {
     setBusyAction("connect");
     setMessage("");
     try {
+      const account = await connectMicrosoft365Interactively();
+      setStatus({ configured: true, connected: true, account });
+      setShowCodeFallback(false);
+      setMessageType("success");
+      setMessage("Microsoft-365-Konto wurde sicher verbunden.");
+    } catch (error) {
+      setShowCodeFallback(true);
+      setMessageType("error");
+      setMessage(`Microsoft-365-Anmeldung wurde nicht abgeschlossen: ${error}`);
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const connectWithCode = async () => {
+    setBusyAction("device-code");
+    setMessage("");
+    try {
       const code = await startMicrosoft365Connection();
       setDeviceCode(code);
       setMessageType("info");
-      setMessage("Öffnen Sie die Microsoft-Anmeldung und geben Sie den angezeigten Code ein.");
+      setMessage("Alternative Anmeldung: Geben Sie den angezeigten Code bei Microsoft ein.");
       await openMicrosoft365SignIn();
     } catch (error) {
       setBusyAction(null);
       setMessageType("error");
-      setMessage(`Microsoft-365-Anmeldung konnte nicht gestartet werden: ${error}`);
+      setMessage(`Alternative Microsoft-Anmeldung konnte nicht gestartet werden: ${error}`);
     }
   };
 
@@ -232,8 +252,13 @@ export function Microsoft365Page() {
           </div>
           <button className="primary large m365-connect-button" type="button" onClick={connect} disabled={busyAction !== null}>
             {busyAction === "connect" ? <LoaderCircle className="spin" size={22} /> : <Cloud size={22} />}
-            Mit Microsoft 365 verbinden
+            {busyAction === "connect" ? "Microsoft-Anmeldung läuft …" : "Mit Microsoft 365 verbinden"}
           </button>
+          {showCodeFallback && busyAction === null && (
+            <button className="m365-code-fallback" type="button" onClick={connectWithCode}>
+              Anmeldung mit Code verwenden
+            </button>
+          )}
         </section>
       )}
 

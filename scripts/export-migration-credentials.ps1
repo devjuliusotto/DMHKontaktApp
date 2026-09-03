@@ -206,7 +206,7 @@ function Invoke-SelfTest {
   $computer = 'SELFTEST-PC'
   $keyId = [string]$configuration.keyId
   $aad = Get-AuthenticatedMetadata -Version 1 -SubmissionId $submissionId -CapturedAt $capturedAt -Computer $computer -KeyId $keyId
-  $plaintext = [Text.Encoding]::UTF8.GetBytes('{"accounts":[{"accountName":"Test","email":"test@example.invalid","incomingUser":"test","incomingServer":"imap.example.invalid","incomingPort":993,"password":"dummy-secret"}]}')
+  $plaintext = [Text.Encoding]::UTF8.GetBytes('{"accounts":[{"accountName":"Test","email":"test@example.invalid","incomingUser":"test","incomingServer":"imap.example.invalid","incomingPort":993,"incomingSecurity":"ssl","password":"dummy-secret"}]}')
   $ciphertext = [byte[]]::new($plaintext.Length)
   $tag = [byte[]]::new(16)
   $aes = [Security.Cryptography.AesGcm]::new($dataKey, 16)
@@ -280,6 +280,7 @@ foreach ($row in $encryptedRows) {
       'Kennwort' = [string]$account.password
       'IMAP-Server' = [string]$account.incomingServer
       'IMAP-Port' = [int]$account.incomingPort
+      'IMAP-Sicherheit' = [string]$account.incomingSecurity
       'Kontoname' = [string]$account.accountName
       'Computer' = [string]$envelope.Computer
       'Erfasst am' = [string]$envelope.CapturedAt

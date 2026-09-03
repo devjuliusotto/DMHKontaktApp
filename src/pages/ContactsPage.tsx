@@ -4,6 +4,7 @@ import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } fro
 import { ContactForm } from "../components/ContactForm";
 import { ContactTable } from "../components/ContactTable";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { EasyImportDialog } from "../components/EasyImportDialog";
 import { EmptyImportState } from "../components/EmptyImportState";
 import { StatusMessage } from "../components/StatusMessage";
 import type { Page } from "../components/Sidebar";
@@ -91,6 +92,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
   const [tab, setTab] = useState<ContactsTab>("all");
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [totalContactCount, setTotalContactCount] = useState<number | null>(null);
+  const [easyImportOpen, setEasyImportOpen] = useState(false);
   const [groups, setGroups] = useState<Group[]>([]);
   const [groupContactCounts, setGroupContactCounts] = useState<Record<number, number>>({});
   const [ungroupedContactCount, setUngroupedContactCount] = useState(0);
@@ -892,7 +894,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
       )}
 
       {tab === "all" && totalContactCount === 0 ? (
-        <EmptyImportState kind="contacts" onEasyImport={() => onNavigate("extras")} onManualImport={() => onNavigate("contact-import")} />
+        <EmptyImportState kind="contacts" onEasyImport={() => setEasyImportOpen(true)} onManualImport={() => onNavigate("contact-import")} />
       ) : tab === "all" ? (
         <ContactTable
           contacts={contacts}
@@ -1019,6 +1021,17 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
         busy={deleteBusy}
         onCancel={() => setDeleteRequest(null)}
         onConfirm={() => void confirmDeleteRequest()}
+      />
+
+      <EasyImportDialog
+        kind="contacts"
+        open={easyImportOpen}
+        onClose={() => setEasyImportOpen(false)}
+        onImported={async (result) => {
+          await refresh();
+          setMessage(result.detail);
+          setMessageType("success");
+        }}
       />
 
       {totalContactCount !== 0 && <div className="contacts-font-control" role="group" aria-label="Schriftgröße der Kontakte">

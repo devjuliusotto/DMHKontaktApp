@@ -44,7 +44,7 @@ export function SimpleImportPage({ embedded = false, onOpenFileImport }: SimpleI
     setMessageType("success");
     setMessage(
       `${result.imported} Kontakte aus ${source === "classic" ? "Outlook Classic" : "dem neuen Outlook"} wurden einmalig übernommen. `
-      + `${result.skippedExactDuplicates} in allen Feldern exakt gleiche Kontakte wurden ausgelassen. Kontakte mit mindestens einer Abweichung wurden erhalten. Es besteht keine Synchronisierung.`
+      + `${result.mergedDuplicates} Duplikate wurden automatisch zusammengeführt. ${result.skippedExactDuplicates} in allen Feldern exakt gleiche Kontakte wurden ausgelassen. Gleiche Namen mit unterschiedlichen E-Mail-Adressen bleiben getrennt. Es besteht keine Synchronisierung.`
     );
   };
 

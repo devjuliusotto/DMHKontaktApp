@@ -213,6 +213,10 @@ export function getMicrosoft365ConnectionStatus(): Promise<Microsoft365Connectio
   return invoke("get_m365_connection_status");
 }
 
+export function connectMicrosoft365Interactively(): Promise<import("../types/m365").Microsoft365Account> {
+  return invoke("start_m365_interactive_connection");
+}
+
 export function startMicrosoft365Connection(): Promise<Microsoft365DeviceCode> {
   return invoke("start_m365_connection");
 }

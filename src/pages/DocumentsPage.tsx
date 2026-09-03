@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { DragEvent, MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  cancelMicrosoft365Connection, copyDocumentItems, createDocumentFolder, createDocumentShareLink, createDocumentTextFile,
+  cancelMicrosoft365Connection, connectMicrosoft365Interactively, copyDocumentItems, createDocumentFolder, createDocumentShareLink, createDocumentTextFile,
   deleteDocumentItem, downloadDocumentItem, getDocumentFileIcons, getDocumentsLocalRoot,
   getMicrosoft365ConnectionStatus, listDocumentItems, listDocumentSources,
   listDocumentVersions, moveDocumentItems, openDocumentInOffice, openMicrosoft365SignIn,
@@ -69,6 +69,7 @@ export function DocumentsPage() {
   const [connected, setConnected] = useState<boolean | null>(null);
   const [reconnectCode, setReconnectCode] = useState<Microsoft365DeviceCode | null>(null);
   const [reconnectBusy, setReconnectBusy] = useState(false);
+  const [showReconnectCodeFallback, setShowReconnectCodeFallback] = useState(false);
   const [reconnectError, setReconnectError] = useState("");
   const [busy, setBusy] = useState(false);
   const [sourcesLoading, setSourcesLoading] = useState(false);
@@ -213,6 +214,21 @@ export function DocumentsPage() {
     if (reconnectBusy) return;
     setReconnectBusy(true); setReconnectError("");
     try {
+      await connectMicrosoft365Interactively();
+      setShowReconnectCodeFallback(false);
+      await loadSources();
+    } catch (startError) {
+      setShowReconnectCodeFallback(true);
+      setReconnectError(`Die Verbindung wurde nicht abgeschlossen: ${String(startError)}`);
+    } finally {
+      setReconnectBusy(false);
+    }
+  };
+
+  const startReconnectWithCode = async () => {
+    if (reconnectBusy) return;
+    setReconnectBusy(true); setReconnectError("");
+    try {
       const code = await startMicrosoft365Connection();
       setReconnectCode(code);
       try { await writeText(code.userCode); } catch { /* The large code remains visible. */ }
@@ -220,7 +236,7 @@ export function DocumentsPage() {
       catch (openError) { setReconnectError(`Die Microsoft-Anmeldung konnte nicht automatisch geöffnet werden: ${String(openError)}`); }
     } catch (startError) {
       setReconnectBusy(false);
-      setReconnectError(`Die Verbindung konnte nicht gestartet werden: ${String(startError)}`);
+      setReconnectError(`Die alternative Verbindung konnte nicht gestartet werden: ${String(startError)}`);
     }
   };
 
@@ -561,8 +577,9 @@ export function DocumentsPage() {
         {!reconnectCode ? <>
           <p>Ihre gespeicherte Anmeldung ist nicht mehr gültig. Verbinden Sie das Konto erneut, damit OneDrive und SharePoint wieder angezeigt und synchronisiert werden.</p>
           <button className="primary large documents-reconnect-button" type="button" onClick={startReconnect} disabled={reconnectBusy}>
-            {reconnectBusy ? <LoaderCircle className="spin" size={21} /> : <Cloud size={21} />} Jetzt wieder verbinden
+            {reconnectBusy ? <LoaderCircle className="spin" size={21} /> : <Cloud size={21} />} {reconnectBusy ? "Microsoft-Anmeldung läuft …" : "Jetzt wieder verbinden"}
           </button>
+          {showReconnectCodeFallback && !reconnectBusy && <button className="documents-reconnect-fallback" type="button" onClick={startReconnectWithCode}>Anmeldung mit Code verwenden</button>}
         </> : <>
           <p>Die geschützte Microsoft-Anmeldung wurde geöffnet. Der einmalige Code wurde automatisch kopiert. Geben Sie ihn dort ein und melden Sie sich mit Ihrem Microsoft-Konto an.</p>
           <div className="documents-reconnect-code"><span>Ihr Anmeldecode</span><strong>{reconnectCode.userCode}</strong><small>Bereits in die Zwischenablage kopiert</small></div>

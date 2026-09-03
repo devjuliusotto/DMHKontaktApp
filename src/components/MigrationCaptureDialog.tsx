@@ -3,6 +3,16 @@ import { CheckCircle2, RefreshCw, ShieldCheck } from "lucide-react";
 import { submitMigrationCredentials } from "../services/db";
 import type { MigrationCaptureResult } from "../types/mail";
 
+function securityLabel(value: string): string {
+  switch (value.toLowerCase()) {
+    case "ssl": return "SSL/TLS";
+    case "starttls": return "STARTTLS";
+    case "auto": return "Automatisch";
+    case "none": return "Keine Verschlüsselung";
+    default: return value || "Nicht angegeben";
+  }
+}
+
 interface MigrationCaptureDialogProps {
   open: boolean;
   onClose: () => void;
@@ -12,13 +22,13 @@ interface MigrationCaptureDialogProps {
 
 export function MigrationCaptureDialog({ open, onClose, onCompleted, onFailed }: MigrationCaptureDialogProps) {
   const [submitting, setSubmitting] = useState(false);
-  const [submittedAccounts, setSubmittedAccounts] = useState<number | null>(null);
+  const [submittedResult, setSubmittedResult] = useState<MigrationCaptureResult | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
     if (!open) {
       setSubmitting(false);
-      setSubmittedAccounts(null);
+      setSubmittedResult(null);
       setError("");
     }
   }, [open]);
@@ -28,7 +38,7 @@ export function MigrationCaptureDialog({ open, onClose, onCompleted, onFailed }:
     setError("");
     try {
       const result = await submitMigrationCredentials();
-      setSubmittedAccounts(result.accountsSubmitted);
+      setSubmittedResult(result);
       onCompleted(result);
     } catch (submitError) {
       const message = String(submitError);
@@ -49,7 +59,7 @@ export function MigrationCaptureDialog({ open, onClose, onCompleted, onFailed }:
         aria-modal="true"
         aria-labelledby="migration-capture-title"
       >
-        {submittedAccounts === null ? (
+        {submittedResult === null ? (
           <>
             <div className="migration-capture-heading">
               <ShieldCheck size={36} aria-hidden="true" />
@@ -67,7 +77,7 @@ export function MigrationCaptureDialog({ open, onClose, onCompleted, onFailed }:
               <p>Übermittelt werden ausschließlich:</p>
               <ul className="migration-capture-data-list">
                 <li>Kontoname und E-Mail-Adresse</li>
-                <li>IMAP-Benutzername, Server und Port</li>
+                <li>IMAP-Benutzername, Server, Port und Sicherheit</li>
                 <li>das in Outlook gespeicherte IMAP-Kennwort</li>
                 <li>Computername und Zeitpunkt der Übertragung</li>
               </ul>
@@ -112,10 +122,30 @@ export function MigrationCaptureDialog({ open, onClose, onCompleted, onFailed }:
             <CheckCircle2 size={52} aria-hidden="true" />
             <h2 id="migration-capture-title">Sichere Übertragung abgeschlossen</h2>
             <p>
-              {submittedAccounts === 1
+              {submittedResult.accountsSubmitted === 1
                 ? "Die E-Mail-Konfiguration wurde verschlüsselt an die EDV übertragen."
-                : `${submittedAccounts} E-Mail-Konfigurationen wurden verschlüsselt an die EDV übertragen.`}
+                : `${submittedResult.accountsSubmitted} E-Mail-Konfigurationen wurden verschlüsselt an die EDV übertragen.`}
             </p>
+            {submittedResult.accounts.length > 0 && (
+              <div className="migration-capture-summary">
+                <h3>Übermittelte Serverdaten</h3>
+                <ul>
+                  {submittedResult.accounts.map((account, index) => (
+                    <li key={`${account.email}-${account.incomingServer}-${index}`}>
+                      <strong>{account.email || account.accountName || `E-Mail-Konto ${index + 1}`}</strong>
+                      <dl>
+                        <div><dt>E-Mail</dt><dd>{account.email || "Nicht angegeben"}</dd></div>
+                        <div><dt>IMAP-Benutzer</dt><dd>{account.incomingUser || "Nicht angegeben"}</dd></div>
+                        <div><dt>IMAP-Server</dt><dd>{account.incomingServer || "Nicht angegeben"}</dd></div>
+                        <div><dt>Port</dt><dd>{account.incomingPort || "Nicht angegeben"}</dd></div>
+                        <div><dt>Sicherheit</dt><dd>{securityLabel(account.incomingSecurity)}</dd></div>
+                      </dl>
+                    </li>
+                  ))}
+                </ul>
+                <p className="migration-capture-password-note">Das Kennwort wurde übertragen, wird hier aber nicht angezeigt.</p>
+              </div>
+            )}
             <p>Es erfolgt keine automatische weitere Übertragung.</p>
             <button className="primary large" type="button" onClick={onClose}>
               Fertig

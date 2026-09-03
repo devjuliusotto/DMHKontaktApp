@@ -1,6 +1,7 @@
 import { CalendarDays, ChevronLeft, ChevronRight, Download, Filter, ListChecks, MoreHorizontal, Plus, Rows3, Trash2, Undo2, Upload, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { CalendarEventForm } from "../components/CalendarEventForm";
+import { EasyImportDialog } from "../components/EasyImportDialog";
 import { EmptyImportState } from "../components/EmptyImportState";
 import { StatusMessage } from "../components/StatusMessage";
 import type { Page } from "../components/Sidebar";
@@ -243,6 +244,7 @@ interface CalendarPageProps {
 export function CalendarPage({ onNavigate }: CalendarPageProps) {
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [calendarLoaded, setCalendarLoaded] = useState(false);
+  const [easyImportOpen, setEasyImportOpen] = useState(false);
   const [categories, setCategories] = useState<CalendarCategory[]>([]);
   const [message, setMessage] = useState("");
   const [view, setView] = useState<CalendarView>(storedCalendarView);
@@ -827,7 +829,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
       {!calendarLoaded ? (
         <div className="page-loading">Kalender wird geladen …</div>
       ) : events.length === 0 ? (
-        <EmptyImportState kind="calendar" onEasyImport={() => onNavigate("extras")} onManualImport={() => onNavigate("calendar-import")} />
+        <EmptyImportState kind="calendar" onEasyImport={() => setEasyImportOpen(true)} onManualImport={() => onNavigate("calendar-import")} />
       ) : <section className="calendar-shell">
         <section className="calendar-toolbar" aria-label="Kalendersteuerung">
           <div className="calendar-toolbar-navigation">
@@ -1071,6 +1073,19 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
         </section>
       )}
       </section>}
+
+      <EasyImportDialog
+        kind="calendar"
+        open={easyImportOpen}
+        onClose={() => setEasyImportOpen(false)}
+        onImported={(result) => {
+          const storedEvents = JSON.parse(localStorage.getItem(calendarStorageKey) ?? "[]") as CalendarEvent[];
+          setEvents(storedEvents.map(normalizeEvent));
+          const storedCategories = JSON.parse(localStorage.getItem(calendarCategoriesStorageKey) ?? "[]") as CalendarCategory[];
+          setCategories(storedCategories.map(normalizeCategory).filter((category) => category.name));
+          setMessage(result.detail);
+        }}
+      />
     </div>
   );
 }

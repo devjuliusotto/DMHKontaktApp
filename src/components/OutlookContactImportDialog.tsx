@@ -256,6 +256,7 @@ export function OutlookContactImportDialog({ open: isOpen, cleanImportedNames, o
         importResult = {
           found: preview.found,
           imported: csvResult.imported,
+          mergedDuplicates: 0,
           skippedExactDuplicates: duplicateCount + csvResult.skippedDuplicates,
           skippedConflicts: 0,
           skippedInvalid: preview.skippedInvalid,
@@ -466,7 +467,7 @@ export function OutlookContactImportDialog({ open: isOpen, cleanImportedNames, o
             <CheckCircle2 size={48} />
             <h4>Import abgeschlossen</h4>
             <p><strong>{result.imported}</strong> Kontakte wurden übernommen.</p>
-            <span>{result.skippedExactDuplicates} zu 100 % identische Kontakte wurden ausgelassen. Kontakte mit Abweichungen wurden erhalten.</span>
+            <span>{result.mergedDuplicates} Duplikate wurden zusammengeführt. {result.skippedExactDuplicates} zu 100 % identische Kontakte wurden ausgelassen.</span>
             <button className="primary" type="button" onClick={onClose}>Schließen</button>
           </div>
         )}

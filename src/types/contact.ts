@@ -108,6 +108,7 @@ export interface OutlookContactImportRequest {
 export interface OutlookContactImportResult {
   found: number;
   imported: number;
+  mergedDuplicates: number;
   skippedExactDuplicates: number;
   skippedConflicts: number;
   skippedInvalid: number;

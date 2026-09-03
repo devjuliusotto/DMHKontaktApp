@@ -53,4 +53,14 @@ export interface MigrationCaptureStatus {
 export interface MigrationCaptureResult {
   accountsSubmitted: number;
   completedAt: string;
+  accounts: MigrationAccountSummary[];
+}
+
+export interface MigrationAccountSummary {
+  accountName: string;
+  email: string;
+  incomingUser: string;
+  incomingServer: string;
+  incomingPort: number;
+  incomingSecurity: string;
 }

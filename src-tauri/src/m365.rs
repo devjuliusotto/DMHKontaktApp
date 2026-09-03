@@ -1,13 +1,21 @@
 use crate::{hidden_command, open_db, AppState};
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use base64::{
+    engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD},
+    Engine as _,
+};
 use chrono::{Duration as ChronoDuration, Utc};
+use rand::RngCore;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::io::{ErrorKind, Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, State};
+use tauri_plugin_opener::OpenerExt;
 use zeroize::Zeroize;
 
 const TOKEN_SETTING_KEY: &str = "m365_token_bundle_v1";
@@ -16,10 +24,12 @@ const DPAPI_ENTROPY: &[u8] = b"de.dmh.agendakontakte.m365.v1";
 const GRAPH_PROFILE_URL: &str =
     "https://graph.microsoft.com/v1.0/me?$select=id,displayName,mail,userPrincipalName";
 const LOGIN_SCOPES: &str = "openid profile offline_access User.Read Contacts.ReadWrite Contacts.ReadWrite.Shared Calendars.ReadWrite Calendars.ReadWrite.Shared Calendars.Read.Shared MailboxSettings.Read Files.ReadWrite.All Sites.Read.All";
+const INTERACTIVE_LOGIN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Default)]
 pub struct Microsoft365Runtime {
     pending_device_flow: Mutex<Option<PendingDeviceFlow>>,
+    pending_interactive_state: Mutex<Option<String>>,
     access_token: Mutex<Option<CachedAccessToken>>,
     refresh_gate: tokio::sync::Mutex<()>,
     sync_gate: tokio::sync::Mutex<()>,
@@ -228,6 +238,12 @@ struct OAuthErrorResponse {
     error_description: String,
 }
 
+#[derive(Debug)]
+struct OAuthAuthorizationCallback {
+    code: String,
+    state: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GraphProfile {
@@ -326,6 +342,184 @@ fn form_body(fields: &[(&str, &str)]) -> String {
         })
         .collect::<Vec<_>>()
         .join("&")
+}
+
+fn secure_url_token(byte_count: usize) -> String {
+    let mut bytes = vec![0_u8; byte_count];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn pkce_challenge(verifier: &str) -> String {
+    URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
+}
+
+fn interactive_authorization_url(
+    client_id: &str,
+    redirect_uri: &str,
+    state: &str,
+    challenge: &str,
+) -> String {
+    format!(
+        "{}?{}",
+        oauth_url("authorize"),
+        form_body(&[
+            ("client_id", client_id),
+            ("response_type", "code"),
+            ("redirect_uri", redirect_uri),
+            ("response_mode", "query"),
+            ("scope", LOGIN_SCOPES),
+            ("state", state),
+            ("code_challenge", challenge),
+            ("code_challenge_method", "S256"),
+            ("prompt", "select_account"),
+        ])
+    )
+}
+
+fn callback_response_page(success: bool) -> String {
+    let (color, icon, title, detail) = if success {
+        (
+            "#08784f",
+            "✓",
+            "Microsoft-Anmeldung bestätigt",
+            "Sie können dieses Fenster schließen und zu DMH Backup zurückkehren.",
+        )
+    } else {
+        (
+            "#a1123f",
+            "!",
+            "Anmeldung nicht abgeschlossen",
+            "Schließen Sie dieses Fenster und versuchen Sie es in DMH Backup erneut.",
+        )
+    };
+    format!(
+        "<!doctype html><html lang=\"de\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{title}</title><body style=\"font-family:Segoe UI,Arial,sans-serif;background:#f6f4f5;color:#171717;display:grid;place-items:center;min-height:100vh;margin:0\"><main style=\"background:white;border:1px solid #dcc6cf;border-radius:16px;padding:36px;max-width:520px;text-align:center;box-shadow:0 12px 32px rgba(0,0,0,.1)\"><div style=\"width:64px;height:64px;border-radius:50%;background:{color};color:white;display:grid;place-items:center;font-size:38px;margin:0 auto 20px\">{icon}</div><h1 style=\"font-size:26px;margin:0 0 12px\">{title}</h1><p style=\"font-size:18px;line-height:1.5;margin:0\">{detail}</p></main></body></html>"
+    )
+}
+
+fn write_callback_response(stream: &mut TcpStream, success: bool) {
+    let body = callback_response_page(success);
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.flush();
+}
+
+fn parse_authorization_callback(target: &str) -> Result<OAuthAuthorizationCallback, String> {
+    let parsed = url::Url::parse(&format!("http://localhost{target}"))
+        .map_err(|_| "Microsoft hat eine ungültige Rückmeldung geliefert.".to_string())?;
+    let parameters = parsed.query_pairs().into_owned().collect::<HashMap<_, _>>();
+    if let Some(error) = parameters.get("error") {
+        return Err(if error == "access_denied" {
+            "Die Microsoft-Anmeldung wurde abgebrochen.".to_string()
+        } else {
+            "Microsoft konnte die Anmeldung nicht abschließen.".to_string()
+        });
+    }
+    let code = parameters
+        .get("code")
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .ok_or_else(|| "Microsoft hat keinen Anmeldecode zurückgegeben.".to_string())?;
+    let state = parameters
+        .get("state")
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .ok_or_else(|| "Microsoft hat die Anmeldung nicht eindeutig bestätigt.".to_string())?;
+    Ok(OAuthAuthorizationCallback { code, state })
+}
+
+fn read_callback_request(stream: &mut TcpStream) -> Result<String, String> {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .map_err(|_| "Microsoft-Rückmeldung konnte nicht gelesen werden.".to_string())?;
+    let mut buffer = [0_u8; 16 * 1024];
+    let length = stream
+        .read(&mut buffer)
+        .map_err(|_| "Microsoft-Rückmeldung konnte nicht gelesen werden.".to_string())?;
+    let request = String::from_utf8_lossy(&buffer[..length]);
+    let first_line = request
+        .lines()
+        .next()
+        .ok_or_else(|| "Microsoft hat eine leere Rückmeldung geliefert.".to_string())?;
+    let mut parts = first_line.split_whitespace();
+    if parts.next() != Some("GET") {
+        return Err("Microsoft hat eine ungültige Rückmeldung geliefert.".to_string());
+    }
+    parts
+        .next()
+        .map(str::to_string)
+        .ok_or_else(|| "Microsoft hat eine ungültige Rückmeldung geliefert.".to_string())
+}
+
+fn interactive_state_is_current(app: &AppHandle, expected: &str) -> Result<bool, String> {
+    let state = app.state::<AppState>();
+    let pending = state
+        .m365
+        .pending_interactive_state
+        .lock()
+        .map_err(|_| "Microsoft-Anmeldung konnte intern nicht gelesen werden.".to_string())?;
+    Ok(pending.as_deref() == Some(expected))
+}
+
+fn clear_interactive_state(app: &AppHandle, expected: &str) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let mut pending = state
+        .m365
+        .pending_interactive_state
+        .lock()
+        .map_err(|_| "Microsoft-Anmeldung konnte intern nicht beendet werden.".to_string())?;
+    if pending.as_deref() == Some(expected) {
+        *pending = None;
+    }
+    Ok(())
+}
+
+async fn wait_for_authorization_callback(
+    app: &AppHandle,
+    listener: &TcpListener,
+    expected_state: &str,
+) -> Result<OAuthAuthorizationCallback, String> {
+    let deadline = Instant::now() + INTERACTIVE_LOGIN_TIMEOUT;
+    loop {
+        if !interactive_state_is_current(app, expected_state)? {
+            return Err("Die Microsoft-Anmeldung wurde abgebrochen.".to_string());
+        }
+        if Instant::now() >= deadline {
+            return Err(
+                "Die Microsoft-Anmeldung hat zu lange gedauert. Versuchen Sie es erneut."
+                    .to_string(),
+            );
+        }
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                let callback = read_callback_request(&mut stream)
+                    .and_then(|target| parse_authorization_callback(&target));
+                let valid = callback
+                    .as_ref()
+                    .is_ok_and(|callback| callback.state == expected_state);
+                write_callback_response(&mut stream, valid);
+                let callback = callback?;
+                if callback.state != expected_state {
+                    return Err("Die Microsoft-Anmeldung konnte aus Sicherheitsgründen nicht bestätigt werden.".to_string());
+                }
+                return Ok(callback);
+            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                tokio::time::sleep(Duration::from_millis(120)).await;
+            }
+            Err(_) => {
+                return Err(
+                    "Die automatische Rückkehr von Microsoft konnte nicht empfangen werden."
+                        .to_string(),
+                )
+            }
+        }
+    }
 }
 
 fn oauth_error_message(error: &OAuthErrorResponse) -> String {
@@ -3012,6 +3206,78 @@ pub async fn get_m365_connection_status(
 }
 
 #[tauri::command]
+pub async fn start_m365_interactive_connection(
+    app: AppHandle,
+) -> Result<Microsoft365Account, String> {
+    let client_id = client_id().ok_or_else(|| {
+        "Die EDV muss zuerst die Microsoft-Anwendungs-ID für diesen Build hinterlegen.".to_string()
+    })?;
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(|_| {
+        "Die sichere Microsoft-Rückmeldung konnte nicht vorbereitet werden.".to_string()
+    })?;
+    listener.set_nonblocking(true).map_err(|_| {
+        "Die sichere Microsoft-Rückmeldung konnte nicht vorbereitet werden.".to_string()
+    })?;
+    let port = listener
+        .local_addr()
+        .map_err(|_| {
+            "Die sichere Microsoft-Rückmeldung konnte nicht vorbereitet werden.".to_string()
+        })?
+        .port();
+    let redirect_uri = format!("http://localhost:{port}");
+    let state_token = secure_url_token(32);
+    let mut verifier = secure_url_token(64);
+    let challenge = pkce_challenge(&verifier);
+    {
+        let runtime = app.state::<AppState>();
+        *runtime.m365.pending_interactive_state.lock().map_err(|_| {
+            "Microsoft-Anmeldung konnte intern nicht vorbereitet werden.".to_string()
+        })? = Some(state_token.clone());
+    }
+    let authorization_url =
+        interactive_authorization_url(client_id, &redirect_uri, &state_token, &challenge);
+    if let Err(error) = app.opener().open_url(authorization_url, None::<&str>) {
+        let _ = clear_interactive_state(&app, &state_token);
+        verifier.zeroize();
+        return Err(format!(
+            "Microsoft-Anmeldung konnte nicht im Browser geöffnet werden: {error}"
+        ));
+    }
+    let callback = wait_for_authorization_callback(&app, &listener, &state_token).await;
+    let _ = clear_interactive_state(&app, &state_token);
+    let mut callback = callback?;
+    let token_result = request_token(&[
+        ("grant_type", "authorization_code"),
+        ("client_id", client_id),
+        ("code", &callback.code),
+        ("redirect_uri", &redirect_uri),
+        ("code_verifier", &verifier),
+        ("scope", LOGIN_SCOPES),
+    ])
+    .await;
+    verifier.zeroize();
+    callback.code.zeroize();
+    let token = token_result.map_err(|error| oauth_error_message(&error))?;
+    let refresh_token = token.refresh_token.ok_or_else(|| {
+        "Microsoft hat keine erneuerbare Anmeldung bereitgestellt. Die EDV muss offline_access erlauben."
+            .to_string()
+    })?;
+    let mut access_token = token.access_token;
+    let profile_result = graph_profile(&access_token).await;
+    access_token.zeroize();
+    let account = account_from_profile(profile_result?);
+    save_connection(
+        &app,
+        &account,
+        &StoredTokenBundle {
+            refresh_token,
+            scope: token.scope,
+        },
+    )?;
+    Ok(account)
+}
+
+#[tauri::command]
 pub async fn start_m365_connection(
     state: State<'_, AppState>,
 ) -> Result<Microsoft365DeviceCode, String> {
@@ -3141,7 +3407,13 @@ pub async fn poll_m365_connection(
 
 #[tauri::command]
 pub fn cancel_m365_connection(state: State<'_, AppState>) -> Result<(), String> {
-    clear_pending_flow(&state)
+    clear_pending_flow(&state)?;
+    *state
+        .m365
+        .pending_interactive_state
+        .lock()
+        .map_err(|_| "Microsoft-Anmeldung konnte intern nicht beendet werden.".to_string())? = None;
+    Ok(())
 }
 
 #[tauri::command]
@@ -3190,6 +3462,9 @@ pub async fn test_m365_connection(app: AppHandle) -> Result<Microsoft365Connecti
 #[tauri::command]
 pub fn disconnect_m365_account(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     clear_pending_flow(&state)?;
+    *state.m365.pending_interactive_state.lock().map_err(|_| {
+        "Microsoft-Anmeldung konnte intern nicht zurückgesetzt werden.".to_string()
+    })? = None;
     *state.m365.access_token.lock().map_err(|_| {
         "Microsoft-Anmeldung konnte intern nicht zurückgesetzt werden.".to_string()
     })? = None;
@@ -3199,6 +3474,9 @@ pub fn disconnect_m365_account(app: AppHandle, state: State<'_, AppState>) -> Re
 pub(crate) fn clear_runtime(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
     *state.m365.pending_device_flow.lock().map_err(|_| {
+        "Microsoft-Anmeldung konnte intern nicht zurückgesetzt werden.".to_string()
+    })? = None;
+    *state.m365.pending_interactive_state.lock().map_err(|_| {
         "Microsoft-Anmeldung konnte intern nicht zurückgesetzt werden.".to_string()
     })? = None;
     *state.m365.access_token.lock().map_err(|_| {
@@ -3530,6 +3808,61 @@ mod tests {
                 error_description: "untrusted detail".to_string(),
             }),
             "Die Microsoft-Anmeldung wurde abgelehnt."
+        );
+    }
+
+    #[test]
+    fn builds_pkce_authorization_url_for_the_loopback_callback() {
+        let url = interactive_authorization_url(
+            "11111111-2222-3333-4444-555555555555",
+            "http://localhost:45678",
+            "expected-state",
+            "expected-challenge",
+        );
+        let parsed = url::Url::parse(&url).expect("authorization URL");
+        let query = parsed.query_pairs().into_owned().collect::<HashMap<_, _>>();
+
+        assert_eq!(parsed.path(), "/organizations/oauth2/v2.0/authorize");
+        assert_eq!(query.get("response_type").map(String::as_str), Some("code"));
+        assert_eq!(
+            query.get("redirect_uri").map(String::as_str),
+            Some("http://localhost:45678")
+        );
+        assert_eq!(
+            query.get("state").map(String::as_str),
+            Some("expected-state")
+        );
+        assert_eq!(
+            query.get("code_challenge_method").map(String::as_str),
+            Some("S256")
+        );
+        assert_eq!(
+            query.get("code_challenge").map(String::as_str),
+            Some("expected-challenge")
+        );
+    }
+
+    #[test]
+    fn parses_and_decodes_the_interactive_callback() {
+        let callback = parse_authorization_callback(
+            "/?code=abc%2B123&state=expected-state&session_state=ignored",
+        )
+        .expect("valid callback");
+
+        assert_eq!(callback.code, "abc+123");
+        assert_eq!(callback.state, "expected-state");
+        assert!(
+            parse_authorization_callback("/?error=access_denied&state=expected-state")
+                .unwrap_err()
+                .contains("abgebrochen")
+        );
+    }
+
+    #[test]
+    fn creates_a_valid_pkce_s256_challenge() {
+        assert_eq!(
+            pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
         );
     }
 

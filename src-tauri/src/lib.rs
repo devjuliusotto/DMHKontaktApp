@@ -490,6 +490,7 @@ fn default_true() -> bool {
 pub struct OutlookContactImportResult {
     pub found: usize,
     pub imported: usize,
+    pub merged_duplicates: usize,
     pub skipped_exact_duplicates: usize,
     pub skipped_conflicts: usize,
     pub skipped_invalid: usize,
@@ -503,6 +504,15 @@ struct ContactFingerprintIndex {
     emails: HashMap<String, String>,
     phones: HashMap<String, String>,
     names: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+struct ContactConsolidationRow {
+    id: i64,
+    contact: ContactInput,
+    import_batch_id: Option<String>,
+    outlook_entry_id: Option<String>,
+    outlook_store_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -3144,6 +3154,324 @@ fn add_fingerprint(
     }
 }
 
+fn contact_name_merge_key(contact: &ContactInput) -> String {
+    normalize_contact_display_name(contact)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn contact_merge_quality(contact: &ContactInput) -> usize {
+    let fields = [
+        &contact.first_name,
+        &contact.last_name,
+        &contact.display_name,
+        &contact.email,
+        &contact.phone,
+        &contact.mobile_phone,
+        &contact.street,
+        &contact.postal_code,
+        &contact.city,
+        &contact.country,
+        &contact.short_info,
+        &contact.notes,
+    ];
+    fields
+        .iter()
+        .filter(|value| !value.trim().is_empty())
+        .count()
+        + usize::from(!contact.email.trim().is_empty()) * 8
+}
+
+fn fill_blank(target: &mut String, source: &str) {
+    if target.trim().is_empty() && !source.trim().is_empty() {
+        *target = source.trim().to_string();
+    }
+}
+
+fn append_distinct_text(target: &mut String, source: &str) {
+    let source = source.trim();
+    if source.is_empty() {
+        return;
+    }
+    if target.trim().is_empty() {
+        *target = source.to_string();
+    } else if !target
+        .lines()
+        .any(|line| line.trim().eq_ignore_ascii_case(source))
+    {
+        target.push_str("\n");
+        target.push_str(source);
+    }
+}
+
+fn phone_values_equal(left: &str, right: &str) -> bool {
+    let left_normalized = normalize_phone_for_match(left);
+    let right_normalized = normalize_phone_for_match(right);
+    if !left_normalized.is_empty() && !right_normalized.is_empty() {
+        left_normalized == right_normalized
+    } else {
+        left.trim().eq_ignore_ascii_case(right.trim())
+    }
+}
+
+fn merge_phone_fields(target: &mut ContactInput, source: &ContactInput) {
+    for source_phone in [&source.phone, &source.mobile_phone] {
+        if source_phone.trim().is_empty()
+            || phone_values_equal(&target.phone, source_phone)
+            || phone_values_equal(&target.mobile_phone, source_phone)
+        {
+            continue;
+        }
+        if target.phone.trim().is_empty() {
+            target.phone = source_phone.trim().to_string();
+        } else if target.mobile_phone.trim().is_empty() {
+            target.mobile_phone = source_phone.trim().to_string();
+        }
+    }
+}
+
+fn merge_contact_fields(target: &mut ContactInput, source: &ContactInput) {
+    fill_blank(&mut target.first_name, &source.first_name);
+    fill_blank(&mut target.last_name, &source.last_name);
+    fill_blank(&mut target.display_name, &source.display_name);
+    fill_blank(&mut target.email, &source.email);
+    merge_phone_fields(target, source);
+    fill_blank(&mut target.street, &source.street);
+    fill_blank(&mut target.postal_code, &source.postal_code);
+    fill_blank(&mut target.city, &source.city);
+    fill_blank(&mut target.country, &source.country);
+    append_distinct_text(&mut target.short_info, &source.short_info);
+    append_distinct_text(&mut target.notes, &source.notes);
+}
+
+fn contacts_are_safe_to_consolidate(left: &ContactInput, right: &ContactInput) -> bool {
+    let left_phones = contact_phone_keys(left);
+    let right_phones = contact_phone_keys(right);
+    if !left_phones.is_empty()
+        && !right_phones.is_empty()
+        && !left_phones.iter().any(|phone| right_phones.contains(phone))
+    {
+        return false;
+    }
+    for (left_value, right_value) in [
+        (&left.street, &right.street),
+        (&left.postal_code, &right.postal_code),
+        (&left.city, &right.city),
+        (&left.country, &right.country),
+    ] {
+        if !left_value.trim().is_empty()
+            && !right_value.trim().is_empty()
+            && !left_value.trim().eq_ignore_ascii_case(right_value.trim())
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn load_contacts_for_consolidation(
+    conn: &Connection,
+) -> Result<Vec<ContactConsolidationRow>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT id, first_name, last_name, display_name, email, phone, mobile_phone,
+                    street, postal_code, city, country, short_info, notes, import_batch_id,
+                    outlook_entry_id, outlook_store_id
+             FROM contacts
+             WHERE deleted_at IS NULL
+             ORDER BY id",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(ContactConsolidationRow {
+                id: row.get(0)?,
+                contact: ContactInput {
+                    id: Some(row.get(0)?),
+                    first_name: row.get(1)?,
+                    last_name: row.get(2)?,
+                    display_name: row.get(3)?,
+                    email: row.get(4)?,
+                    phone: row.get(5)?,
+                    mobile_phone: row.get(6)?,
+                    street: row.get(7)?,
+                    postal_code: row.get(8)?,
+                    city: row.get(9)?,
+                    country: row.get(10)?,
+                    short_info: row.get(11)?,
+                    notes: row.get(12)?,
+                    group_ids: Vec::new(),
+                },
+                import_batch_id: row.get(13)?,
+                outlook_entry_id: row.get(14)?,
+                outlook_store_id: row.get(15)?,
+            })
+        })
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())
+}
+
+fn preferred_contact_index(rows: &[ContactConsolidationRow], current_batch: &str) -> usize {
+    let mut preferred = 0usize;
+    for index in 1..rows.len() {
+        let candidate_is_existing = rows[index].import_batch_id.as_deref() != Some(current_batch);
+        let preferred_is_existing =
+            rows[preferred].import_batch_id.as_deref() != Some(current_batch);
+        let candidate_quality = contact_merge_quality(&rows[index].contact);
+        let preferred_quality = contact_merge_quality(&rows[preferred].contact);
+        if candidate_is_existing > preferred_is_existing
+            || (candidate_is_existing == preferred_is_existing
+                && (candidate_quality > preferred_quality
+                    || (candidate_quality == preferred_quality
+                        && rows[index].id < rows[preferred].id)))
+        {
+            preferred = index;
+        }
+    }
+    preferred
+}
+
+fn merge_contact_rows(
+    conn: &Connection,
+    survivor: &mut ContactConsolidationRow,
+    duplicate: &ContactConsolidationRow,
+    timestamp: &str,
+) -> Result<(), String> {
+    merge_contact_fields(&mut survivor.contact, &duplicate.contact);
+    if survivor
+        .outlook_entry_id
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .is_empty()
+    {
+        survivor.outlook_entry_id = duplicate.outlook_entry_id.clone();
+    }
+    if survivor
+        .outlook_store_id
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .is_empty()
+    {
+        survivor.outlook_store_id = duplicate.outlook_store_id.clone();
+    }
+
+    conn.execute(
+        "INSERT OR IGNORE INTO contact_groups (contact_id, group_id)
+         SELECT ?, group_id FROM contact_groups WHERE contact_id = ?",
+        params![survivor.id, duplicate.id],
+    )
+    .map_err(|error| error.to_string())?;
+    conn.execute(
+        "INSERT OR IGNORE INTO m365_contact_links (local_contact_id, source_id, remote_id, updated_at)
+         SELECT ?, source_id, remote_id, updated_at
+         FROM m365_contact_links WHERE local_contact_id = ?",
+        params![survivor.id, duplicate.id],
+    )
+    .map_err(|error| error.to_string())?;
+    conn.execute(
+        "DELETE FROM m365_contact_links WHERE local_contact_id = ?",
+        params![duplicate.id],
+    )
+    .map_err(|error| error.to_string())?;
+    conn.execute(
+        "UPDATE contacts
+         SET first_name = ?, last_name = ?, display_name = ?, email = ?, phone = ?,
+             mobile_phone = ?, street = ?, postal_code = ?, city = ?, country = ?,
+             short_info = ?, notes = ?, outlook_entry_id = ?, outlook_store_id = ?,
+             updated_at = ?
+         WHERE id = ?",
+        params![
+            survivor.contact.first_name,
+            survivor.contact.last_name,
+            normalize_contact_display_name(&survivor.contact),
+            survivor.contact.email.trim().to_lowercase(),
+            survivor.contact.phone,
+            survivor.contact.mobile_phone,
+            survivor.contact.street,
+            survivor.contact.postal_code,
+            survivor.contact.city,
+            survivor.contact.country,
+            survivor.contact.short_info,
+            survivor.contact.notes,
+            survivor.outlook_entry_id,
+            survivor.outlook_store_id,
+            timestamp,
+            survivor.id,
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+    conn.execute("DELETE FROM contacts WHERE id = ?", params![duplicate.id])
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn consolidate_contact_duplicates(
+    conn: &Connection,
+    current_batch: &str,
+    timestamp: &str,
+) -> Result<usize, String> {
+    let mut by_name: BTreeMap<String, Vec<ContactConsolidationRow>> = BTreeMap::new();
+    for contact in load_contacts_for_consolidation(conn)? {
+        let key = contact_name_merge_key(&contact.contact);
+        if !key.is_empty() {
+            by_name.entry(key).or_default().push(contact);
+        }
+    }
+
+    let mut merged = 0usize;
+    for contacts in by_name.into_values() {
+        if contacts.len() < 2 {
+            continue;
+        }
+        let mut by_email: BTreeMap<String, Vec<ContactConsolidationRow>> = BTreeMap::new();
+        for contact in contacts {
+            by_email
+                .entry(contact.contact.email.trim().to_lowercase())
+                .or_default()
+                .push(contact);
+        }
+
+        let mut without_email = by_email.remove("").unwrap_or_default();
+        let non_empty_email_count = by_email.len();
+        let mut survivors: BTreeMap<String, ContactConsolidationRow> = BTreeMap::new();
+        for (email, mut matches) in by_email {
+            let preferred = preferred_contact_index(&matches, current_batch);
+            let mut survivor = matches.swap_remove(preferred);
+            for duplicate in matches {
+                merge_contact_rows(conn, &mut survivor, &duplicate, timestamp)?;
+                merged += 1;
+            }
+            survivors.insert(email, survivor);
+        }
+
+        if non_empty_email_count == 1 {
+            if let Some((_, mut with_email)) = survivors.pop_first() {
+                for no_email in without_email {
+                    if contacts_are_safe_to_consolidate(&with_email.contact, &no_email.contact) {
+                        merge_contact_rows(conn, &mut with_email, &no_email, timestamp)?;
+                        merged += 1;
+                    }
+                }
+            }
+        } else if non_empty_email_count == 0 && without_email.len() > 1 {
+            let preferred = preferred_contact_index(&without_email, current_batch);
+            let mut survivor = without_email.swap_remove(preferred);
+            for duplicate in without_email {
+                if contacts_are_safe_to_consolidate(&survivor.contact, &duplicate.contact) {
+                    merge_contact_rows(conn, &mut survivor, &duplicate, timestamp)?;
+                    merged += 1;
+                }
+            }
+        }
+    }
+    Ok(merged)
+}
+
 fn preview_outlook_classic_contacts_blocking(
     app: AppHandle,
     clean_imported_names: bool,
@@ -3281,7 +3609,6 @@ fn import_selected_outlook_classic_contacts_blocking(
     let tx = conn.transaction().map_err(|err| err.to_string())?;
     let timestamp = now();
     let batch_id = format!("outlook-reviewed-{}", Utc::now().timestamp_millis());
-    let mut imported = 0usize;
     let mut found = 0usize;
     let mut skipped_exact_duplicates = 0usize;
     let skipped_conflicts = 0usize;
@@ -3388,8 +3715,16 @@ fn import_selected_outlook_classic_contacts_blocking(
         }
 
         add_fingerprint(&mut fingerprints, &contact, &display_name, &email);
-        imported += 1;
     }
+
+    let merged_duplicates = consolidate_contact_duplicates(&tx, &batch_id, &timestamp)?;
+    let imported = tx
+        .query_row(
+            "SELECT COUNT(*) FROM contacts WHERE deleted_at IS NULL AND import_batch_id = ?",
+            params![batch_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| error.to_string())? as usize;
 
     if imported > 0 {
         tx.execute(
@@ -3410,6 +3745,7 @@ fn import_selected_outlook_classic_contacts_blocking(
     Ok(OutlookContactImportResult {
         found,
         imported,
+        merged_duplicates,
         skipped_exact_duplicates,
         skipped_conflicts,
         skipped_invalid,
@@ -5139,6 +5475,7 @@ pub fn run() {
             get_app_setting,
             set_app_setting,
             m365::get_m365_connection_status,
+            m365::start_m365_interactive_connection,
             m365::start_m365_connection,
             m365::poll_m365_connection,
             m365::cancel_m365_connection,
@@ -5224,6 +5561,91 @@ mod tests {
     fn onboarding_runs_only_for_a_new_local_database() {
         assert_eq!(initial_onboarding_completion(false), "false");
         assert_eq!(initial_onboarding_completion(true), "true");
+    }
+
+    #[test]
+    fn contact_import_consolidates_incomplete_duplicates_but_keeps_distinct_emails() {
+        let conn = Connection::open_in_memory().expect("in-memory database");
+        conn.execute_batch(
+            "
+            CREATE TABLE contacts (
+                id INTEGER PRIMARY KEY,
+                first_name TEXT NOT NULL DEFAULT '', last_name TEXT NOT NULL DEFAULT '',
+                display_name TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT '',
+                phone TEXT NOT NULL DEFAULT '', mobile_phone TEXT NOT NULL DEFAULT '',
+                street TEXT NOT NULL DEFAULT '', postal_code TEXT NOT NULL DEFAULT '',
+                city TEXT NOT NULL DEFAULT '', country TEXT NOT NULL DEFAULT '',
+                short_info TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '',
+                import_batch_id TEXT, outlook_entry_id TEXT, outlook_store_id TEXT,
+                created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '',
+                deleted_at TEXT
+            );
+            CREATE TABLE contact_groups (
+                contact_id INTEGER NOT NULL, group_id INTEGER NOT NULL,
+                PRIMARY KEY (contact_id, group_id)
+            );
+            CREATE TABLE m365_contact_links (
+                local_contact_id INTEGER NOT NULL, source_id TEXT NOT NULL,
+                remote_id TEXT NOT NULL, updated_at TEXT NOT NULL,
+                PRIMARY KEY (local_contact_id, source_id), UNIQUE (source_id, remote_id)
+            );
+            INSERT INTO contacts (id, display_name, email, phone, notes) VALUES
+                (1, 'Alexandra Heyde', '', '', ''),
+                (2, 'Alexandra Heyde', 'alexandra@example.org', '07157 123', ''),
+                (3, 'Alexandra Heyde', 'alexandra@example.org', '', 'Aus Outlook'),
+                (4, 'Andrea Frey', 'andrea.private@example.org', '', ''),
+                (5, 'Andrea Frey', 'andrea.work@example.org', '', 'Dienstlich'),
+                (6, 'Hans Müller', '', '07157 111111', ''),
+                (7, 'Hans Müller', '', '07157 222222', '');
+            INSERT INTO contact_groups VALUES (1, 11), (2, 12), (3, 13);
+            ",
+        )
+        .expect("contact consolidation test data");
+
+        let merged = consolidate_contact_duplicates(&conn, "current-batch", "2026-09-02")
+            .expect("consolidate contacts");
+
+        assert_eq!(merged, 2);
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM contacts", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(total, 5);
+        let alexandra: (String, String, String) = conn
+            .query_row(
+                "SELECT email, phone, notes FROM contacts WHERE display_name = 'Alexandra Heyde'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(alexandra.0, "alexandra@example.org");
+        assert_eq!(alexandra.1, "07157 123");
+        assert_eq!(alexandra.2, "Aus Outlook");
+        let alexandra_groups: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM contact_groups cg
+                 JOIN contacts c ON c.id = cg.contact_id
+                 WHERE c.display_name = 'Alexandra Heyde'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(alexandra_groups, 3);
+        let andrea_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM contacts WHERE display_name = 'Andrea Frey'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(andrea_count, 2);
+        let hans_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM contacts WHERE display_name = 'Hans Müller'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(hans_count, 2);
     }
 
     #[test]
