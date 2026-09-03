@@ -1,13 +1,12 @@
-import { CalendarDays, Files, KeyRound, RefreshCw, ShieldCheck, Sparkles, Trash2, UserRound } from "lucide-react";
+import { CalendarDays, Files, KeyRound, Mail, ShieldCheck, Trash2, UserRound } from "lucide-react";
 import { t } from "../i18n";
 
 export type Page = "contacts" | "calendar" | "documents" | "passwords" | "authenticator" | "services" | "import" | "contact-import" | "calendar-import" | "export" | "feature-development" | "m365" | "trash" | "settings" | "appearance" | "simple-import" | "backup" | "synchronizations" | "extras";
 
 const items: Array<{ page: Page; label: string; icon: typeof UserRound; group: "main" | "tools" }> = [
+  { page: "extras", label: "E-Mail-Konfig.", icon: Mail, group: "main" },
   { page: "contacts", label: t.contacts, icon: UserRound, group: "main" },
   { page: "calendar", label: "Kalender", icon: CalendarDays, group: "main" },
-  { page: "synchronizations", label: "Synchronisierung", icon: RefreshCw, group: "main" },
-  { page: "extras", label: "Extras", icon: Sparkles, group: "main" },
   { page: "passwords", label: "Passwörter", icon: KeyRound, group: "main" },
   { page: "authenticator", label: "2FA-Authenticator", icon: ShieldCheck, group: "tools" },
   { page: "documents", label: "Dokumente", icon: Files, group: "tools" }
@@ -43,10 +42,10 @@ export function Sidebar({ activePage, onNavigate, compact = false, authenticator
         {visibleItems.map((item, index) => {
           const Icon = item.icon;
           const startsGroup = index > 0 && visibleItems[index - 1].group !== item.group;
-          const active = activePage === item.page || (item.page === "synchronizations" && activePage === "m365");
+          const active = activePage === item.page;
           return (
             <button
-              className={`${active ? "nav-button active" : "nav-button"}${startsGroup ? " nav-group-start" : ""}${item.page === "synchronizations" ? " nav-section-gap-medium" : ""}`}
+              className={`${active ? "nav-button active" : "nav-button"}${startsGroup ? " nav-group-start" : ""}${item.page === "contacts" ? " nav-section-gap-small" : ""}`}
               key={item.page}
               onClick={() => onNavigate(item.page)}
               title={compact ? item.label : undefined}

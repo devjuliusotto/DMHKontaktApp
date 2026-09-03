@@ -5,6 +5,7 @@ const browserStorageKeys = [
   "agendakontakte.deletedCalendarEvents",
   "agendakontakte.calendarCategories",
   "agendakontakte.calendarExactDuplicateCleanupBackup.v1",
+  "agendakontakte.calendarReconciliationBaseline.v1",
   "agendakontakte.theme.colorMode",
   "agendakontakte.theme.accent",
   "dmh.contacts.fontSize",

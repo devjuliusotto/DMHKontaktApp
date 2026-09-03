@@ -43,10 +43,10 @@ export async function easyImportContacts(platform: EasyImportPlatform): Promise<
   }
 
   const result = await importThunderbirdContactsOnce(true, true);
-  const imported = result.imported + result.autocompleteImported;
+  const imported = result.imported;
   return {
     imported,
-    detail: `${imported} neu importiert · ${result.linkedExisting + result.autocompleteLinkedExisting} bereits vorhanden`
+    detail: `${imported} neu importiert · ${result.mergedDuplicates} zusammengeführt · ${result.skippedExactDuplicates} bereits vorhanden`
   };
 }
 

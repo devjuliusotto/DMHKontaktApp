@@ -18,7 +18,7 @@ import { SynchronizationsPage } from "./pages/SynchronizationsPage";
 import { DocumentsPage } from "./pages/DocumentsPage";
 import { FeatureDevelopmentPage } from "./pages/FeatureDevelopmentPage";
 import { ExtrasPage } from "./pages/ExtrasPage";
-import { createAutomaticBackup, createAutomaticPasswordBackup, getAppSetting, getBackupData, getMicrosoft365ConnectionStatus, getVaultStatus, setAppSetting, syncOfflineDocuments } from "./services/db";
+import { createAutomaticBackup, createAutomaticPasswordBackup, getBackupData, getMicrosoft365ConnectionStatus, getVaultStatus, syncOfflineDocuments } from "./services/db";
 import type { VaultStatus } from "./types/vault";
 import { addBrowserDataToBackup } from "./utils/backup";
 import {
@@ -34,12 +34,8 @@ import {
   runAutomaticCalendarSync as performAutomaticCalendarSync,
   type CalendarAutomaticSyncStatus
 } from "./utils/automaticCalendarSync";
-import { onboardingCompletedSettingKey } from "./utils/settings";
 import { enableCompleteAutomaticMicrosoft365Sync } from "./utils/microsoft365SyncConfig";
 
-const OnboardingDialog = lazy(() =>
-  import("./components/OnboardingDialog").then((module) => ({ default: module.OnboardingDialog }))
-);
 const DataTransferPage = lazy(() =>
   import("./pages/DataTransferPage").then((module) => ({ default: module.DataTransferPage }))
 );
@@ -64,7 +60,6 @@ export default function App() {
   const [featureAvailability, setFeatureAvailability] = useState(readFeatureAvailability);
   const [vaultStatus, setVaultStatus] = useState<VaultStatus | null>(null);
   const [startupError, setStartupError] = useState("");
-  const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [edvUnlocked, setEdvUnlocked] = useState(false);
   const [pendingEdvNavigation, setPendingEdvNavigation] = useState<{ page: Page; section?: SettingsSection } | null>(null);
   const automaticBackupPromise = useRef<Promise<void> | null>(null);
@@ -195,29 +190,6 @@ export default function App() {
   useEffect(() => {
     loadVaultStatus();
   }, []);
-
-  useEffect(() => {
-    if (!vaultStatus) return;
-    let cancelled = false;
-    const localBrowserPreview = !("__TAURI_INTERNALS__" in window)
-      && (window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost");
-    if (localBrowserPreview) {
-      setOnboardingOpen(localStorage.getItem(onboardingCompletedSettingKey) !== "true");
-      return;
-    }
-    getAppSetting(onboardingCompletedSettingKey)
-      .then((value) => { if (!cancelled) setOnboardingOpen(value !== "true"); })
-      .catch(() => { if (!cancelled) setOnboardingOpen(false); });
-    return () => { cancelled = true; };
-  }, [vaultStatus]);
-
-  const completeOnboarding = async () => {
-    const localBrowserPreview = !("__TAURI_INTERNALS__" in window)
-      && (window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost");
-    if (localBrowserPreview) localStorage.setItem(onboardingCompletedSettingKey, "true");
-    else await setAppSetting(onboardingCompletedSettingKey, "true");
-    setOnboardingOpen(false);
-  };
 
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
@@ -351,7 +323,7 @@ export default function App() {
           {page === "m365" && <Microsoft365Page />}
           {page === "trash" && <TrashPage />}
           {page === "extras" && <ExtrasPage />}
-          {page === "settings" && <SettingsPage section={settingsSection} onNavigate={navigate} onStartOnboarding={() => setOnboardingOpen(true)} />}
+          {page === "settings" && <SettingsPage section={settingsSection} onNavigate={navigate} />}
           {page === "appearance" && <AppearancePage />}
           {(page === "simple-import" || page === "import" || page === "contact-import" || page === "calendar-import" || page === "export") && (
             <Suspense fallback={<div className="page-loading"><LoaderCircle className="spin" size={28} /> Datenbereich wird geöffnet …</div>}>
@@ -366,13 +338,6 @@ export default function App() {
         </main>
         <UpdateNotifier />
       </div>
-      {onboardingOpen && (
-        <Suspense fallback={null}>
-          <OnboardingDialog
-            onComplete={completeOnboarding}
-          />
-        </Suspense>
-      )}
       {pendingEdvNavigation && <EdvAccessDialog onCancel={() => setPendingEdvNavigation(null)} onUnlocked={unlockEdvTools} />}
     </div>
   );

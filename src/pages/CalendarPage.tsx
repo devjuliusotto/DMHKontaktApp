@@ -1,5 +1,6 @@
-import { CalendarDays, ChevronLeft, ChevronRight, Download, Filter, ListChecks, MoreHorizontal, Plus, Rows3, Trash2, Undo2, Upload, X } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, Download, Filter, ListChecks, MoreHorizontal, Plus, RefreshCw, Rows3, Trash2, Undo2, Upload, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { CalendarReconciliationDialog } from "../components/CalendarReconciliationDialog";
 import { CalendarEventForm } from "../components/CalendarEventForm";
 import { EasyImportDialog } from "../components/EasyImportDialog";
 import { EmptyImportState } from "../components/EmptyImportState";
@@ -245,6 +246,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [calendarLoaded, setCalendarLoaded] = useState(false);
   const [easyImportOpen, setEasyImportOpen] = useState(false);
+  const [reconciliationOpen, setReconciliationOpen] = useState(false);
   const [categories, setCategories] = useState<CalendarCategory[]>([]);
   const [message, setMessage] = useState("");
   const [view, setView] = useState<CalendarView>(storedCalendarView);
@@ -727,6 +729,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
             {showActionsMenu && <div className="calendar-actions-menu" role="menu">
               <button type="button" onClick={() => { setShowActionsMenu(false); onNavigate("import"); }}><Upload size={18} /> Termine importieren</button>
               <button type="button" onClick={() => { setShowActionsMenu(false); onNavigate("export"); }}><Download size={18} /> Termine exportieren</button>
+              <button type="button" onClick={() => { setShowActionsMenu(false); setReconciliationOpen(true); }}><RefreshCw size={18} /> Kalender erneut abgleichen</button>
               <button type="button" onClick={() => { setShowActionsMenu(false); setShowCategoryDialog(true); }}><Plus size={18} /> Kategorie erstellen</button>
               <button type="button" onClick={() => { setShowActionsMenu(false); reviewExactDuplicates(); }}><ListChecks size={18} /> Exakte Duplikate prüfen</button>
               {duplicateCleanupBackup && <button type="button" onClick={() => { setShowActionsMenu(false); undoDuplicateCleanup(); }}><Undo2 size={18} /> Bereinigung rückgängig</button>}
@@ -1084,6 +1087,23 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
           const storedCategories = JSON.parse(localStorage.getItem(calendarCategoriesStorageKey) ?? "[]") as CalendarCategory[];
           setCategories(storedCategories.map(normalizeCategory).filter((category) => category.name));
           setMessage(result.detail);
+        }}
+      />
+
+      <CalendarReconciliationDialog
+        open={reconciliationOpen}
+        events={events}
+        onClose={() => setReconciliationOpen(false)}
+        onChanged={(nextEvents, nextMessage) => {
+          persist(nextEvents);
+          try {
+            const storedCategories = JSON.parse(localStorage.getItem(calendarCategoriesStorageKey) ?? "[]") as CalendarCategory[];
+            setCategories(storedCategories.map(normalizeCategory).filter((category) => category.name));
+          } catch {
+            // The event changes remain visible even if a category cannot be read.
+          }
+          setMessage(nextMessage);
+          window.dispatchEvent(new Event(calendarChangedEventName));
         }}
       />
     </div>

@@ -141,6 +141,19 @@ export interface ThunderbirdContactImportResult {
   autocompleteFound: number;
   autocompleteImported: number;
   autocompleteLinkedExisting: number;
+  mergedDuplicates: number;
+  skippedExactDuplicates: number;
+}
+
+export interface ThunderbirdContactReconciliationPreview {
+  found: number;
+  newContacts: number;
+  mergedContacts: number;
+  exactDuplicates: number;
+  conflicts: number;
+  skippedInvalid: number;
+  addressBooks: number;
+  groups: number;
 }
 
 export interface ThunderbirdDataPreview {

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { AlertTriangle, CheckCircle2, ChevronDown, Download, Eye, EyeOff, Mail, RefreshCw, Search, Sparkles, Trash2, X } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, Download, Eye, EyeOff, Mail, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { PrinterSettings } from "../components/PrinterSettings";
 import { StatusMessage } from "../components/StatusMessage";
 import type { SettingsSection } from "../components/SettingsSubtabs";
@@ -20,7 +20,6 @@ import { deletionConfirmationSettingKey } from "../utils/settings";
 interface SettingsPageProps {
   section?: SettingsSection;
   onNavigate?: (page: Page, section?: SettingsSection) => void;
-  onStartOnboarding?: () => void;
 }
 
 interface SettingsSearchItem {
@@ -43,7 +42,7 @@ const settingsSearchItems: SettingsSearchItem[] = [
   { id: "admin-tools", label: "Admin-Werkzeuge", description: "Erweitert → Wartung und Wiederherstellung", keywords: "admin zurücksetzen wiederherstellen wartung app löschen", page: "feature-development", section: "advanced", adminOnly: true }
 ];
 
-export function SettingsPage({ section = "general", onNavigate = () => undefined, onStartOnboarding = () => undefined }: SettingsPageProps) {
+export function SettingsPage({ section = "general", onNavigate = () => undefined }: SettingsPageProps) {
   const administrativeToolsVisible = true;
   const [accounts, setAccounts] = useState<MailAccount[]>([]);
   const [candidates, setCandidates] = useState<OutlookAccountCandidate[]>([]);
@@ -330,14 +329,6 @@ export function SettingsPage({ section = "general", onNavigate = () => undefined
                 />
                 <span>{confirmDeletions ? "Ein" : "Aus"}</span>
               </label>
-            </article>
-            <article className="settings-overview-card settings-preference-card">
-              <span className="settings-overview-icon"><Sparkles size={27} aria-hidden="true" /></span>
-              <div>
-                <h3>Einführung und Datenübernahme</h3>
-                <p>Die kurze Einführung erneut ansehen oder vorhandene Daten automatisch suchen.</p>
-              </div>
-              <button type="button" onClick={onStartOnboarding}><Sparkles size={18} /> Einführung starten</button>
             </article>
           </section>
 

@@ -3414,11 +3414,35 @@ fn merge_contact_rows(
     Ok(())
 }
 
-fn consolidate_contact_duplicates(
+pub(crate) fn consolidate_contact_duplicates(
     conn: &Connection,
     current_batch: &str,
     timestamp: &str,
 ) -> Result<usize, String> {
+    let mut merged = 0usize;
+
+    // An identical e-mail address is the strongest available identity signal.
+    // Consolidate these rows before the name-based pass so spelling variants in
+    // display names do not create another contact during a fresh import.
+    let mut by_email: BTreeMap<String, Vec<ContactConsolidationRow>> = BTreeMap::new();
+    for contact in load_contacts_for_consolidation(conn)? {
+        let email = contact.contact.email.trim().to_lowercase();
+        if !email.is_empty() {
+            by_email.entry(email).or_default().push(contact);
+        }
+    }
+    for mut matches in by_email.into_values() {
+        if matches.len() < 2 {
+            continue;
+        }
+        let preferred = preferred_contact_index(&matches, current_batch);
+        let mut survivor = matches.swap_remove(preferred);
+        for duplicate in matches {
+            merge_contact_rows(conn, &mut survivor, &duplicate, timestamp)?;
+            merged += 1;
+        }
+    }
+
     let mut by_name: BTreeMap<String, Vec<ContactConsolidationRow>> = BTreeMap::new();
     for contact in load_contacts_for_consolidation(conn)? {
         let key = contact_name_merge_key(&contact.contact);
@@ -3427,7 +3451,6 @@ fn consolidate_contact_duplicates(
         }
     }
 
-    let mut merged = 0usize;
     for contacts in by_name.into_values() {
         if contacts.len() < 2 {
             continue;
@@ -5483,6 +5506,7 @@ pub fn run() {
                 tray = tray.icon(icon.clone());
             }
             tray.build(app)?;
+            show_main_window(&app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -5566,6 +5590,7 @@ pub fn run() {
             preview_outlook_classic_appointments,
             import_outlook_classic_appointments_once,
             thunderbird::import_thunderbird_contacts_once,
+            thunderbird::preview_thunderbird_contact_reconciliation,
             thunderbird::import_thunderbird_calendars_once,
             thunderbird::preview_thunderbird_data,
             mail_accounts::scan_outlook_accounts,
@@ -5642,7 +5667,9 @@ mod tests {
                 (4, 'Andrea Frey', 'andrea.private@example.org', '', ''),
                 (5, 'Andrea Frey', 'andrea.work@example.org', '', 'Dienstlich'),
                 (6, 'Hans Müller', '', '07157 111111', ''),
-                (7, 'Hans Müller', '', '07157 222222', '');
+                (7, 'Hans Müller', '', '07157 222222', ''),
+                (8, 'Max Mustermann', 'max@example.org', '', ''),
+                (9, 'Max M.', 'max@example.org', '07157 333333', 'Aus Thunderbird');
             INSERT INTO contact_groups VALUES (1, 11), (2, 12), (3, 13);
             ",
         )
@@ -5651,11 +5678,11 @@ mod tests {
         let merged = consolidate_contact_duplicates(&conn, "current-batch", "2026-09-02")
             .expect("consolidate contacts");
 
-        assert_eq!(merged, 2);
+        assert_eq!(merged, 3);
         let total: i64 = conn
             .query_row("SELECT COUNT(*) FROM contacts", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(total, 5);
+        assert_eq!(total, 6);
         let alexandra: (String, String, String) = conn
             .query_row(
                 "SELECT email, phone, notes FROM contacts WHERE display_name = 'Alexandra Heyde'",
@@ -5692,6 +5719,16 @@ mod tests {
             )
             .unwrap();
         assert_eq!(hans_count, 2);
+        let max: (i64, String, String) = conn
+            .query_row(
+                "SELECT COUNT(*), phone, notes FROM contacts WHERE email = 'max@example.org'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(max.0, 1);
+        assert_eq!(max.1, "07157 333333");
+        assert_eq!(max.2, "Aus Thunderbird");
     }
 
     #[test]

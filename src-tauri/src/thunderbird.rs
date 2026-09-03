@@ -1,4 +1,8 @@
-use super::{now, open_db, ContactInput};
+use super::{
+    consolidate_contact_duplicates, contact_exact_key, contact_name_merge_key,
+    contacts_are_safe_to_consolidate, merge_contact_fields, normalize_contact_display_name, now,
+    open_db, ContactInput,
+};
 use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::types::ValueRef;
 use rusqlite::{params, Connection, OpenFlags, Row, Transaction};
@@ -22,6 +26,21 @@ pub struct ThunderbirdContactImportResult {
     pub autocomplete_found: usize,
     pub autocomplete_imported: usize,
     pub autocomplete_linked_existing: usize,
+    pub merged_duplicates: usize,
+    pub skipped_exact_duplicates: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThunderbirdContactReconciliationPreview {
+    pub found: usize,
+    pub new_contacts: usize,
+    pub merged_contacts: usize,
+    pub exact_duplicates: usize,
+    pub conflicts: usize,
+    pub skipped_invalid: usize,
+    pub address_books: usize,
+    pub groups: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -678,68 +697,47 @@ fn read_thunderbird_books() -> Result<Vec<ThunderbirdBook>, String> {
         .collect()
 }
 
-fn normalized_phone(value: &str) -> String {
-    value
-        .chars()
-        .filter(|character| character.is_ascii_digit())
-        .collect()
-}
-
-fn no_email_key(contact: &ContactInput) -> Option<String> {
-    let name = contact.display_name.trim().to_lowercase();
-    let phone = first_non_empty([
-        normalized_phone(&contact.mobile_phone),
-        normalized_phone(&contact.phone),
-    ]);
-    (!name.is_empty() && !phone.is_empty()).then(|| format!("{name}|{phone}"))
-}
-
-fn existing_contact_indexes(
-    tx: &Transaction<'_>,
-) -> Result<(HashMap<String, i64>, HashMap<String, i64>), String> {
-    let mut emails = HashMap::new();
-    let mut without_email = HashMap::new();
-    let mut statement = tx.prepare(
-        "SELECT id, display_name, email, phone, mobile_phone FROM contacts WHERE deleted_at IS NULL"
-    ).map_err(|err| err.to_string())?;
+fn existing_exact_contact_indexes(tx: &Transaction<'_>) -> Result<HashMap<String, i64>, String> {
+    let mut exact = HashMap::new();
+    let mut statement = tx
+        .prepare(
+            "SELECT id, first_name, last_name, display_name, email, phone, mobile_phone,
+                street, postal_code, city, country, short_info, notes
+         FROM contacts WHERE deleted_at IS NULL",
+        )
+        .map_err(|err| err.to_string())?;
     let rows = statement
         .query_map([], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
+                ContactInput {
+                    id: None,
+                    first_name: row.get(1)?,
+                    last_name: row.get(2)?,
+                    display_name: row.get(3)?,
+                    email: row.get(4)?,
+                    phone: row.get(5)?,
+                    mobile_phone: row.get(6)?,
+                    street: row.get(7)?,
+                    postal_code: row.get(8)?,
+                    city: row.get(9)?,
+                    country: row.get(10)?,
+                    short_info: row.get(11)?,
+                    notes: row.get(12)?,
+                    group_ids: Vec::new(),
+                },
             ))
         })
         .map_err(|err| err.to_string())?;
     for row in rows {
-        let (id, display_name, email, phone, mobile_phone) = row.map_err(|err| err.to_string())?;
-        if !email.trim().is_empty() {
-            emails.entry(email.trim().to_lowercase()).or_insert(id);
-        } else {
-            let key_contact = ContactInput {
-                id: None,
-                first_name: String::new(),
-                last_name: String::new(),
-                display_name,
-                email,
-                phone,
-                mobile_phone,
-                street: String::new(),
-                postal_code: String::new(),
-                city: String::new(),
-                country: String::new(),
-                short_info: String::new(),
-                notes: String::new(),
-                group_ids: Vec::new(),
-            };
-            if let Some(key) = no_email_key(&key_contact) {
-                without_email.entry(key).or_insert(id);
-            }
-        }
+        let (id, contact) = row.map_err(|err| err.to_string())?;
+        let display_name = normalize_contact_display_name(&contact);
+        let email = contact.email.trim().to_lowercase();
+        exact
+            .entry(contact_exact_key(&contact, &display_name, &email))
+            .or_insert(id);
     }
-    Ok((emails, without_email))
+    Ok(exact)
 }
 
 fn ensure_group(
@@ -771,6 +769,112 @@ fn ensure_group(
 }
 
 #[tauri::command]
+pub fn preview_thunderbird_contact_reconciliation(
+    app: AppHandle,
+    clean_imported_names: bool,
+    include_autocomplete: bool,
+) -> Result<ThunderbirdContactReconciliationPreview, String> {
+    let books = read_thunderbird_books()?
+        .into_iter()
+        .filter(|book| include_autocomplete || !book.is_autocomplete)
+        .collect::<Vec<_>>();
+    let found = books.iter().map(|book| book.contacts.len()).sum();
+    let address_books = books.len();
+    let groups = books.iter().map(|book| 1usize + book.lists.len()).sum();
+    let conn = open_db(&app)?;
+    let mut known = super::load_contacts_for_consolidation(&conn)?
+        .into_iter()
+        .map(|row| row.contact)
+        .collect::<Vec<_>>();
+    let mut new_contacts = 0usize;
+    let mut merged_contacts = 0usize;
+    let mut exact_duplicates = 0usize;
+    let mut conflicts = 0usize;
+    let mut skipped_invalid = 0usize;
+
+    for book in books {
+        for mut source in book.contacts {
+            let contact = &mut source.input;
+            if clean_imported_names {
+                super::clean_imported_contact_name(contact);
+            }
+            let display_name = normalize_contact_display_name(contact);
+            let email = contact.email.trim().to_lowercase();
+            if display_name.is_empty()
+                && email.is_empty()
+                && contact.phone.trim().is_empty()
+                && contact.mobile_phone.trim().is_empty()
+            {
+                skipped_invalid += 1;
+                continue;
+            }
+            let exact_key = contact_exact_key(contact, &display_name, &email);
+            if known.iter().any(|candidate| {
+                let candidate_name = normalize_contact_display_name(candidate);
+                contact_exact_key(
+                    candidate,
+                    &candidate_name,
+                    &candidate.email.trim().to_lowercase(),
+                ) == exact_key
+            }) {
+                exact_duplicates += 1;
+                continue;
+            }
+
+            let same_email = if email.is_empty() {
+                None
+            } else {
+                known
+                    .iter()
+                    .position(|candidate| candidate.email.trim().eq_ignore_ascii_case(&email))
+            };
+            let name_key = contact_name_merge_key(contact);
+            let same_name = known
+                .iter()
+                .enumerate()
+                .filter(|(_, candidate)| {
+                    !name_key.is_empty() && contact_name_merge_key(candidate) == name_key
+                })
+                .map(|(index, candidate)| (index, candidate.email.trim().to_lowercase()))
+                .collect::<Vec<_>>();
+            let merge_target = same_email.or_else(|| {
+                let safe = same_name
+                    .iter()
+                    .filter(|(_, candidate_email)| candidate_email.is_empty() || email.is_empty())
+                    .filter(|(index, _)| contacts_are_safe_to_consolidate(&known[*index], contact))
+                    .map(|(index, _)| *index)
+                    .collect::<Vec<_>>();
+                (safe.len() == 1).then_some(safe[0])
+            });
+
+            if let Some(index) = merge_target {
+                merge_contact_fields(&mut known[index], contact);
+                merged_contacts += 1;
+            } else if same_name.iter().any(|(_, candidate_email)| {
+                !email.is_empty() && !candidate_email.is_empty() && candidate_email != &email
+            }) {
+                conflicts += 1;
+                known.push(contact.clone());
+            } else {
+                new_contacts += 1;
+                known.push(contact.clone());
+            }
+        }
+    }
+
+    Ok(ThunderbirdContactReconciliationPreview {
+        found,
+        new_contacts,
+        merged_contacts,
+        exact_duplicates,
+        conflicts,
+        skipped_invalid,
+        address_books,
+        groups,
+    })
+}
+
+#[tauri::command]
 pub fn import_thunderbird_contacts_once(
     app: AppHandle,
     clean_imported_names: bool,
@@ -792,13 +896,13 @@ pub fn import_thunderbird_contacts_once(
     let tx = connection.transaction().map_err(|err| err.to_string())?;
     let timestamp = now();
     let batch_id = format!("thunderbird-import-{}", Utc::now().timestamp_millis());
-    let (mut emails, mut without_email) = existing_contact_indexes(&tx)?;
+    let mut exact_contacts = existing_exact_contact_indexes(&tx)?;
     let mut groups = HashMap::new();
-    let mut imported = 0usize;
     let mut autocomplete_imported = 0usize;
     let mut linked_existing_ids = HashSet::new();
     let mut autocomplete_linked_existing_ids = HashSet::new();
     let mut skipped_invalid = 0usize;
+    let mut skipped_exact_duplicates = 0usize;
 
     for book in books {
         // Use the original Thunderbird address-book name as the local group name.
@@ -854,16 +958,12 @@ pub fn import_thunderbird_contacts_once(
                 skipped_invalid += 1;
                 continue;
             }
+            let display_name = normalize_contact_display_name(contact);
             let email_key = contact.email.trim().to_lowercase();
-            let no_email = no_email_key(contact);
-            let existing_id = if !email_key.is_empty() {
-                emails.get(&email_key).copied()
-            } else {
-                no_email
-                    .as_ref()
-                    .and_then(|key| without_email.get(key).copied())
-            };
+            let exact_key = contact_exact_key(contact, &display_name, &email_key);
+            let existing_id = exact_contacts.get(&exact_key).copied();
             let contact_id = if let Some(id) = existing_id {
+                skipped_exact_duplicates += 1;
                 linked_existing_ids.insert(id);
                 if is_autocomplete {
                     autocomplete_linked_existing_ids.insert(id);
@@ -883,13 +983,7 @@ pub fn import_thunderbird_contacts_once(
                     ],
                 ).map_err(|err| err.to_string())?;
                 let id = tx.last_insert_rowid();
-                if !email_key.is_empty() {
-                    emails.insert(email_key.clone(), id);
-                }
-                if let Some(key) = no_email {
-                    without_email.insert(key, id);
-                }
-                imported += 1;
+                exact_contacts.insert(exact_key, id);
                 if is_autocomplete {
                     autocomplete_imported += 1;
                 }
@@ -913,7 +1007,16 @@ pub fn import_thunderbird_contacts_once(
         }
     }
 
-    if imported > 0 {
+    let merged_duplicates = consolidate_contact_duplicates(&tx, &batch_id, &timestamp)?;
+    let imported = tx
+        .query_row(
+            "SELECT COUNT(*) FROM contacts WHERE deleted_at IS NULL AND import_batch_id = ?",
+            params![batch_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| error.to_string())? as usize;
+
+    if imported > 0 || merged_duplicates > 0 {
         tx.execute(
             "INSERT INTO import_history (batch_id, source_file, imported_count, skipped_count, created_at)
              VALUES (?, ?, ?, ?, ?)",
@@ -932,6 +1035,8 @@ pub fn import_thunderbird_contacts_once(
         autocomplete_found,
         autocomplete_imported,
         autocomplete_linked_existing: autocomplete_linked_existing_ids.len(),
+        merged_duplicates,
+        skipped_exact_duplicates,
     })
 }
 

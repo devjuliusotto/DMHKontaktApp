@@ -1,9 +1,10 @@
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { Download, Ellipsis, Inbox, ListChecks, Mail, Minus, Pencil, Plus, Search, Settings2, Trash2, Upload, UserPlus, UsersRound, X } from "lucide-react";
+import { Download, Ellipsis, Inbox, Mail, Minus, Pencil, Plus, RefreshCw, Search, Settings2, Trash2, Upload, UserPlus, UsersRound, X } from "lucide-react";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ContactForm } from "../components/ContactForm";
 import { ContactTable } from "../components/ContactTable";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { ContactReconciliationDialog } from "../components/ContactReconciliationDialog";
 import { EasyImportDialog } from "../components/EasyImportDialog";
 import { EmptyImportState } from "../components/EmptyImportState";
 import { StatusMessage } from "../components/StatusMessage";
@@ -93,6 +94,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [totalContactCount, setTotalContactCount] = useState<number | null>(null);
   const [easyImportOpen, setEasyImportOpen] = useState(false);
+  const [reconciliationOpen, setReconciliationOpen] = useState(false);
   const [groups, setGroups] = useState<Group[]>([]);
   const [groupContactCounts, setGroupContactCounts] = useState<Record<number, number>>({});
   const [ungroupedContactCount, setUngroupedContactCount] = useState(0);
@@ -725,7 +727,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
               <div className="more-menu" role="menu">
                 <button type="button" onClick={() => { setTestMenuOpen(false); onNavigate("import"); }}><Upload size={18} /> Kontakte importieren</button>
                 <button type="button" onClick={() => { setTestMenuOpen(false); onNavigate("export"); }}><Download size={18} /> Kontakte exportieren</button>
-                <button type="button" onClick={() => { setTestMenuOpen(false); onNavigate("import"); }}><ListChecks size={18} /> Import &amp; Duplikate prüfen</button>
+                <button type="button" onClick={() => { setTestMenuOpen(false); setReconciliationOpen(true); }}><RefreshCw size={18} /> Kontakte erneut abgleichen</button>
                 {tab === "all" && !selectionMode && <button type="button" onClick={startSelectionMode}>Auswählen</button>}
                 <span className="calendar-actions-separator" />
                 <button className="danger" type="button" onClick={removeAllContacts}><Trash2 size={18} /> Alle Kontakte löschen</button>
@@ -1031,6 +1033,17 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
           await refresh();
           setMessage(result.detail);
           setMessageType("success");
+        }}
+      />
+
+      <ContactReconciliationDialog
+        open={reconciliationOpen}
+        onClose={() => setReconciliationOpen(false)}
+        onChanged={async (nextMessage) => {
+          await refresh();
+          setMessage(nextMessage);
+          setMessageType("success");
+          notifyLocalM365Change();
         }}
       />
 

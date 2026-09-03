@@ -396,6 +396,10 @@ export function importThunderbirdContactsOnce(cleanImportedNames = true, include
   return invoke("import_thunderbird_contacts_once", { cleanImportedNames, includeAutocomplete });
 }
 
+export function previewThunderbirdContactReconciliation(cleanImportedNames = true, includeAutocomplete = true): Promise<import("../types/contact").ThunderbirdContactReconciliationPreview> {
+  return invoke("preview_thunderbird_contact_reconciliation", { cleanImportedNames, includeAutocomplete });
+}
+
 export function importThunderbirdCalendarsOnce(): Promise<ThunderbirdCalendarImportResult> {
   return invoke("import_thunderbird_calendars_once");
 }
