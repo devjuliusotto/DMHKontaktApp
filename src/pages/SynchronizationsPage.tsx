@@ -19,7 +19,8 @@ import type { Microsoft365ConflictDecision, Microsoft365ConnectionStatus, Micros
 import { defaultSyncConfig, parseSyncConfig, type SyncConfig, type SyncDirection } from "../types/sync";
 import { addBrowserDataToBackup } from "../utils/backup";
 import { calendarStorageKey, calendarTrashStorageKey, mergeImportedCalendarCategories } from "../utils/calendar";
-import { calendarChangedEventName, synchronizationConfigKey as syncConfigKey, synchronizationHistoryKey as syncHistoryKey } from "../utils/automaticCalendarSync";
+import { calendarChangedEventName, recordMicrosoft365SynchronizationError, recordMicrosoft365SynchronizationSuccess, synchronizationConfigKey as syncConfigKey, synchronizationHistoryKey as syncHistoryKey } from "../utils/automaticCalendarSync";
+import { initializeMicrosoft365SourceSelection, isTechnicalMicrosoft365Source } from "../utils/microsoft365SyncConfig";
 import type { CalendarEvent } from "../types/calendar";
 
 interface SynchronizationsPageProps {
@@ -28,29 +29,8 @@ interface SynchronizationsPageProps {
 
 const emptyStatus: Microsoft365ConnectionStatus = { configured: false, connected: false, account: null };
 
-function isTechnicalSource(source: Microsoft365SyncSource): boolean {
-  return /(birthday|birthdays|geburtstag|geburtstage|holiday|holidays|feiertag|feiertage|weather|wetter|trash|papierkorb)/i.test(source.name);
-}
-
 function initializeSourceSelection(config: SyncConfig, sources: Microsoft365SyncSources): SyncConfig {
-  const directions = { ...config.sourceDirections };
-  const selectedContacts = new Set(config.selectedContactSourceIds);
-  const selectedCalendars = new Set(config.selectedCalendarSourceIds);
-  for (const source of [...sources.contacts, ...sources.calendars]) {
-    if (directions[source.id]) continue;
-    directions[source.id] = config.direction;
-    if (!isTechnicalSource(source)) {
-      if (source.kind === "contactFolder") selectedContacts.add(source.id);
-      else selectedCalendars.add(source.id);
-    }
-  }
-  return {
-    ...config,
-    sourceSelectionInitialized: true,
-    selectedContactSourceIds: Array.from(selectedContacts),
-    selectedCalendarSourceIds: Array.from(selectedCalendars),
-    sourceDirections: directions
-  };
+  return initializeMicrosoft365SourceSelection(config, sources);
 }
 
 function parseHistory(raw: string | null): Microsoft365SyncHistoryEntry[] {
@@ -118,7 +98,7 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
     setBusy(true);
     setMessage("");
     try {
-      const savedConfig = { ...config, runOnClose: false };
+      const savedConfig = { ...config, runOnClose: true };
       setConfig(savedConfig);
       await setAppSetting(syncConfigKey, JSON.stringify(savedConfig));
       if (savedConfig.enabled && savedConfig.calendars) window.dispatchEvent(new Event(calendarChangedEventName));
@@ -276,11 +256,13 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
         mergeImportedCalendarCategories(result.calendarUpserts);
       }
       await persistHistory({ ...result, id: `${result.startedAt}-${Date.now()}` });
+      await recordMicrosoft365SynchronizationSuccess(config, result);
       setPreview(null);
       setConflictDecisions({});
       setMessageType(result.errors > 0 ? "error" : "success");
       setMessage(`${result.created} erstellt, ${result.updated} aktualisiert, ${result.deleted} gelöscht, ${result.ignored} ignoriert, ${result.errors} Fehler.`);
     } catch (error) {
+      await recordMicrosoft365SynchronizationError(error).catch(() => undefined);
       setMessageType("error");
       setMessage(`Synchronisierung konnte nicht abgeschlossen werden: ${error}`);
     } finally {
@@ -319,14 +301,19 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
           {openProvider === "m365" && <div className="sync-provider-content">
             {!m365Status?.connected ? (
               <div className="sync-provider-empty">
-                <MonitorSmartphone size={23} aria-hidden="true" />
-                <span>Microsoft 365 muss einmal verbunden werden.</span>
-                <button className="primary" type="button" onClick={() => onNavigate("m365", "sync")}>Verbinden</button>
+                <span className="sync-provider-connect-icon"><MonitorSmartphone size={25} aria-hidden="true" /></span>
+                <span className="sync-provider-connect-copy">
+                  <strong>Microsoft 365 verbinden</strong>
+                  <small>Einmal anmelden, danach können Kontakte und Termine synchronisiert werden.</small>
+                </span>
+                <button className="primary sync-provider-connect-button" type="button" onClick={() => onNavigate("m365", "sync")}>
+                  <Cloud size={19} aria-hidden="true" /> Jetzt verbinden
+                </button>
               </div>
             ) : (
               <>
                 <section className="sync-quick-settings" aria-label="Grundlegende Einstellungen">
-                  <label title="Lokale Änderungen werden direkt gesendet. Änderungen aus Microsoft 365 werden im Vordergrund spätestens nach etwa 30 Sekunden gelesen."><span><strong>Automatisch</strong><small>Lokal sofort · M365 alle 30 Sek.</small></span><input type="checkbox" checked={config.enabled} onChange={(event) => updateConfig("enabled", event.target.checked)} /></label>
+                  <label title="Lokale Änderungen werden direkt gesendet. Microsoft 365 wird jede Minute geprüft – auch wenn das Fenster geschlossen ist."><span><strong>Automatisch</strong><small>Jede Minute · auch im Hintergrund</small></span><input type="checkbox" checked={config.enabled} onChange={(event) => updateConfig("enabled", event.target.checked)} /></label>
                   <label title="Kontakte zwischen der App und Microsoft 365 berücksichtigen."><ContactRound size={19} /><span><strong>Kontakte</strong></span><input type="checkbox" checked={config.contacts} onChange={(event) => updateConfig("contacts", event.target.checked)} /></label>
                   <label title="Termine zwischen der App und Microsoft 365 berücksichtigen."><CalendarDays size={19} /><span><strong>Kalender</strong></span><input type="checkbox" checked={config.calendars} onChange={(event) => updateConfig("calendars", event.target.checked)} /></label>
                 </section>
@@ -370,7 +357,7 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
                       const selected = source.kind === "contactFolder" ? config.selectedContactSourceIds.includes(source.id) : config.selectedCalendarSourceIds.includes(source.id);
                       const direction = config.sourceDirections[source.id] ?? config.direction;
                       return <article key={`${source.kind}-${source.id}`} className={selected ? "selected" : ""}>
-                        <label className="synchronization-source-choice"><input type="checkbox" checked={selected} onChange={(event) => toggleSource(source, event.target.checked)} /><span>{source.kind === "calendar" ? <CalendarDays size={18} /> : <ContactRound size={18} />}<strong>{source.name}</strong>{source.shared && <small>Freigegeben</small>}{isTechnicalSource(source) && <small className="technical">Systemkalender</small>}</span></label>
+                        <label className="synchronization-source-choice"><input type="checkbox" checked={selected} onChange={(event) => toggleSource(source, event.target.checked)} /><span>{source.kind === "calendar" ? <CalendarDays size={18} /> : <ContactRound size={18} />}<strong>{source.name}</strong>{source.shared && <small>Freigegeben</small>}{isTechnicalMicrosoft365Source(source) && <small className="technical">Systemkalender</small>}</span></label>
                         <div className="synchronization-source-map"><select aria-label={`Richtung für ${source.name}`} value={direction} onChange={(event) => updateSourceDirection(source.id, event.target.value as SyncDirection)} disabled={!selected}><option value="bidirectional">Beide Richtungen</option><option value="export">App → M365</option><option value="import">M365 → App</option></select></div>
                       </article>;
                     })}

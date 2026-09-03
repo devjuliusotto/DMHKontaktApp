@@ -6,6 +6,7 @@
     },
     "windows": [
       {
+        "additionalBrowserArgs": "--disable-background-timer-throttling --disable-renderer-backgrounding",
         "height": 780,
         "minHeight": 600,
         "minWidth": 760,

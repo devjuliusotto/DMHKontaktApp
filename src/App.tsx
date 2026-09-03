@@ -18,7 +18,7 @@ import { SynchronizationsPage } from "./pages/SynchronizationsPage";
 import { DocumentsPage } from "./pages/DocumentsPage";
 import { FeatureDevelopmentPage } from "./pages/FeatureDevelopmentPage";
 import { ExtrasPage } from "./pages/ExtrasPage";
-import { createAutomaticBackup, createAutomaticPasswordBackup, getAppSetting, getBackupData, getVaultStatus, setAppSetting, syncOfflineDocuments } from "./services/db";
+import { createAutomaticBackup, createAutomaticPasswordBackup, getAppSetting, getBackupData, getMicrosoft365ConnectionStatus, getVaultStatus, setAppSetting, syncOfflineDocuments } from "./services/db";
 import type { VaultStatus } from "./types/vault";
 import { addBrowserDataToBackup } from "./utils/backup";
 import {
@@ -30,10 +30,12 @@ import {
 import {
   calendarAutomaticSyncStatusEventName,
   calendarChangedEventName,
+  recordMicrosoft365SynchronizationError,
   runAutomaticCalendarSync as performAutomaticCalendarSync,
   type CalendarAutomaticSyncStatus
 } from "./utils/automaticCalendarSync";
 import { onboardingCompletedSettingKey } from "./utils/settings";
+import { enableCompleteAutomaticMicrosoft365Sync } from "./utils/microsoft365SyncConfig";
 
 const OnboardingDialog = lazy(() =>
   import("./components/OnboardingDialog").then((module) => ({ default: module.OnboardingDialog }))
@@ -158,6 +160,7 @@ export default function App() {
             window.dispatchEvent(new CustomEvent<CalendarAutomaticSyncStatus>(calendarAutomaticSyncStatusEventName, { detail: status }));
           }
         } catch (error) {
+          await recordMicrosoft365SynchronizationError(error).catch(() => undefined);
           window.dispatchEvent(new CustomEvent<CalendarAutomaticSyncStatus>(calendarAutomaticSyncStatusEventName, {
             detail: {
               state: "error",
@@ -218,6 +221,16 @@ export default function App() {
 
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
+    void getMicrosoft365ConnectionStatus()
+      .then(async (status) => {
+        if (!status.connected) return;
+        await enableCompleteAutomaticMicrosoft365Sync(false);
+        await runCalendarSync("open");
+      })
+      .catch(() => {
+        // A missing or offline Microsoft connection is shown on its own page.
+      });
+
     let debounceTimer: number | undefined;
     const queueChangedCalendarSync = () => {
       if (debounceTimer !== undefined) window.clearTimeout(debounceTimer);
@@ -225,8 +238,8 @@ export default function App() {
     };
     const startupTimer = window.setTimeout(() => void runCalendarSync("open"), 2_500);
     const pollingTimer = window.setInterval(() => {
-      if (!document.hidden) void runCalendarSync("poll");
-    }, 30_000);
+      void runCalendarSync("poll");
+    }, 60_000);
     const syncWhenVisible = () => {
       if (!document.hidden) void runCalendarSync("poll");
     };
@@ -266,19 +279,17 @@ export default function App() {
       event.preventDefault();
       if (closing.current) return;
       closing.current = true;
-      const closingTasks = Promise.allSettled([
-        runDocumentSync(),
-        runAutomaticBackup(true)
-      ]);
-      await Promise.race([
-        closingTasks,
-        new Promise<void>((resolve) => window.setTimeout(resolve, 4_000))
-      ]);
       try {
-        await appWindow.destroy();
+        await appWindow.hide();
+        closing.current = false;
+        void Promise.allSettled([
+          runCalendarSync("poll"),
+          runDocumentSync(),
+          runAutomaticBackup(true)
+        ]);
       } catch (error) {
         closing.current = false;
-        window.alert(`Die App konnte nicht geschlossen werden: ${error}`);
+        window.alert(`Die App konnte nicht im Hintergrund weiterlaufen: ${error}`);
       }
     });
 
@@ -287,7 +298,7 @@ export default function App() {
       window.clearInterval(documentSyncInterval);
       void unlisten.then((dispose) => dispose());
     };
-  }, [runAutomaticBackup, runDocumentSync]);
+  }, [runAutomaticBackup, runCalendarSync, runDocumentSync]);
 
   if (!vaultStatus) {
     return (
