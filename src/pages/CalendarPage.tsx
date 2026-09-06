@@ -240,9 +240,10 @@ function normalizeCategory(category: CalendarCategory): CalendarCategory {
 
 interface CalendarPageProps {
   onNavigate: (page: Page) => void;
+  onHideSection: () => void;
 }
 
-export function CalendarPage({ onNavigate }: CalendarPageProps) {
+export function CalendarPage({ onNavigate, onHideSection }: CalendarPageProps) {
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [calendarLoaded, setCalendarLoaded] = useState(false);
   const [easyImportOpen, setEasyImportOpen] = useState(false);
@@ -832,7 +833,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
       {!calendarLoaded ? (
         <div className="page-loading">Kalender wird geladen …</div>
       ) : events.length === 0 ? (
-        <EmptyImportState kind="calendar" onEasyImport={() => setEasyImportOpen(true)} onManualImport={() => onNavigate("calendar-import")} />
+        <EmptyImportState kind="calendar" onEasyImport={() => setEasyImportOpen(true)} onManualImport={() => onNavigate("calendar-import")} onNotNeeded={onHideSection} />
       ) : <section className="calendar-shell">
         <section className="calendar-toolbar" aria-label="Kalendersteuerung">
           <div className="calendar-toolbar-navigation">

@@ -18,14 +18,18 @@ interface SidebarProps {
   activePage: Page;
   onNavigate: (page: Page) => void;
   compact?: boolean;
+  calendarEnabled: boolean;
+  contactsEnabled: boolean;
   authenticatorEnabled: boolean;
   documentsEnabled: boolean;
   passwordsEnabled: boolean;
 }
 
-export function Sidebar({ activePage, onNavigate, compact = false, authenticatorEnabled, documentsEnabled, passwordsEnabled }: SidebarProps) {
+export function Sidebar({ activePage, onNavigate, compact = false, calendarEnabled, contactsEnabled, authenticatorEnabled, documentsEnabled, passwordsEnabled }: SidebarProps) {
   const visibleItems = items.filter((item) => (
-    (item.page !== "authenticator" || authenticatorEnabled)
+    (item.page !== "contacts" || contactsEnabled)
+    && (item.page !== "calendar" || calendarEnabled)
+    && (item.page !== "authenticator" || authenticatorEnabled)
     && (item.page !== "documents" || documentsEnabled)
     && (item.page !== "passwords" || passwordsEnabled)
   ));

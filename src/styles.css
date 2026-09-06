@@ -2733,6 +2733,26 @@ td input[type="checkbox"] {
   margin-top: 0.35rem;
 }
 
+.confirm-dialog-notice {
+  align-items: flex-start;
+  background: var(--success-surface);
+  border: 1px solid var(--success-border);
+  border-radius: 8px;
+  color: var(--success-text);
+  display: flex;
+  font-size: 0.88rem;
+  font-weight: 700;
+  gap: 0.4rem;
+  line-height: 1.4;
+  margin-top: 0.7rem;
+  padding: 0.6rem 0.7rem;
+}
+
+.confirm-dialog-notice svg {
+  flex: 0 0 auto;
+  margin-top: 0.05rem;
+}
+
 .confirm-dialog-actions {
   grid-column: 1 / -1;
   justify-content: flex-end;
@@ -3072,9 +3092,9 @@ table {
 .first-import-options {
   display: grid;
   gap: 0.8rem;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   margin: 0 auto;
-  max-width: 820px;
+  max-width: 1120px;
   width: 100%;
 }
 
@@ -3132,6 +3152,37 @@ table {
 .first-import-option.recommended .first-import-option-icon {
   background: rgba(255, 255, 255, 0.16);
   color: var(--on-primary);
+}
+
+.first-import-option-not-needed {
+  background: var(--surface-alt);
+}
+
+.first-import-option-not-needed:hover,
+.first-import-option-not-needed:focus-visible {
+  background: var(--soft);
+  border-color: var(--primary);
+}
+
+.first-import-checklist {
+  align-items: center;
+  background: var(--success-surface);
+  border: 1px solid var(--success-border);
+  border-radius: 8px;
+  color: var(--success-text);
+  display: flex;
+  font-size: 0.9rem;
+  font-weight: 700;
+  gap: 0.45rem;
+  justify-content: center;
+  margin: 0 auto;
+  max-width: 820px;
+  padding: 0.65rem 0.8rem;
+  text-align: center;
+}
+
+.first-import-checklist svg {
+  flex: 0 0 auto;
 }
 
 @media (max-width: 700px) {
@@ -9711,7 +9762,99 @@ td small {
   padding: 0.75rem;
 }
 
+.extras-checklist-card {
+  display: grid;
+  gap: 0.9rem;
+  margin-top: 1.25rem;
+  max-width: 1060px;
+}
+
+.extras-checklist-heading {
+  align-items: center;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.extras-checklist-heading h3,
+.extras-checklist-heading p {
+  margin: 0;
+}
+
+.extras-checklist-heading p {
+  color: var(--accent);
+  margin-top: 0.2rem;
+}
+
+.extras-checklist-complete {
+  align-items: center;
+  color: var(--success-text);
+  display: inline-flex;
+  font-weight: 800;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+
+.extras-checklist-list {
+  display: grid;
+  gap: 0.45rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.extras-checklist-list li {
+  align-items: center;
+  color: var(--accent);
+  display: flex;
+  gap: 0.45rem;
+}
+
+.extras-checklist-list li.completed {
+  color: var(--success-text);
+  font-weight: 700;
+}
+
+.extras-checklist-list li svg {
+  color: var(--success-text);
+  flex: 0 0 auto;
+}
+
+.extras-checklist-list li:not(.completed) svg {
+  color: var(--accent);
+}
+
+.extras-hidden-sections {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 0.55rem;
+  padding-top: 0.85rem;
+}
+
+.extras-hidden-section {
+  align-items: center;
+  display: flex;
+  gap: 0.8rem;
+  justify-content: space-between;
+}
+
+.extras-hidden-section > span {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.4rem;
+}
+
+.extras-hidden-section button {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.35rem;
+}
+
 @media (max-width: 900px) {
+  .first-import-options {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .extras-action-main {
     grid-template-columns: auto minmax(0, 1fr);
   }
@@ -9722,6 +9865,16 @@ td small {
 }
 
 @media (max-width: 600px) {
+  .first-import-options {
+    grid-template-columns: 1fr;
+  }
+
+  .extras-checklist-heading,
+  .extras-hidden-section {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
   .extras-action-card {
     border-left-width: 4px;
     padding: 1rem;

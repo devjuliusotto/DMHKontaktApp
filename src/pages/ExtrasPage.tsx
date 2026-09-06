@@ -1,8 +1,9 @@
-import { CheckCircle2, ChevronRight, CircleAlert, Send, ShieldCheck } from "lucide-react";
+import { CalendarDays, CheckCircle2, ChevronRight, Circle, CircleAlert, RotateCcw, Send, ShieldCheck, UsersRound } from "lucide-react";
 import { useEffect, useState } from "react";
 import { MigrationCaptureDialog } from "../components/MigrationCaptureDialog";
 import { getMigrationCaptureStatus } from "../services/db";
 import type { MigrationCaptureResult, MigrationCaptureStatus } from "../types/mail";
+import { dataSectionVisibilityChangedEventName, readHiddenDataSections, setDataSectionHidden, type DataSection } from "../utils/dataSectionVisibility";
 
 function formatSentAt(value: string | null): string | null {
   if (!value) return null;
@@ -16,6 +17,7 @@ export function ExtrasPage() {
   const [migrationStatusUnknown, setMigrationStatusUnknown] = useState(false);
   const [migrationDialogOpen, setMigrationDialogOpen] = useState(false);
   const [migrationError, setMigrationError] = useState("");
+  const [hiddenDataSections, setHiddenDataSections] = useState<DataSection[]>(readHiddenDataSections);
 
   useEffect(() => {
     getMigrationCaptureStatus()
@@ -29,6 +31,12 @@ export function ExtrasPage() {
       });
   }, []);
 
+  useEffect(() => {
+    const updateHiddenSections = () => setHiddenDataSections(readHiddenDataSections());
+    window.addEventListener(dataSectionVisibilityChangedEventName, updateHiddenSections);
+    return () => window.removeEventListener(dataSectionVisibilityChangedEventName, updateHiddenSections);
+  }, []);
+
   const migrationCompleted = (result: MigrationCaptureResult) => {
     setMigrationStatus({ configured: true, completed: true, completedAt: result.completedAt });
     setMigrationStatusUnknown(false);
@@ -38,6 +46,18 @@ export function ExtrasPage() {
   const sentAt = formatSentAt(migrationStatus?.completedAt ?? null);
   const migrationCompletedAlready = migrationStatus?.completed === true;
   const migrationDefinitelyUnavailable = migrationStatus !== null && !migrationStatus.configured;
+  const checklistItems = [
+    { label: "E-Mail-Konfiguration an die EDV übertragen", completed: migrationCompletedAlready },
+    ...hiddenDataSections.map((section) => ({
+      label: section === "contacts" ? "Kontakte im Exchange nicht benötigt" : "Kalender im Exchange nicht benötigt",
+      completed: true
+    }))
+  ];
+  const checklistComplete = checklistItems.length > 1 && checklistItems.every((item) => item.completed);
+  const sectionDetails = [
+    { key: "contacts" as const, label: "Kontakte", icon: UsersRound },
+    { key: "calendar" as const, label: "Kalender", icon: CalendarDays }
+  ];
   return (
     <div className="page extras-page">
       <header className="page-header">
@@ -82,6 +102,35 @@ export function ExtrasPage() {
           {migrationError && <p className="extras-inline-error" role="alert">{migrationError}</p>}
         </section>
       </div>
+
+      {hiddenDataSections.length > 0 && (
+        <section className="extras-checklist-card form-panel" aria-labelledby="extras-checklist-title">
+          <div className="extras-checklist-heading">
+            <div>
+              <h3 id="extras-checklist-title">Abschluss-Checkliste</h3>
+              <p>Die für diese Auswahl nötigen Aufgaben werden hier dokumentiert.</p>
+            </div>
+            {checklistComplete && <span className="extras-checklist-complete"><CheckCircle2 size={18} /> Erledigt</span>}
+          </div>
+          <ul className="extras-checklist-list">
+            {checklistItems.map((item) => (
+              <li className={item.completed ? "completed" : ""} key={item.label}>
+                {item.completed ? <CheckCircle2 size={18} aria-hidden="true" /> : <Circle size={18} aria-hidden="true" />}
+                <span>{item.label}</span>
+              </li>
+            ))}
+          </ul>
+          <div className="extras-hidden-sections">
+            <strong>Ausgeblendete Registerkarten</strong>
+            {sectionDetails.filter((section) => hiddenDataSections.includes(section.key)).map(({ key, label, icon: Icon }) => (
+              <div className="extras-hidden-section" key={key}>
+                <span><Icon size={17} /> {label}</span>
+                <button type="button" onClick={() => setDataSectionHidden(key, false)}><RotateCcw size={16} /> Wieder einblenden</button>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       <MigrationCaptureDialog
         open={migrationDialogOpen}

@@ -35,6 +35,7 @@ import {
   type CalendarAutomaticSyncStatus
 } from "./utils/automaticCalendarSync";
 import { enableCompleteAutomaticMicrosoft365Sync } from "./utils/microsoft365SyncConfig";
+import { dataSectionVisibilityChangedEventName, readHiddenDataSections, setDataSectionHidden, type DataSection } from "./utils/dataSectionVisibility";
 
 const DataTransferPage = lazy(() =>
   import("./pages/DataTransferPage").then((module) => ({ default: module.DataTransferPage }))
@@ -55,7 +56,13 @@ const edvPages = new Set<Page>(["settings", "appearance", "feature-development",
 export default function App() {
   const isAdminTest = import.meta.env.VITE_APP_CHANNEL === "admin-test";
   const sourceCommit = import.meta.env.VITE_SOURCE_COMMIT?.slice(0, 8);
-  const [page, setPage] = useState<Page>("contacts");
+  const [hiddenDataSections, setHiddenDataSections] = useState<DataSection[]>(readHiddenDataSections);
+  const [page, setPage] = useState<Page>(() => {
+    const hidden = readHiddenDataSections();
+    if (!hidden.includes("contacts")) return "contacts";
+    if (!hidden.includes("calendar")) return "calendar";
+    return "extras";
+  });
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [featureAvailability, setFeatureAvailability] = useState(readFeatureAvailability);
   const [vaultStatus, setVaultStatus] = useState<VaultStatus | null>(null);
@@ -69,8 +76,16 @@ export default function App() {
   const closing = useRef(false);
   const settingsAreaOpen = page === "settings" || page === "appearance" || page === "feature-development" || page === "backup";
 
+  useEffect(() => {
+    const updateDataSectionVisibility = () => setHiddenDataSections(readHiddenDataSections());
+    window.addEventListener(dataSectionVisibilityChangedEventName, updateDataSectionVisibility);
+    return () => window.removeEventListener(dataSectionVisibilityChangedEventName, updateDataSectionVisibility);
+  }, []);
+
   const applyNavigation = (nextPage: Page, nextSection?: SettingsSection) => {
     if (nextPage === "services") return;
+    if (nextPage === "contacts" && hiddenDataSections.includes("contacts")) return;
+    if (nextPage === "calendar" && hiddenDataSections.includes("calendar")) return;
     if (nextPage === "authenticator" && !featureAvailability.authenticator) return;
     if (nextPage === "passwords" && !featureAvailability.passwords) return;
     if (nextPage === "documents" && !featureAvailability.documents) return;
@@ -106,6 +121,12 @@ export default function App() {
 
   const changeFeatureAvailability = (feature: AppFeature, enabled: boolean) => {
     setFeatureAvailability(setFeatureOverride(feature, enabled));
+  };
+
+  const hideDataSection = (section: DataSection) => {
+    setDataSectionHidden(section, true);
+    setHiddenDataSections(readHiddenDataSections());
+    applyNavigation("extras");
   };
 
   const runAutomaticBackup = useCallback(async (snapshot = false): Promise<void> => {
@@ -300,6 +321,8 @@ export default function App() {
       <div className={settingsAreaOpen ? "app-shell settings-app-shell" : "app-shell"}>
         <Sidebar
           activePage={page}
+          calendarEnabled={!hiddenDataSections.includes("calendar")}
+          contactsEnabled={!hiddenDataSections.includes("contacts")}
           authenticatorEnabled={featureAvailability.authenticator}
           compact={settingsAreaOpen}
           documentsEnabled={featureAvailability.documents}
@@ -308,8 +331,8 @@ export default function App() {
         />
         {settingsAreaOpen && <SettingsSubtabs activePage={page} activeSection={settingsSection} onNavigate={navigate} />}
         <main className="content">
-          {page === "contacts" && <ContactsPage onNavigate={navigate} />}
-          {page === "calendar" && <CalendarPage onNavigate={navigate} />}
+          {page === "contacts" && !hiddenDataSections.includes("contacts") && <ContactsPage onNavigate={navigate} onHideSection={() => hideDataSection("contacts")} />}
+          {page === "calendar" && !hiddenDataSections.includes("calendar") && <CalendarPage onNavigate={navigate} onHideSection={() => hideDataSection("calendar")} />}
           {page === "documents" && featureAvailability.documents && <DocumentsPage />}
           {page === "passwords" && featureAvailability.passwords && <PasswordsPage status={vaultStatus} onStatusChanged={setVaultStatus} />}
           {page === "authenticator" && featureAvailability.authenticator && <AuthenticatorPage />}
