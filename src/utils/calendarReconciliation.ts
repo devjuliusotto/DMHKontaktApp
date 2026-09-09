@@ -1,5 +1,6 @@
 import type { CalendarEvent } from "../types/calendar";
 import { parseCalendarDate } from "./calendar";
+import { calendarEventDuplicateKey } from "./calendarDuplicates";
 
 export const calendarReconciliationBaselineKey = "agendakontakte.calendarReconciliationBaseline.v1";
 
@@ -72,10 +73,6 @@ function semanticKey(event: CalendarEvent): string {
   });
 }
 
-function likelySameEventKey(event: CalendarEvent): string {
-  return `${normalizedText(event.title)}\n${normalizedDate(event.startsAt)}`;
-}
-
 export function readCalendarReconciliationBaseline(platform: string): Record<string, string> {
   try {
     const parsed = JSON.parse(localStorage.getItem(calendarReconciliationBaselineKey) ?? "{}") as CalendarBaseline;
@@ -106,28 +103,36 @@ export function compareCalendars(
 ): CalendarReconciliationPreview {
   const byId = new Map(existing.map((event) => [event.id, event]));
   const bySemantic = new Map<string, CalendarEvent[]>();
-  const byLikelyMatch = new Map<string, CalendarEvent[]>();
+  const byDuplicate = new Map<string, CalendarEvent[]>();
   for (const event of existing) {
     const semantic = semanticKey(event);
     bySemantic.set(semantic, [...(bySemantic.get(semantic) ?? []), event]);
-    const likely = likelySameEventKey(event);
-    byLikelyMatch.set(likely, [...(byLikelyMatch.get(likely) ?? []), event]);
+    const duplicate = calendarEventDuplicateKey(event);
+    byDuplicate.set(duplicate, [...(byDuplicate.get(duplicate) ?? []), event]);
   }
 
   const matchedLocalIds = new Set<string>();
   const seenIncomingIds = new Set<string>();
-  const seenIncomingContent = new Set<string>();
+  const seenIncomingDuplicates = new Set<string>();
   const items: CalendarReconciliationItem[] = [];
 
   for (const incomingEvent of incoming) {
     const fingerprint = calendarReconciliationFingerprint(incomingEvent);
     const incomingSemantic = semanticKey(incomingEvent);
-    if ((incomingEvent.id && seenIncomingIds.has(incomingEvent.id)) || seenIncomingContent.has(incomingSemantic)) {
+    const incomingDuplicate = calendarEventDuplicateKey(incomingEvent);
+    if ((incomingEvent.id && seenIncomingIds.has(incomingEvent.id)) || seenIncomingDuplicates.has(incomingDuplicate)) {
       items.push({ key: `${incomingEvent.id}-duplicate-${items.length}`, status: "exact", incoming: incomingEvent });
       continue;
     }
     if (incomingEvent.id) seenIncomingIds.add(incomingEvent.id);
-    seenIncomingContent.add(incomingSemantic);
+    seenIncomingDuplicates.add(incomingDuplicate);
+
+    const duplicateMatch = (byDuplicate.get(incomingDuplicate) ?? []).find((event) => !matchedLocalIds.has(event.id));
+    if (duplicateMatch) {
+      matchedLocalIds.add(duplicateMatch.id);
+      items.push({ key: incomingEvent.id, status: "exact", incoming: incomingEvent, existing: duplicateMatch });
+      continue;
+    }
 
     const sameId = byId.get(incomingEvent.id);
     if (sameId) {
@@ -158,14 +163,6 @@ export function compareCalendars(
     if (exactMatch) {
       matchedLocalIds.add(exactMatch.id);
       items.push({ key: incomingEvent.id, status: "exact", incoming: incomingEvent, existing: exactMatch });
-      continue;
-    }
-
-    const likelyMatch = (byLikelyMatch.get(likelySameEventKey(incomingEvent)) ?? [])
-      .find((event) => !matchedLocalIds.has(event.id));
-    if (likelyMatch && normalizedText(incomingEvent.title)) {
-      matchedLocalIds.add(likelyMatch.id);
-      items.push({ key: incomingEvent.id, status: "conflict", incoming: incomingEvent, existing: likelyMatch });
       continue;
     }
 

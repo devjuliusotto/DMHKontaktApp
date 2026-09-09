@@ -1,14 +1,13 @@
-import { AlertTriangle, ArchiveRestore, Files, KeyRound, RotateCcw, ShieldCheck, Trash2 } from "lucide-react";
+import { AlertTriangle, Files, KeyRound, RotateCcw, ShieldCheck, Trash2 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { StatusMessage } from "../components/StatusMessage";
 import {
   createAutomaticBackup,
   getBackupData,
   resetLocalAppData,
-  restartApp,
-  restoreAutomaticBackup
+  restartApp
 } from "../services/db";
-import { addBrowserDataToBackup, restoreBrowserDataFromBackup } from "../utils/backup";
+import { addBrowserDataToBackup } from "../utils/backup";
 import type { AppFeature, AppFeatureAvailability } from "../utils/featureFlags";
 import { releaseFeatureDefaults } from "../utils/featureFlags";
 
@@ -57,36 +56,6 @@ export function FeatureDevelopmentPage({ availability, onFeatureChange, onReset 
   const usesReleaseDefaults = availability.authenticator === releaseFeatureDefaults.authenticator
     && availability.passwords === releaseFeatureDefaults.passwords
     && availability.documents === releaseFeatureDefaults.documents;
-
-  const restoreAutomaticArchive = async () => {
-    const confirmed = window.confirm(
-      "Automatische Sicherung wiederherstellen?\n\nKontakte, Kalender und Kennwörter werden durch den Sicherungsstand ersetzt."
-    );
-    if (!confirmed) return;
-    const authorization = window.prompt("EDV-Freigabecode eingeben (Format EDV-...).");
-    if (!authorization?.trim()) return;
-    const finalConfirmation = window.prompt("Tippen Sie WIEDERHERSTELLEN, um fortzufahren.");
-    if (finalConfirmation !== "WIEDERHERSTELLEN") {
-      setMessageType("info");
-      setMessage("Wiederherstellung wurde abgebrochen.");
-      return;
-    }
-
-    setBusyAction("restore-automatic-backup");
-    setMessage("");
-    try {
-      const result = await restoreAutomaticBackup(authorization.trim());
-      restoreBrowserDataFromBackup(result);
-      setMessageType("success");
-      setMessage("Sicherung wurde wiederhergestellt. Die App wird neu geladen.");
-      window.setTimeout(() => window.location.reload(), 700);
-    } catch (error) {
-      setMessageType("error");
-      setMessage(`Sicherung konnte nicht wiederhergestellt werden: ${error}`);
-    } finally {
-      setBusyAction(null);
-    }
-  };
 
   const resetApplication = async () => {
     const confirmed = window.confirm(
@@ -161,25 +130,12 @@ export function FeatureDevelopmentPage({ availability, onFeatureChange, onReset 
           <div className="feature-admin-tools-heading">
             <div>
               <h2 id="feature-admin-tools-title">Admin-Werkzeuge</h2>
-              <p>Nur für Wartung und Wiederherstellung.</p>
+              <p>Nur für Wartung.</p>
             </div>
             <span className="feature-development-badge"><ShieldCheck size={17} /> Admin</span>
           </div>
 
           <StatusMessage message={message} type={messageType} />
-
-          <section className="form-panel feature-admin-card">
-            <div className="settings-task-heading">
-              <ArchiveRestore size={25} aria-hidden="true" />
-              <div>
-                <h3>Automatische Sicherung wiederherstellen</h3>
-                <p>Ersetzt lokale Kontakte, Kalender und Kennwörter durch den Sicherungsstand.</p>
-              </div>
-            </div>
-            <button type="button" onClick={restoreAutomaticArchive} disabled={busyAction !== null}>
-              <ArchiveRestore size={19} /> Wiederherstellen
-            </button>
-          </section>
 
           <section className="form-panel settings-reset-panel">
             <div className="settings-task-heading">

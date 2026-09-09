@@ -1,5 +1,5 @@
 import { save } from "@tauri-apps/plugin-dialog";
-import { CalendarClock, CalendarDays, CheckCircle2, ContactRound, Download, LoaderCircle, Send, UsersRound } from "lucide-react";
+import { CalendarClock, CalendarDays, CheckCircle2, ContactRound, Download, LoaderCircle, Send } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { StatusMessage } from "../components/StatusMessage";
 import { t } from "../i18n";
@@ -219,36 +219,57 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
       <StatusMessage message={message} />
 
       {!choice && (
-          <section className="export-choice-grid" aria-label="Exportart auswählen">
-            <button className="export-choice-card" type="button" onClick={() => setChoice("outlook")}>
-              <Send size={34} />
-              <span>
-                <strong>Direkt an Outlook übertragen</strong>
-                <small>Gruppen als Outlook-Ordner mit den zugehörigen Kontakten übernehmen</small>
-              </span>
-            </button>
-            <button className="export-choice-card" type="button" onClick={() => setChoice("outlook-calendar")}>
-              <CalendarClock size={34} />
-              <span>
-                <strong>Termine direkt an Outlook</strong>
-                <small>Alle Termine und Serien in den Kalender des Outlook-IMAP-Kontos übertragen</small>
-              </span>
-            </button>
-            <button className="export-choice-card" type="button" onClick={() => setChoice("calendar")}>
-              <CalendarDays size={34} />
-              <span>
-                <strong>Kalender exportieren</strong>
-                <small>Alle Termine mit Uhrzeit, Ort, Beschreibung und Kategorie als ICS speichern</small>
-              </span>
-            </button>
-            <button className="export-choice-card" type="button" onClick={() => setChoice("contacts")}>
-              <UsersRound size={34} />
-              <span>
-                <strong>Kontaktlisten exportieren</strong>
-                <small>Kontakte als CSV für Outlook oder Tabellenprogramme speichern</small>
-              </span>
-            </button>
+        <section className="export-choice-groups" aria-label="Exportart auswählen">
+          <section className="export-choice-group" aria-labelledby="export-contacts-heading">
+            <header>
+              <span className="export-choice-group-icon"><ContactRound size={27} aria-hidden="true" /></span>
+              <div><h3 id="export-contacts-heading">Kontakte exportieren</h3><p>Wohin sollen Ihre Kontakte?</p></div>
+            </header>
+            <div className="export-choice-grid">
+              <button className="export-choice-card" type="button" onClick={() => setChoice("outlook")}>
+                <Send size={32} />
+                <span>
+                  <span className="export-target-badge outlook">DIREKT IN OUTLOOK</span>
+                  <strong>Kontakte nach Outlook</strong>
+                  <small>Keine Datei: Kontakte und Gruppen werden sofort übertragen.</small>
+                </span>
+              </button>
+              <button className="export-choice-card" type="button" onClick={() => setChoice("contacts")}>
+                <Download size={32} />
+                <span>
+                  <span className="export-target-badge file">CSV-DATEI</span>
+                  <strong>Kontakte als Datei speichern</strong>
+                  <small>CSV-Datei für Outlook oder ein Tabellenprogramm erstellen.</small>
+                </span>
+              </button>
+            </div>
           </section>
+
+          <section className="export-choice-group" aria-labelledby="export-calendar-heading">
+            <header>
+              <span className="export-choice-group-icon"><CalendarDays size={27} aria-hidden="true" /></span>
+              <div><h3 id="export-calendar-heading">Kalender exportieren</h3><p>Wohin sollen Ihre Termine?</p></div>
+            </header>
+            <div className="export-choice-grid">
+              <button className="export-choice-card" type="button" onClick={() => setChoice("outlook-calendar")}>
+                <CalendarClock size={32} />
+                <span>
+                  <span className="export-target-badge outlook">DIREKT IN OUTLOOK</span>
+                  <strong>Termine nach Outlook</strong>
+                  <small>Keine Datei: Alle Termine und Serien werden sofort übertragen.</small>
+                </span>
+              </button>
+              <button className="export-choice-card" type="button" onClick={() => setChoice("calendar")}>
+                <Download size={32} />
+                <span>
+                  <span className="export-target-badge file">ICS-DATEI</span>
+                  <strong>Kalender als Datei speichern</strong>
+                  <small>ICS-Datei für Outlook, Teams, Google oder Apple erstellen.</small>
+                </span>
+              </button>
+            </div>
+          </section>
+        </section>
       )}
 
       {choice && (

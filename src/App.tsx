@@ -17,8 +17,9 @@ import { Microsoft365Page } from "./pages/Microsoft365Page";
 import { SynchronizationsPage } from "./pages/SynchronizationsPage";
 import { DocumentsPage } from "./pages/DocumentsPage";
 import { FeatureDevelopmentPage } from "./pages/FeatureDevelopmentPage";
-import { ExtrasPage } from "./pages/ExtrasPage";
-import { createAutomaticBackup, createAutomaticPasswordBackup, getBackupData, getMicrosoft365ConnectionStatus, getVaultStatus, syncOfflineDocuments } from "./services/db";
+import { RecoveryPage } from "./pages/RecoveryPage";
+import { WelcomePage } from "./pages/WelcomePage";
+import { createAutomaticBackup, createAutomaticPasswordBackup, createRecoveryCheckpoint, getBackupData, getMicrosoft365ConnectionStatus, getVaultStatus, syncOfflineDocuments } from "./services/db";
 import type { VaultStatus } from "./types/vault";
 import { addBrowserDataToBackup } from "./utils/backup";
 import {
@@ -51,18 +52,13 @@ const browserPreviewStatus: VaultStatus = {
   entryCount: 0
 };
 
-const edvPages = new Set<Page>(["settings", "appearance", "feature-development", "backup"]);
+const edvPages = new Set<Page>(["settings", "appearance", "feature-development", "backup", "synchronizations", "m365", "recovery"]);
 
 export default function App() {
   const isAdminTest = import.meta.env.VITE_APP_CHANNEL === "admin-test";
   const sourceCommit = import.meta.env.VITE_SOURCE_COMMIT?.slice(0, 8);
   const [hiddenDataSections, setHiddenDataSections] = useState<DataSection[]>(readHiddenDataSections);
-  const [page, setPage] = useState<Page>(() => {
-    const hidden = readHiddenDataSections();
-    if (!hidden.includes("contacts")) return "contacts";
-    if (!hidden.includes("calendar")) return "calendar";
-    return "extras";
-  });
+  const [page, setPage] = useState<Page>("welcome");
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [featureAvailability, setFeatureAvailability] = useState(readFeatureAvailability);
   const [vaultStatus, setVaultStatus] = useState<VaultStatus | null>(null);
@@ -70,11 +66,12 @@ export default function App() {
   const [edvUnlocked, setEdvUnlocked] = useState(false);
   const [pendingEdvNavigation, setPendingEdvNavigation] = useState<{ page: Page; section?: SettingsSection } | null>(null);
   const automaticBackupPromise = useRef<Promise<void> | null>(null);
+  const recoveryCheckpointPromise = useRef<Promise<void> | null>(null);
   const documentSyncPromise = useRef<Promise<void> | null>(null);
   const calendarSyncPromise = useRef<Promise<void> | null>(null);
   const queuedCalendarSyncTrigger = useRef<"open" | "change" | "poll" | null>(null);
   const closing = useRef(false);
-  const settingsAreaOpen = page === "settings" || page === "appearance" || page === "feature-development" || page === "backup";
+  const settingsAreaOpen = page === "settings" || page === "appearance" || page === "feature-development" || page === "backup" || page === "synchronizations" || page === "m365" || page === "recovery";
 
   useEffect(() => {
     const updateDataSectionVisibility = () => setHiddenDataSections(readHiddenDataSections());
@@ -100,6 +97,7 @@ export default function App() {
     else if (nextPage === "simple-import") setSettingsSection("import");
     else if (nextPage === "backup") setSettingsSection("backup");
     else if (nextPage === "synchronizations" || nextPage === "m365") setSettingsSection("sync");
+    else if (nextPage === "recovery") setSettingsSection("recovery");
     else if (nextPage === "trash") setSettingsSection("trash");
     else if (nextPage === "import" || nextPage === "export" || nextPage === "feature-development") setSettingsSection("advanced");
   };
@@ -126,7 +124,7 @@ export default function App() {
   const hideDataSection = (section: DataSection) => {
     setDataSectionHidden(section, true);
     setHiddenDataSections(readHiddenDataSections());
-    applyNavigation("extras");
+    applyNavigation("welcome");
   };
 
   const runAutomaticBackup = useCallback(async (snapshot = false): Promise<void> => {
@@ -147,6 +145,22 @@ export default function App() {
       await promise;
     } finally {
       if (automaticBackupPromise.current === promise) automaticBackupPromise.current = null;
+    }
+  }, []);
+
+  const runRecoveryCheckpoint = useCallback(async (): Promise<void> => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    if (recoveryCheckpointPromise.current) return recoveryCheckpointPromise.current;
+    const promise = (async () => {
+      const backup = addBrowserDataToBackup(await getBackupData());
+      await createRecoveryCheckpoint(backup);
+      await createAutomaticPasswordBackup(true);
+    })();
+    recoveryCheckpointPromise.current = promise;
+    try {
+      await promise;
+    } finally {
+      if (recoveryCheckpointPromise.current === promise) recoveryCheckpointPromise.current = null;
     }
   }, []);
 
@@ -232,7 +246,7 @@ export default function App() {
     const startupTimer = window.setTimeout(() => void runCalendarSync("open"), 2_500);
     const pollingTimer = window.setInterval(() => {
       void runCalendarSync("poll");
-    }, 60_000);
+    }, 30_000);
     const syncWhenVisible = () => {
       if (!document.hidden) void runCalendarSync("poll");
     };
@@ -255,6 +269,11 @@ export default function App() {
         // Backup failures must not interrupt normal contact/calendar work.
       });
     }, 15_000);
+    const recoveryCheckpointInterval = window.setInterval(() => {
+      void runRecoveryCheckpoint().catch(() => {
+        // The last valid recovery point remains available if this attempt fails.
+      });
+    }, 5 * 60_000);
     const documentSyncInterval = window.setInterval(() => {
       void runDocumentSync().catch(() => {
         // Offline changes remain queued and are retried when the connection returns.
@@ -262,6 +281,9 @@ export default function App() {
     }, 45_000);
     void runAutomaticBackup().catch(() => {
       // The next interval or the close handler will retry automatically.
+    });
+    void runRecoveryCheckpoint().catch(() => {
+      // The next five-minute cycle retries the internal recovery point.
     });
     void runDocumentSync().catch(() => {
       // A missing connection is expected while the device is offline.
@@ -278,7 +300,8 @@ export default function App() {
         void Promise.allSettled([
           runCalendarSync("poll"),
           runDocumentSync(),
-          runAutomaticBackup(true)
+          runAutomaticBackup(true),
+          runRecoveryCheckpoint()
         ]);
       } catch (error) {
         closing.current = false;
@@ -288,10 +311,11 @@ export default function App() {
 
     return () => {
       window.clearInterval(interval);
+      window.clearInterval(recoveryCheckpointInterval);
       window.clearInterval(documentSyncInterval);
       void unlisten.then((dispose) => dispose());
     };
-  }, [runAutomaticBackup, runCalendarSync, runDocumentSync]);
+  }, [runAutomaticBackup, runCalendarSync, runDocumentSync, runRecoveryCheckpoint]);
 
   if (!vaultStatus) {
     return (
@@ -331,8 +355,9 @@ export default function App() {
         />
         {settingsAreaOpen && <SettingsSubtabs activePage={page} activeSection={settingsSection} onNavigate={navigate} />}
         <main className="content">
+          {page === "welcome" && <WelcomePage onNavigate={navigate} />}
           {page === "contacts" && !hiddenDataSections.includes("contacts") && <ContactsPage onNavigate={navigate} onHideSection={() => hideDataSection("contacts")} />}
-          {page === "calendar" && !hiddenDataSections.includes("calendar") && <CalendarPage onNavigate={navigate} onHideSection={() => hideDataSection("calendar")} />}
+          {page === "calendar" && !hiddenDataSections.includes("calendar") && <CalendarPage onNavigate={navigate} />}
           {page === "documents" && featureAvailability.documents && <DocumentsPage />}
           {page === "passwords" && featureAvailability.passwords && <PasswordsPage status={vaultStatus} onStatusChanged={setVaultStatus} />}
           {page === "authenticator" && featureAvailability.authenticator && <AuthenticatorPage />}
@@ -344,8 +369,8 @@ export default function App() {
             />
           )}
           {page === "m365" && <Microsoft365Page />}
+          {page === "recovery" && <RecoveryPage />}
           {page === "trash" && <TrashPage />}
-          {page === "extras" && <ExtrasPage />}
           {page === "settings" && <SettingsPage section={settingsSection} onNavigate={navigate} />}
           {page === "appearance" && <AppearancePage />}
           {(page === "simple-import" || page === "import" || page === "contact-import" || page === "calendar-import" || page === "export") && (

@@ -46,6 +46,7 @@ export interface ContactInput {
 
 export interface ImportResult {
   imported: number;
+  mergedDuplicates: number;
   skippedDuplicates: number;
   batchId: string;
 }
@@ -178,4 +179,21 @@ export interface BackupData {
 export interface AutomaticBackupRestoreResult {
   browserStorage: Record<string, string>;
   passwordsRestored: boolean;
+}
+
+export interface RecoveryArchiveStatus {
+  available: boolean;
+  latestAt: string | null;
+  contacts: number;
+  groups: number;
+  calendarEvents: number;
+}
+
+export interface RecoveryRestoreResult {
+  browserStorage: Record<string, string>;
+  passwordsRestored: boolean;
+  restoredAt: string;
+  contacts: number;
+  groups: number;
+  calendarEvents: number;
 }

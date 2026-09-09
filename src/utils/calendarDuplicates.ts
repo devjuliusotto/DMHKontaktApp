@@ -1,39 +1,26 @@
 import type { CalendarEvent } from "../types/calendar";
+import { parseCalendarDate } from "./calendar";
 
-type CalendarEventContentField = Exclude<keyof CalendarEvent, "id" | "updatedAt">;
-
-const exactContentFieldMap: Record<CalendarEventContentField, true> = {
-  title: true,
-  startsAt: true,
-  endsAt: true,
-  location: true,
-  description: true,
-  color: true,
-  category: true,
-  source: true,
-  deletedAt: true,
-  recurrence: true,
-  excludedDates: true,
-  recurrenceMasterId: true,
-  recurrenceId: true
-};
-
-const exactContentFields = Object.keys(exactContentFieldMap) as CalendarEventContentField[];
-
-function encodeExactValue(value: unknown): string {
-  if (typeof value === "string") return `string:${value.length}:${value}`;
-  if (value !== null && typeof value === "object") return `object:${JSON.stringify(value)}`;
-  return `${typeof value}:${String(value)}`;
+function normalizedTitle(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLocaleLowerCase("de-DE");
 }
 
-export function calendarEventExactContentKey(event: CalendarEvent): string {
-  return exactContentFields
-    .map((field) => `${field}=${encodeExactValue(event[field])}`)
-    .join("\n");
+function normalizedStart(value: string): string {
+  const parsed = parseCalendarDate(value);
+  return parsed ? parsed.toISOString() : value.trim();
 }
 
-export function calendarEventsAreExactlyEqual(left: CalendarEvent, right: CalendarEvent): boolean {
-  return calendarEventExactContentKey(left) === calendarEventExactContentKey(right);
+/**
+ * A calendar duplicate is defined only by title and its starting date/time.
+ * End time, location, description, category, source and technical IDs do not
+ * participate in the decision.
+ */
+export function calendarEventDuplicateKey(event: CalendarEvent): string {
+  return `${normalizedTitle(event.title)}\n${normalizedStart(event.startsAt)}`;
+}
+
+export function calendarEventsAreDuplicates(left: CalendarEvent, right: CalendarEvent): boolean {
+  return calendarEventDuplicateKey(left) === calendarEventDuplicateKey(right);
 }
 
 export interface CalendarEventMergeResult {
@@ -49,7 +36,7 @@ export function mergeCalendarEventsExactly(
 ): CalendarEventMergeResult {
   const events = [...existing];
   const knownIds = new Set(existing.map((event) => event.id));
-  const knownContent = new Set(existing.map(calendarEventExactContentKey));
+  const knownDuplicates = new Set(existing.map(calendarEventDuplicateKey));
   let imported = 0;
   let skippedSameId = 0;
   let skippedExactDuplicates = 0;
@@ -60,15 +47,15 @@ export function mergeCalendarEventsExactly(
       continue;
     }
 
-    const contentKey = calendarEventExactContentKey(event);
-    if (knownContent.has(contentKey)) {
+    const duplicateKey = calendarEventDuplicateKey(event);
+    if (knownDuplicates.has(duplicateKey)) {
       skippedExactDuplicates += 1;
       continue;
     }
 
     events.push(event);
     knownIds.add(event.id);
-    knownContent.add(contentKey);
+    knownDuplicates.add(duplicateKey);
     imported += 1;
   }
 
@@ -84,7 +71,7 @@ export function findExactCalendarDuplicateGroups(events: CalendarEvent[]): Exact
   const groups = new Map<string, CalendarEvent[]>();
 
   for (const event of events) {
-    const key = calendarEventExactContentKey(event);
+    const key = calendarEventDuplicateKey(event);
     const group = groups.get(key);
     if (group) group.push(event);
     else groups.set(key, [event]);
@@ -102,17 +89,17 @@ export interface ExactCalendarDuplicateRemoval {
 }
 
 export function removeExactCalendarDuplicates(events: CalendarEvent[]): ExactCalendarDuplicateRemoval {
-  const knownContent = new Set<string>();
+  const knownDuplicates = new Set<string>();
   const keptEvents: CalendarEvent[] = [];
   const removedEvents: CalendarEvent[] = [];
 
   for (const event of events) {
-    const contentKey = calendarEventExactContentKey(event);
-    if (knownContent.has(contentKey)) {
+    const duplicateKey = calendarEventDuplicateKey(event);
+    if (knownDuplicates.has(duplicateKey)) {
       removedEvents.push(event);
       continue;
     }
-    knownContent.add(contentKey);
+    knownDuplicates.add(duplicateKey);
     keptEvents.push(event);
   }
 

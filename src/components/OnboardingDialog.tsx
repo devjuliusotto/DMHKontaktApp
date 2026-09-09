@@ -220,16 +220,12 @@ export function OnboardingDialog({ onComplete }: OnboardingDialogProps) {
     if (selection.thunderbirdCalendars) {
       try {
         const result = await importThunderbirdCalendarsOnce();
-        const byId = new Map(readStoredCalendarEvents().map((event) => [event.id, event]));
-        let imported = 0;
-        for (const event of result.events) {
-          if (!byId.has(event.id)) imported += 1;
-          byId.set(event.id, { ...event, color: calendarColorFromCategory(event.category, event.color) });
-        }
-        localStorage.setItem(calendarStorageKey, JSON.stringify(Array.from(byId.values())));
-        mergeImportedCalendarCategories(result.events);
-        summary.push(`${imported} Thunderbird-Termine übernommen`);
-        calendarChanged = calendarChanged || imported > 0;
+        const incoming = result.events.map((event) => ({ ...event, color: calendarColorFromCategory(event.category, event.color) }));
+        const merged = mergeCalendarEventsExactly(readStoredCalendarEvents(), incoming);
+        localStorage.setItem(calendarStorageKey, JSON.stringify(merged.events));
+        mergeImportedCalendarCategories(incoming);
+        summary.push(`${merged.imported} Thunderbird-Termine übernommen`);
+        calendarChanged = calendarChanged || merged.imported > 0;
       } catch (error) { errors.push(`Thunderbird-Kalender: ${error}`); }
     }
 

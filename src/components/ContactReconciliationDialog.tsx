@@ -70,11 +70,12 @@ export function ContactReconciliationDialog({ open, onClose, onChanged }: Contac
   const summary = useMemo<Summary | null>(() => {
     if (platform === "outlook" && outlookPreview) {
       const different = outlookPreview.contacts.filter((contact) => contact.status === "different");
-      const conflicts = different.filter((contact) => contact.reason.includes("Telefonnummer")).length;
+      const mergedContacts = different.filter((contact) => contact.reason.includes("zusammengeführt")).length;
+      const conflicts = different.length - mergedContacts;
       return {
         found: outlookPreview.found,
         newContacts: outlookPreview.contacts.filter((contact) => contact.status === "new").length,
-        mergedContacts: different.length - conflicts,
+        mergedContacts,
         exactDuplicates: outlookPreview.contacts.filter((contact) => contact.status === "duplicate_exact").length,
         conflicts,
         skippedInvalid: outlookPreview.skippedInvalid,
@@ -221,7 +222,7 @@ export function ContactReconciliationDialog({ open, onClose, onChanged }: Contac
             </div>
             <div className="reconciliation-rules">
               <p><CheckCircle2 size={18} /> Gleiche E-Mail wird zusammengeführt.</p>
-              <p><CheckCircle2 size={18} /> Gleicher Name ohne E-Mail wird ergänzt.</p>
+              <p><CheckCircle2 size={18} /> Gleicher vollständiger Name: Telefon und E-Mail werden ergänzt.</p>
               <p><CheckCircle2 size={18} /> Verschiedene E-Mails bleiben getrennt.</p>
               <p><ShieldCheck size={18} /> Vorher wird automatisch eine Sicherung erstellt.</p>
             </div>

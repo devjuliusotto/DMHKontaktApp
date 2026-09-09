@@ -407,7 +407,7 @@ export function Microsoft365Page() {
             <div className="m365-sync-heading">
               <div>
                 <h3>Automatische Synchronisierung</h3>
-                <p>Kontakte und Kalender werden jede Minute geprüft.</p>
+                <p>Kontakte und Kalender werden alle 30 Sekunden geprüft.</p>
               </div>
               <span className={syncRuntimeStatus.lastError ? "m365-auto-badge error" : automaticSyncActive ? "m365-auto-badge active" : "m365-auto-badge"}>
                 {syncPreparing ? "Wird eingerichtet …" : syncRuntimeStatus.lastError ? "Prüfung fehlgeschlagen" : automaticSyncActive ? "Im Hintergrund aktiv" : "Nicht aktiv"}

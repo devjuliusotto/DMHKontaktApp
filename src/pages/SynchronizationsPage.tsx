@@ -89,6 +89,19 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
     setConfig((current) => ({ ...current, [key]: value }));
   };
 
+  const updateGlobalDirection = (direction: SyncDirection) => {
+    setConfig((current) => {
+      const selectedSourceIds = [
+        ...current.selectedContactSourceIds,
+        ...current.selectedCalendarSourceIds
+      ];
+      const sourceDirections = { ...current.sourceDirections };
+      for (const sourceId of selectedSourceIds) sourceDirections[sourceId] = direction;
+      return { ...current, direction, sourceDirections };
+    });
+    setPreview(null);
+  };
+
   const saveConfig = async () => {
     if (config.enabled && config.calendars && config.selectedCalendarSourceIds.length === 0) {
       setMessageType("error");
@@ -313,13 +326,13 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
             ) : (
               <>
                 <section className="sync-quick-settings" aria-label="Grundlegende Einstellungen">
-                  <label title="Lokale Änderungen werden direkt gesendet. Microsoft 365 wird jede Minute geprüft – auch wenn das Fenster geschlossen ist."><span><strong>Automatisch</strong><small>Jede Minute · auch im Hintergrund</small></span><input type="checkbox" checked={config.enabled} onChange={(event) => updateConfig("enabled", event.target.checked)} /></label>
+                  <label title="Kontakte und Kalender werden alle 30 Sekunden geprüft – auch wenn das Fenster geschlossen ist."><span><strong>Automatisch</strong><small>Alle 30 Sekunden · auch im Hintergrund</small></span><input type="checkbox" checked={config.enabled} onChange={(event) => updateConfig("enabled", event.target.checked)} /></label>
                   <label title="Kontakte zwischen der App und Microsoft 365 berücksichtigen."><ContactRound size={19} /><span><strong>Kontakte</strong></span><input type="checkbox" checked={config.contacts} onChange={(event) => updateConfig("contacts", event.target.checked)} /></label>
                   <label title="Termine zwischen der App und Microsoft 365 berücksichtigen."><CalendarDays size={19} /><span><strong>Kalender</strong></span><input type="checkbox" checked={config.calendars} onChange={(event) => updateConfig("calendars", event.target.checked)} /></label>
                 </section>
 
                 <div className="sync-primary-controls">
-                  <label><span>Richtung</span><select value={config.direction} onChange={(event) => updateConfig("direction", event.target.value as SyncDirection)}><option value="bidirectional">Beide Richtungen</option><option value="export">App → Microsoft 365</option><option value="import">Microsoft 365 → App</option></select></label>
+                  <label><span>Richtung</span><select value={config.direction} onChange={(event) => updateGlobalDirection(event.target.value as SyncDirection)}><option value="bidirectional">Beide Richtungen</option><option value="export">Nur App → Exchange</option><option value="import">Nur Exchange → App</option></select></label>
                   <div className="button-row">
                     <button type="button" onClick={togglePaused} disabled={busy}>{config.paused ? <PlayCircle size={18} /> : <PauseCircle size={18} />}{config.paused ? "Fortsetzen" : "Pausieren"}</button>
                     <button type="button" onClick={() => onNavigate("m365", "sync")}>Konto</button>

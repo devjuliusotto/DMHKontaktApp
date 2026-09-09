@@ -256,7 +256,7 @@ export function OutlookContactImportDialog({ open: isOpen, cleanImportedNames, o
         importResult = {
           found: preview.found,
           imported: csvResult.imported,
-          mergedDuplicates: 0,
+          mergedDuplicates: csvResult.mergedDuplicates,
           skippedExactDuplicates: duplicateCount + csvResult.skippedDuplicates,
           skippedConflicts: 0,
           skippedInvalid: preview.skippedInvalid,
@@ -415,6 +415,7 @@ export function OutlookContactImportDialog({ open: isOpen, cleanImportedNames, o
 
               <div className="outlook-review-list">
                 {visibleContacts.map((contact) => {
+                  const willMerge = contact.status === "different" && contact.reason.includes("zusammengeführt");
                   return (
                     <article className={`outlook-review-row status-${contact.status}`} key={contact.id}>
                       <span className="outlook-review-status" aria-hidden="true">
@@ -427,7 +428,7 @@ export function OutlookContactImportDialog({ open: isOpen, cleanImportedNames, o
                       </div>
                       {contact.status === "duplicate_exact" && <span className="outlook-skip-label">Wird ausgelassen</span>}
                       {contact.status === "new" && <span className="outlook-new-label">Wird importiert</span>}
-                      {contact.status === "different" && <span className="outlook-new-label">Wird zusätzlich importiert</span>}
+                      {contact.status === "different" && <span className="outlook-new-label">{willMerge ? "Wird zusammengeführt" : "Wird zusätzlich importiert"}</span>}
                     </article>
                   );
                 })}
@@ -503,6 +504,7 @@ function contactName(contact: Pick<ContactInput, "displayName" | "firstName" | "
 interface CsvFingerprintIndex {
   exactContacts: Map<string, string>;
   names: Map<string, string>;
+  contactsByName: Map<string, Array<Contact | ContactInput>>;
   emails: Map<string, string>;
   phones: Map<string, string>;
 }
@@ -512,8 +514,9 @@ function addCsvFingerprint(index: CsvFingerprintIndex, contact: Contact | Contac
   const email = contact.email.trim().toLocaleLowerCase("de");
   index.exactContacts.set(contactExactContentKey(contact), label);
   if (email && !index.emails.has(email)) index.emails.set(email, label);
-  const normalizedName = label.toLocaleLowerCase("de");
+  const normalizedName = label.trim().replace(/\s+/g, " ").toLocaleLowerCase("de");
   if (normalizedName && !index.names.has(normalizedName)) index.names.set(normalizedName, label);
+  if (normalizedName) index.contactsByName.set(normalizedName, [...(index.contactsByName.get(normalizedName) ?? []), contact]);
   for (const phone of [normalizePhone(contact.phone), normalizePhone(contact.mobilePhone)].filter(Boolean)) {
     if (!index.phones.has(phone)) index.phones.set(phone, label);
   }
@@ -527,6 +530,7 @@ function createCsvPreview(
   const fingerprints: CsvFingerprintIndex = {
     exactContacts: new Map(),
     names: new Map(),
+    contactsByName: new Map(),
     emails: new Map(),
     phones: new Map()
   };
@@ -554,8 +558,22 @@ function createCsvPreview(
     let existingName: string | null = null;
     const emailMatch = email ? fingerprints.emails.get(email) : undefined;
     const phoneMatch = phones.length ? phones.map((phone) => fingerprints.phones.get(phone)).find(Boolean) : undefined;
-    const normalizedName = displayName.toLocaleLowerCase("de");
-    const nameMatch = !email && normalizedName ? fingerprints.names.get(normalizedName) : undefined;
+    const normalizedName = displayName.trim().replace(/\s+/g, " ").toLocaleLowerCase("de");
+    const sameNameContacts = normalizedName ? fingerprints.contactsByName.get(normalizedName) ?? [] : [];
+    const nameMatch = normalizedName ? fingerprints.names.get(normalizedName) : undefined;
+    const complementaryMatch = sameNameContacts.filter((candidate) => {
+      const candidateEmail = candidate.email.trim();
+      const candidatePhones = [normalizePhone(candidate.phone), normalizePhone(candidate.mobilePhone)].filter(Boolean);
+      const exactlyOneEmail = Boolean(candidateEmail) !== Boolean(email);
+      const phoneIsComplementary = (candidatePhones.length > 0 && phones.length === 0)
+        || (candidatePhones.length === 0 && phones.length > 0);
+      return exactlyOneEmail && phoneIsComplementary;
+    });
+    const distinctSameNameEmails = new Set(sameNameContacts.map((candidate) => candidate.email.trim().toLocaleLowerCase("de")).filter(Boolean));
+    const complementaryIsUnambiguous = complementaryMatch.length === 1
+      && (email
+        ? distinctSameNameEmails.size === 0 || (distinctSameNameEmails.size === 1 && distinctSameNameEmails.has(email))
+        : distinctSameNameEmails.size <= 1);
     const exactMatch = fingerprints.exactContacts.get(exactKey);
 
     if (exactMatch) {
@@ -565,15 +583,20 @@ function createCsvPreview(
       exactDuplicates += 1;
     } else if (emailMatch) {
       status = "different";
-      reason = "Gleiche E-Mail-Adresse, aber mindestens ein anderes Kontaktfeld. Beide Kontakte bleiben erhalten.";
+      reason = "Gleiche E-Mail-Adresse: Fehlende Angaben werden zusammengeführt.";
       existingName = emailMatch;
+      conflicts += 1;
+    } else if (complementaryIsUnambiguous) {
+      status = "different";
+      reason = "Gleicher vollständiger Name: E-Mail-Adresse und Telefonnummer werden zusammengeführt.";
+      existingName = nameMatch ?? null;
       conflicts += 1;
     } else if (phoneMatch) {
       status = "different";
       reason = "Gleiche Telefonnummer, aber mindestens ein anderes Kontaktfeld. Beide Kontakte bleiben erhalten.";
       existingName = phoneMatch;
       conflicts += 1;
-    } else if (nameMatch) {
+    } else if (!email && nameMatch) {
       status = "different";
       reason = "Gleicher Name, aber mindestens ein anderes Kontaktfeld. Beide Kontakte bleiben erhalten.";
       existingName = nameMatch;

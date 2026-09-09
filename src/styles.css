@@ -1690,6 +1690,518 @@ textarea {
   margin-top: 0.8rem;
 }
 
+.migration-welcome-page {
+  display: grid;
+  gap: 1.35rem;
+  margin: 0 auto;
+  max-width: 1080px;
+  padding-top: clamp(0.25rem, 2vh, 1.5rem);
+}
+
+.migration-welcome-hero {
+  align-items: center;
+  background: linear-gradient(120deg, #640228 0%, var(--primary) 68%, #a52a50 100%);
+  border-radius: 20px;
+  box-shadow: 0 12px 32px rgba(70, 0, 28, 0.16);
+  color: #ffffff;
+  display: flex;
+  gap: 1.25rem;
+  min-height: 190px;
+  overflow: hidden;
+  padding: 2rem 2.2rem;
+  position: relative;
+}
+
+.migration-welcome-hero::after {
+  border: 34px solid rgba(255, 255, 255, 0.08);
+  border-radius: 50%;
+  content: "";
+  height: 230px;
+  position: absolute;
+  right: -95px;
+  top: -105px;
+  width: 230px;
+}
+
+.migration-welcome-hero img {
+  background: #ffffff;
+  border-radius: 16px;
+  box-shadow: 0 8px 22px rgba(35, 0, 14, 0.2);
+  height: 88px;
+  object-fit: contain;
+  padding: 0.35rem;
+  width: 88px;
+}
+
+.migration-welcome-hero div {
+  min-width: 0;
+  position: relative;
+  z-index: 1;
+}
+
+.migration-welcome-hero p,
+.migration-welcome-hero h2,
+.migration-welcome-hero span {
+  margin: 0;
+}
+
+.migration-welcome-hero p {
+  font-size: 0.9rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  margin-bottom: 0.3rem;
+  text-transform: uppercase;
+}
+
+.migration-welcome-hero h2 {
+  color: #ffffff;
+  font-size: clamp(2rem, 3.2vw, 3rem);
+  line-height: 1.08;
+}
+
+.migration-welcome-hero span {
+  display: block;
+  font-size: 1.12rem;
+  margin-top: 0.55rem;
+  opacity: 0.92;
+}
+
+.migration-welcome-steps {
+  display: grid;
+  gap: 0.9rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.migration-welcome-steps li {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: 0 5px 18px rgba(70, 15, 35, 0.055);
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: auto auto minmax(0, 1fr) minmax(220px, 270px);
+  padding: 1.05rem 1.15rem;
+}
+
+.migration-welcome-number,
+.migration-welcome-icon {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+}
+
+.migration-welcome-number {
+  background: var(--primary);
+  border-radius: 999px;
+  color: #ffffff;
+  font-size: 1.05rem;
+  font-weight: 900;
+  height: 36px;
+  width: 36px;
+}
+
+.migration-welcome-icon {
+  background: var(--soft);
+  border-radius: 13px;
+  color: var(--primary-dark);
+  height: 58px;
+  width: 58px;
+}
+
+.migration-welcome-steps h3,
+.migration-welcome-steps p {
+  margin: 0;
+}
+
+.migration-welcome-steps h3 {
+  font-size: 1.25rem;
+  line-height: 1.2;
+}
+
+.migration-welcome-steps p {
+  color: var(--accent);
+  line-height: 1.4;
+  margin-top: 0.25rem;
+}
+
+.migration-welcome-steps button {
+  justify-content: space-between;
+  width: 100%;
+}
+
+.migration-welcome-steps button > span {
+  flex: 1;
+  text-align: center;
+}
+
+.migration-welcome-steps li.completed {
+  background: linear-gradient(100deg, var(--success-surface) 0%, var(--surface) 65%);
+  border-color: var(--success-border);
+}
+
+.migration-welcome-steps li.completed .migration-welcome-number {
+  background: var(--success-text);
+}
+
+.migration-welcome-steps li.completed .migration-welcome-icon {
+  background: var(--success-surface);
+  color: var(--success-text);
+}
+
+.migration-welcome-steps li.completed .migration-welcome-copy h3,
+.migration-welcome-steps li.completed .migration-welcome-copy p {
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+}
+
+.migration-welcome-steps li.completed .migration-welcome-copy p {
+  color: var(--success-text);
+}
+
+.migration-welcome-review-button {
+  border-color: var(--success-border);
+  color: var(--success-text);
+  font-weight: 750;
+}
+
+.migration-welcome-error {
+  background: var(--danger-surface);
+  border: 1px solid var(--danger-border);
+  border-radius: 10px;
+  color: var(--danger-text);
+  font-weight: 700;
+  margin: 0;
+  padding: 0.75rem 0.9rem;
+}
+
+@media (max-width: 900px) {
+  .migration-welcome-steps li {
+    grid-template-columns: auto auto minmax(0, 1fr);
+  }
+
+  .migration-welcome-steps button {
+    grid-column: 2 / -1;
+  }
+}
+
+@media (max-width: 600px) {
+  .migration-welcome-hero {
+    align-items: flex-start;
+    min-height: 0;
+    padding: 1.35rem;
+  }
+
+  .migration-welcome-hero img {
+    height: 64px;
+    width: 64px;
+  }
+
+  .migration-welcome-steps li {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .migration-welcome-number {
+    grid-row: 1 / span 2;
+  }
+
+  .migration-welcome-icon {
+    display: none;
+  }
+
+  .migration-welcome-steps button {
+    grid-column: 2;
+  }
+}
+
+/* Migration start page presented as a readable, interactive EDV message. */
+.migration-welcome-page {
+  gap: 0;
+  max-width: 1120px;
+  padding: clamp(0.25rem, 1.5vh, 1rem) 0 2rem;
+}
+
+.migration-email {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: 0 12px 34px rgba(45, 15, 28, 0.1);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.migration-email.completed {
+  border-color: var(--success-border);
+}
+
+.migration-email-toolbar {
+  align-items: center;
+  background: var(--surface-alt);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 0.75rem;
+  min-height: 70px;
+  padding: 0.7rem 1.25rem;
+}
+
+.migration-email-symbol {
+  align-items: center;
+  background: var(--soft);
+  border-radius: 10px;
+  color: var(--primary);
+  display: inline-flex;
+  height: 46px;
+  justify-content: center;
+  width: 46px;
+}
+
+.migration-email-toolbar > strong {
+  font-size: 1.18rem;
+}
+
+.migration-email-progress {
+  align-items: center;
+  background: var(--soft);
+  border-radius: 999px;
+  color: var(--primary-dark);
+  display: inline-flex;
+  font-size: 1.05rem;
+  font-weight: 800;
+  gap: 0.35rem;
+  margin-left: auto;
+  padding: 0.4rem 0.75rem;
+}
+
+.migration-email-progress.completed {
+  background: var(--success-surface);
+  color: var(--success-text);
+}
+
+.migration-email-meta {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 1.1rem 1.5rem;
+}
+
+.migration-email-meta > img {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  height: 64px;
+  object-fit: contain;
+  padding: 0.25rem;
+  width: 64px;
+}
+
+.migration-email-meta dl,
+.migration-email-meta dl > div,
+.migration-email-meta dt,
+.migration-email-meta dd {
+  margin: 0;
+}
+
+.migration-email-meta dl {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.migration-email-meta dl > div {
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: 70px minmax(0, 1fr);
+}
+
+.migration-email-meta dt {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.migration-email-meta dd {
+  color: var(--text);
+  font-weight: 650;
+}
+
+.migration-email-body {
+  margin: 0 auto;
+  max-width: 990px;
+  padding: clamp(1.35rem, 3vw, 2.5rem);
+}
+
+.migration-email-salutation,
+.migration-email-intro,
+.migration-email-signature span,
+.migration-email-signature strong {
+  margin: 0;
+}
+
+.migration-email-salutation {
+  color: var(--text);
+  font-size: 1.22rem;
+  font-weight: 650;
+  line-height: 1.55;
+}
+
+.migration-email-body > h2 {
+  color: var(--text);
+  font-size: clamp(calc(2rem - 4px), calc(3.2vw - 4px), calc(2.7rem - 4px));
+  line-height: 1.15;
+  margin: 1.05rem 0 0.65rem;
+}
+
+.migration-email-intro {
+  color: var(--accent);
+  font-size: 1.25rem;
+  line-height: 1.58;
+  max-width: 820px;
+}
+
+.migration-email-intro.success {
+  background: var(--success-surface);
+  border: 1px solid var(--success-border);
+  border-radius: 10px;
+  color: var(--success-text);
+  font-weight: 750;
+  max-width: none;
+  padding: 0.85rem 1rem;
+}
+
+.migration-email .migration-welcome-steps {
+  gap: 0.8rem;
+  margin-top: 1.55rem;
+}
+
+.migration-email .migration-welcome-steps li {
+  border-left: 5px solid var(--primary);
+  border-radius: 11px;
+  box-shadow: none;
+  grid-template-columns: auto auto minmax(0, 1fr) minmax(250px, 290px);
+  padding: 1.12rem 1.2rem;
+}
+
+.migration-email .migration-welcome-steps li.completed {
+  border-left-color: var(--success-text);
+}
+
+.migration-email .migration-welcome-number {
+  font-size: 1.2rem;
+  height: 44px;
+  width: 44px;
+}
+
+.migration-email .migration-welcome-icon {
+  height: 58px;
+  width: 58px;
+}
+
+.migration-email .migration-welcome-steps h3 {
+  font-size: 1.38rem;
+}
+
+.migration-email .migration-welcome-steps p {
+  color: var(--accent);
+  font-size: 1.14rem;
+  line-height: 1.48;
+  text-decoration: none;
+}
+
+.migration-email .migration-welcome-steps li.completed .migration-welcome-copy h3 {
+  color: var(--success-text);
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+}
+
+.migration-email .migration-welcome-steps li.completed .migration-welcome-copy p {
+  color: var(--success-text);
+  text-decoration: none;
+}
+
+.migration-email .migration-welcome-steps button {
+  font-size: 1.13rem;
+  min-height: 64px;
+}
+
+.migration-email-signature {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 0.2rem;
+  line-height: 1.5;
+  margin-top: 1.8rem;
+  padding-top: 1.2rem;
+}
+
+.migration-email-signature span {
+  font-size: 1.12rem;
+}
+
+.migration-email-signature span {
+  color: var(--accent);
+}
+
+.migration-email-signature strong {
+  color: var(--text);
+  font-size: 1.18rem;
+}
+
+@media (max-width: 900px) {
+  .migration-email .migration-welcome-steps li {
+    grid-template-columns: auto auto minmax(0, 1fr);
+  }
+
+  .migration-email .migration-welcome-steps button {
+    grid-column: 2 / -1;
+  }
+}
+
+@media (max-width: 600px) {
+  .migration-email {
+    border-radius: 10px;
+  }
+
+  .migration-email-toolbar,
+  .migration-email-meta {
+    padding-inline: 0.9rem;
+  }
+
+  .migration-email-toolbar > strong {
+    display: none;
+  }
+
+  .migration-email-meta {
+    align-items: start;
+  }
+
+  .migration-email-meta > img {
+    height: 52px;
+    width: 52px;
+  }
+
+  .migration-email-meta dl > div {
+    gap: 0.15rem;
+    grid-template-columns: 1fr;
+  }
+
+  .migration-email-meta dl > div:not(:last-child) {
+    margin-bottom: 0.35rem;
+  }
+
+  .migration-email-body {
+    padding: 1.1rem 0.9rem 1.35rem;
+  }
+
+  .migration-email .migration-welcome-steps li {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .migration-email .migration-welcome-steps button {
+    grid-column: 1 / -1;
+  }
+}
+
 .field {
   display: grid;
   gap: 0.35rem;
@@ -3092,10 +3604,15 @@ table {
 .first-import-options {
   display: grid;
   gap: 0.8rem;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   margin: 0 auto;
-  max-width: 1120px;
+  max-width: 760px;
   width: 100%;
+}
+
+.first-import-options.with-not-needed {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  max-width: 1120px;
 }
 
 .first-import-option {
@@ -3186,7 +3703,8 @@ table {
 }
 
 @media (max-width: 700px) {
-  .first-import-options {
+  .first-import-options,
+  .first-import-options.with-not-needed {
     grid-template-columns: 1fr;
   }
 }
@@ -5085,10 +5603,52 @@ td small {
   color: var(--muted);
 }
 
+.export-choice-groups {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.export-choice-group {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: grid;
+  gap: 1rem;
+  padding: 1rem;
+}
+
+.export-choice-group > header {
+  align-items: center;
+  display: flex;
+  gap: 0.8rem;
+}
+
+.export-choice-group > header h3,
+.export-choice-group > header p {
+  margin: 0;
+}
+
+.export-choice-group > header p {
+  color: var(--accent);
+  margin-top: 0.15rem;
+}
+
+.export-choice-group-icon {
+  align-items: center;
+  background: var(--soft);
+  border-radius: 9px;
+  color: var(--primary);
+  display: inline-flex;
+  flex: 0 0 auto;
+  justify-content: center;
+  min-height: 48px;
+  min-width: 48px;
+}
+
 .export-choice-grid {
   display: grid;
   gap: 1rem;
-  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .export-choice-card {
@@ -5120,6 +5680,27 @@ td small {
 .export-step-text,
 .export-step-box p {
   color: var(--accent);
+}
+
+.export-target-badge {
+  border-radius: 999px;
+  color: var(--primary);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.35rem;
+  width: fit-content;
+}
+
+.export-target-badge.outlook {
+  background: var(--soft);
+  padding: 0.24rem 0.5rem;
+}
+
+.export-target-badge.file {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  padding: 0.18rem 0.45rem;
 }
 
 .export-wizard-panel .panel-heading {
@@ -6086,6 +6667,7 @@ td small {
 
 @media (max-width: 900px) {
   .data-transfer-choice-grid,
+  .export-choice-grid,
   .simple-import-source-picker {
     grid-template-columns: 1fr;
   }
@@ -7223,9 +7805,24 @@ td small {
   border-radius: 8px;
   color: var(--text);
   display: grid;
-  gap: 0.75rem;
-  line-height: 1.55;
+  gap: 0.65rem;
+  line-height: 1.45;
   padding: 1rem;
+}
+
+.migration-capture-security-note {
+  align-items: center;
+  background: var(--success-surface);
+  border: 1px solid var(--success-border);
+  border-radius: 8px;
+  color: var(--success-text);
+  display: flex;
+  gap: 0.65rem;
+  padding: 0.75rem;
+}
+
+.migration-capture-security-note svg {
+  flex: 0 0 auto;
 }
 
 .migration-capture-question {
@@ -10787,8 +11384,109 @@ td small {
 }
 
 .backup-page-clean,
-.trash-page-clean {
+.trash-page-clean,
+.recovery-page {
   max-width: 1080px;
+}
+
+.recovery-status-card,
+.recovery-action-card,
+.recovery-note {
+  align-items: center;
+  display: flex;
+  gap: 0.9rem;
+}
+
+.recovery-status-card,
+.recovery-action-card {
+  padding: 1rem;
+}
+
+.recovery-status-card > div,
+.recovery-action-card > div {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.recovery-status-card small,
+.recovery-action-card p,
+.recovery-note p {
+  color: var(--accent);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.recovery-status-icon,
+.recovery-action-icon {
+  align-items: center;
+  border-radius: 10px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  justify-content: center;
+}
+
+.recovery-status-icon {
+  background: var(--success-surface);
+  color: var(--success-text);
+  height: 46px;
+  width: 46px;
+}
+
+.recovery-action-icon {
+  background: var(--soft);
+  color: var(--primary);
+  height: 58px;
+  width: 58px;
+}
+
+.recovery-action-card h3,
+.recovery-action-card p {
+  margin: 0;
+}
+
+.recovery-action-card > button {
+  margin-left: auto;
+}
+
+.recovery-status-count {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 0.88rem;
+  font-weight: 750;
+  margin-left: auto;
+  padding: 0.38rem 0.7rem;
+  white-space: nowrap;
+}
+
+.recovery-note {
+  background: var(--info-surface);
+  border-color: var(--info-border);
+  color: var(--info-text);
+  padding: 0.85rem 1rem;
+}
+
+.recovery-note p {
+  color: inherit;
+}
+
+@media (max-width: 760px) {
+  .recovery-status-card,
+  .recovery-action-card {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .recovery-status-count,
+  .recovery-action-card > button {
+    margin-left: 0;
+  }
+
+  .recovery-action-card > button {
+    width: 100%;
+  }
 }
 
 .backup-status-card {

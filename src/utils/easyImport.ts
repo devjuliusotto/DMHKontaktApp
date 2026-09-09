@@ -69,19 +69,17 @@ export async function easyImportCalendar(platform: EasyImportPlatform): Promise<
 
   const result = await importThunderbirdCalendarsOnce();
   const existing = storedCalendarEvents();
-  const eventsById = new Map(existing.map((event) => [event.id, event]));
-  let imported = 0;
-  let updated = 0;
-  for (const event of result.events) {
-    if (eventsById.has(event.id)) updated += 1;
-    else imported += 1;
-    eventsById.set(event.id, { ...event, color: calendarColorFromCategory(event.category, event.color) });
-  }
-  localStorage.setItem(calendarStorageKey, JSON.stringify(Array.from(eventsById.values())));
-  mergeImportedCalendarCategories(result.events);
+  const normalized = result.events.map((event) => ({
+    ...event,
+    color: calendarColorFromCategory(event.category, event.color)
+  }));
+  const merged = mergeCalendarEventsExactly(existing, normalized);
+  localStorage.setItem(calendarStorageKey, JSON.stringify(merged.events));
+  mergeImportedCalendarCategories(normalized);
+  const alreadyPresent = merged.skippedSameId + merged.skippedExactDuplicates;
   return {
-    imported,
-    detail: `${imported} neu importiert · ${updated} aktualisiert`
+    imported: merged.imported,
+    detail: `${merged.imported} neu importiert · ${alreadyPresent} bereits vorhanden`
   };
 }
 

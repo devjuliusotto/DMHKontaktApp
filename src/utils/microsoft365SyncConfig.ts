@@ -38,7 +38,7 @@ export function selectAllMicrosoft365Sources(config: SyncConfig, sources: Micros
 
   for (const source of [...sources.contacts, ...sources.calendars]) {
     if (isTechnicalMicrosoft365Source(source)) continue;
-    sourceDirections[source.id] = "bidirectional";
+    sourceDirections[source.id] = config.direction;
     if (source.kind === "contactFolder") selectedContactSourceIds.add(source.id);
     else selectedCalendarSourceIds.add(source.id);
   }
@@ -48,7 +48,7 @@ export function selectAllMicrosoft365Sources(config: SyncConfig, sources: Micros
     enabled: true,
     paused: false,
     providers: { ...config.providers, m365: true },
-    direction: "bidirectional",
+    direction: config.direction,
     contacts: true,
     contactGroups: true,
     calendars: true,

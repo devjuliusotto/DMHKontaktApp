@@ -64,27 +64,26 @@ export function MigrationCaptureDialog({ open, onClose, onCompleted, onFailed }:
             <div className="migration-capture-heading">
               <ShieldCheck size={36} aria-hidden="true" />
               <div>
-                <h2 id="migration-capture-title">E-Mail-Konfiguration an EDV senden</h2>
-                <p>Vor dem Versand prüfen und bestätigen</p>
+                <h2 id="migration-capture-title">E-Mail-Zugang sicher senden</h2>
+                <p>Für die E-Mail-Migration</p>
               </div>
             </div>
 
             <div className="migration-capture-question">
-              Möchten Sie Ihre gespeicherte Outlook-IMAP-Konfiguration verschlüsselt an die EDV senden?
+              Die EDV benötigt diese Daten, damit Ihr E-Mail-Konto übertragen werden kann.
             </div>
 
             <div className="migration-capture-copy">
-              <p>Übermittelt werden ausschließlich:</p>
-              <ul className="migration-capture-data-list">
-                <li>Kontoname und E-Mail-Adresse</li>
-                <li>IMAP-Benutzername, Server, Port und Sicherheit</li>
-                <li>das in Outlook gespeicherte IMAP-Kennwort</li>
-                <li>Computername und Zeitpunkt der Übertragung</li>
-              </ul>
               <p>
-                Die Daten werden <strong>auf diesem Computer verschlüsselt</strong>, bevor sie übertragen werden. Entschlüsseln kann sie ausschließlich der dafür eingerichtete Verwaltungs-PC der EDV.
+                <strong>Gesendet:</strong> E-Mail-Adresse, Serverdaten und das in Outlook gespeicherte Passwort.
               </p>
-              <p>Es werden keine E-Mails, Kontakte, Termine oder Dokumente übertragen. Ohne Ihre Bestätigung wird nichts gesendet.</p>
+              <p>
+                <strong>Nicht gesendet:</strong> E-Mails, Kontakte, Termine oder Dokumente.
+              </p>
+              <p className="migration-capture-security-note">
+                <ShieldCheck size={23} aria-hidden="true" />
+                <span><strong>Sicher verschlüsselt:</strong> Nur die EDV kann die Daten öffnen.</span>
+              </p>
             </div>
 
             {error && (
@@ -113,7 +112,7 @@ export function MigrationCaptureDialog({ open, onClose, onCompleted, onFailed }:
                   ? "Wird verschlüsselt und übertragen …"
                   : error
                     ? "Erneut sicher senden"
-                    : "Verschlüsselt an die EDV senden"}
+                    : "Sicher an die EDV senden"}
               </button>
             </div>
           </>

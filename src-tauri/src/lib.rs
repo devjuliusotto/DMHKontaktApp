@@ -150,6 +150,7 @@ pub struct ImportPayload {
 #[serde(rename_all = "camelCase")]
 pub struct ImportResult {
     pub imported: usize,
+    pub merged_duplicates: usize,
     pub skipped_duplicates: usize,
     pub batch_id: String,
 }
@@ -508,6 +509,7 @@ struct ContactFingerprintIndex {
     emails: HashMap<String, String>,
     phones: HashMap<String, String>,
     names: HashMap<String, String>,
+    contacts_by_name: HashMap<String, Vec<ContactInput>>,
 }
 
 #[derive(Debug, Clone)]
@@ -832,6 +834,9 @@ const AUTOMATIC_BACKUP_ADMIN_TEST_FOLDER: &str =
     "DMH Kontakte und Kalender Admin Test\\Automatische Sicherung";
 const AUTOMATIC_BACKUP_LATEST: &str = "DMH-Kontakte-Kalender-Auto-Backup.json";
 const AUTOMATIC_BACKUP_SNAPSHOT_PREFIX: &str = "auto-backup-";
+const RECOVERY_CHECKPOINT_FOLDER: &str = "recovery";
+const RECOVERY_CHECKPOINT_PREFIX: &str = "checkpoint-";
+const RECOVERY_CHECKPOINT_LIMIT: usize = 2016;
 const CALENDAR_ACTIVE_STORAGE_KEY: &str = "agendakontakte.calendarEvents";
 const CALENDAR_DELETED_STORAGE_KEY: &str = "agendakontakte.deletedCalendarEvents";
 const COLLECTED_ADDRESSES_HIDDEN_SETTING: &str = "collected_addresses_hidden";
@@ -1225,6 +1230,176 @@ fn write_automatic_backup(
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RecoveryCheckpoint {
+    version: String,
+    created_at: String,
+    fingerprint: String,
+    backup: BackupData,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryArchiveStatus {
+    pub available: bool,
+    pub latest_at: Option<String>,
+    pub contacts: usize,
+    pub groups: usize,
+    pub calendar_events: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryRestoreResult {
+    pub browser_storage: HashMap<String, String>,
+    pub passwords_restored: bool,
+    pub restored_at: String,
+    pub contacts: usize,
+    pub groups: usize,
+    pub calendar_events: usize,
+}
+
+fn recovery_checkpoint_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let app_data = app.path().app_data_dir().map_err(|error| {
+        format!("Interner Wiederherstellungsordner konnte nicht ermittelt werden: {error}")
+    })?;
+    let directory = app_data.join(RECOVERY_CHECKPOINT_FOLDER);
+    fs::create_dir_all(&directory).map_err(|error| {
+        format!("Interner Wiederherstellungsordner konnte nicht erstellt werden: {error}")
+    })?;
+    Ok(directory)
+}
+
+fn recovery_checkpoint_paths(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
+    let directory = recovery_checkpoint_dir(app)?;
+    let mut paths = fs::read_dir(directory)
+        .map_err(|error| format!("Wiederherstellungspunkte konnten nicht gelesen werden: {error}"))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with(RECOVERY_CHECKPOINT_PREFIX) && name.ends_with(".json")
+                    })
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    Ok(paths)
+}
+
+fn calendar_event_count(backup: &BackupData) -> usize {
+    parse_calendar_events(&backup.browser_storage, CALENDAR_ACTIVE_STORAGE_KEY)
+        .into_iter()
+        .filter(|event| event.deleted_at.is_none())
+        .count()
+}
+
+fn recovery_fingerprint(backup: &BackupData) -> Result<String, String> {
+    let mut stable = backup.clone();
+    stable.exported_at.clear();
+    let serialized = serde_json::to_vec(&stable).map_err(|error| error.to_string())?;
+    let mut hasher = Sha256::new();
+    hasher.update(serialized);
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn read_recovery_checkpoints(app: &AppHandle) -> Result<Vec<RecoveryCheckpoint>, String> {
+    let mut checkpoints = Vec::new();
+    for path in recovery_checkpoint_paths(app)? {
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(checkpoint) = serde_json::from_str::<RecoveryCheckpoint>(&content) else {
+            continue;
+        };
+        checkpoints.push(checkpoint);
+    }
+    checkpoints.sort_by(|left, right| left.created_at.cmp(&right.created_at));
+    Ok(checkpoints)
+}
+
+fn prune_recovery_checkpoints(app: &AppHandle) -> Result<(), String> {
+    let paths = recovery_checkpoint_paths(app)?;
+    let overflow = paths.len().saturating_sub(RECOVERY_CHECKPOINT_LIMIT);
+    for path in paths.iter().take(overflow) {
+        fs::remove_file(path).map_err(|error| {
+            format!("Alter Wiederherstellungspunkt konnte nicht entfernt werden: {error}")
+        })?;
+    }
+    Ok(())
+}
+
+fn write_recovery_checkpoint(app: &AppHandle, backup: BackupData) -> Result<(), String> {
+    let fingerprint = recovery_fingerprint(&backup)?;
+    if read_recovery_checkpoints(app)?
+        .last()
+        .is_some_and(|checkpoint| checkpoint.fingerprint == fingerprint)
+    {
+        return Ok(());
+    }
+
+    let checkpoint = RecoveryCheckpoint {
+        version: "1.0.0".to_string(),
+        created_at: now(),
+        fingerprint,
+        backup,
+    };
+    let json = serde_json::to_string_pretty(&checkpoint).map_err(|error| error.to_string())?;
+    let stamp = Utc::now().format("%Y%m%d-%H%M%S-%f");
+    let path =
+        recovery_checkpoint_dir(app)?.join(format!("{RECOVERY_CHECKPOINT_PREFIX}{stamp}.json"));
+    replace_json_file(&path, &json)?;
+    prune_recovery_checkpoints(app)
+}
+
+fn recovery_status_from_checkpoint(
+    checkpoint: Option<&RecoveryCheckpoint>,
+) -> RecoveryArchiveStatus {
+    let Some(checkpoint) = checkpoint else {
+        return RecoveryArchiveStatus {
+            available: false,
+            latest_at: None,
+            contacts: 0,
+            groups: 0,
+            calendar_events: 0,
+        };
+    };
+    RecoveryArchiveStatus {
+        available: true,
+        latest_at: Some(checkpoint.created_at.clone()),
+        contacts: checkpoint
+            .backup
+            .contacts
+            .iter()
+            .filter(|contact| contact.deleted_at.is_none())
+            .count(),
+        groups: checkpoint
+            .backup
+            .groups
+            .iter()
+            .filter(|group| group.deleted_at.is_none())
+            .count(),
+        calendar_events: calendar_event_count(&checkpoint.backup),
+    }
+}
+
+fn recovery_checkpoint_for_restore(
+    checkpoints: &[RecoveryCheckpoint],
+    current_backup: &BackupData,
+) -> Option<RecoveryCheckpoint> {
+    let current_calendar_events = calendar_event_count(current_backup);
+    checkpoints
+        .iter()
+        .rev()
+        .find(|checkpoint| calendar_event_count(&checkpoint.backup) > current_calendar_events)
+        .cloned()
+        .or_else(|| checkpoints.last().cloned())
 }
 
 fn create_auto_backup(app: &AppHandle, conn: &Connection) -> Result<(), String> {
@@ -1902,7 +2077,6 @@ fn import_contacts(app: AppHandle, payload: ImportPayload) -> Result<ImportResul
     let tx = conn.transaction().map_err(|err| err.to_string())?;
     let timestamp = now();
     let batch_id = format!("import-{}", Utc::now().timestamp_millis());
-    let mut imported = 0usize;
     let mut skipped_duplicates = 0usize;
 
     for contact in payload.contacts {
@@ -1959,16 +2133,23 @@ fn import_contacts(app: AppHandle, payload: ImportPayload) -> Result<ImportResul
             )
             .map_err(|err| err.to_string())?;
         }
-        imported += 1;
     }
 
+    let merged_duplicates = consolidate_contact_duplicates(&tx, &batch_id, &timestamp)?;
+    let imported = tx
+        .query_row(
+            "SELECT COUNT(*) FROM contacts WHERE deleted_at IS NULL AND import_batch_id = ?",
+            params![batch_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| error.to_string())? as usize;
     tx.execute(
         "INSERT INTO import_history (batch_id, source_file, imported_count, skipped_count, created_at) VALUES (?, ?, ?, ?, ?)",
         params![
             batch_id,
             payload.source_file,
             imported as i64,
-            skipped_duplicates as i64,
+            (skipped_duplicates + merged_duplicates) as i64,
             timestamp
         ],
     )
@@ -1977,6 +2158,7 @@ fn import_contacts(app: AppHandle, payload: ImportPayload) -> Result<ImportResul
 
     Ok(ImportResult {
         imported,
+        merged_duplicates,
         skipped_duplicates,
         batch_id,
     })
@@ -2166,6 +2348,60 @@ fn create_automatic_backup(
     write_automatic_backup(&app, backup, snapshot.unwrap_or(false))
 }
 
+#[tauri::command]
+fn create_recovery_checkpoint(app: AppHandle, backup: BackupData) -> Result<(), String> {
+    write_recovery_checkpoint(&app, backup)
+}
+
+#[tauri::command]
+fn get_recovery_archive_status(app: AppHandle) -> Result<RecoveryArchiveStatus, String> {
+    let checkpoints = read_recovery_checkpoints(&app)?;
+    Ok(recovery_status_from_checkpoint(checkpoints.last()))
+}
+
+#[tauri::command]
+fn restore_recovery_checkpoint(
+    app: AppHandle,
+    current_backup: BackupData,
+) -> Result<RecoveryRestoreResult, String> {
+    // Preserve the exact state that is about to be replaced, including the
+    // browser-held calendar, before selecting a previous safe checkpoint.
+    write_recovery_checkpoint(&app, current_backup.clone())?;
+    let checkpoints = read_recovery_checkpoints(&app)?;
+    let checkpoint = recovery_checkpoint_for_restore(&checkpoints, &current_backup)
+        .ok_or_else(|| "Es ist noch kein Wiederherstellungspunkt vorhanden.".to_string())?;
+
+    let passwords_restored = vault::validate_automatic_password_backup(&app)?;
+    let browser_storage = checkpoint.backup.browser_storage.clone();
+    let restored_at = checkpoint.created_at.clone();
+    let contacts = checkpoint
+        .backup
+        .contacts
+        .iter()
+        .filter(|contact| contact.deleted_at.is_none())
+        .count();
+    let groups = checkpoint
+        .backup
+        .groups
+        .iter()
+        .filter(|group| group.deleted_at.is_none())
+        .count();
+    let calendar_events = calendar_event_count(&checkpoint.backup);
+    restore_backup(app.clone(), checkpoint.backup)?;
+    if passwords_restored {
+        vault::restore_automatic_password_backup(&app)?;
+    }
+
+    Ok(RecoveryRestoreResult {
+        browser_storage,
+        passwords_restored,
+        restored_at,
+        contacts,
+        groups,
+        calendar_events,
+    })
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutomaticBackupRestoreResult {
@@ -2252,6 +2488,8 @@ fn restore_backup(app: AppHandle, backup: BackupData) -> Result<(), String> {
     let mut conn = open_db(&app)?;
     let tx = conn.transaction().map_err(|err| err.to_string())?;
     tx.execute("DELETE FROM contact_groups", [])
+        .map_err(|err| err.to_string())?;
+    tx.execute("DELETE FROM m365_contact_links", [])
         .map_err(|err| err.to_string())?;
     tx.execute("DELETE FROM contacts", [])
         .map_err(|err| err.to_string())?;
@@ -3075,9 +3313,45 @@ fn classify_outlook_contact(
         if let Some(existing_name) = fingerprints.emails.get(email) {
             return (
                 "different".to_string(),
-                "Gleiche E-Mail-Adresse, aber mindestens ein anderes Kontaktfeld. Beide Kontakte bleiben erhalten.".to_string(),
+                "Gleiche E-Mail-Adresse: Fehlende Angaben werden zusammengeführt.".to_string(),
                 Some(existing_name.clone()),
             );
+        }
+    }
+
+    let normalized_name = display_name
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    if !normalized_name.is_empty() {
+        if let Some(same_name_contacts) = fingerprints.contacts_by_name.get(&normalized_name) {
+            let distinct_emails = same_name_contacts
+                .iter()
+                .map(|candidate| candidate.email.trim().to_lowercase())
+                .filter(|candidate_email| !candidate_email.is_empty())
+                .collect::<HashSet<_>>();
+            let email_is_unambiguous = if email.is_empty() {
+                distinct_emails.len() <= 1
+            } else {
+                distinct_emails.is_empty()
+                    || (distinct_emails.len() == 1 && distinct_emails.contains(email))
+            };
+            let safe_matches = same_name_contacts
+                .iter()
+                .filter(|candidate| {
+                    let candidate_email = candidate.email.trim();
+                    candidate_email.is_empty() != email.is_empty()
+                        && contacts_are_safe_to_consolidate(candidate, contact)
+                })
+                .collect::<Vec<_>>();
+            if email_is_unambiguous && safe_matches.len() == 1 {
+                return (
+                    "different".to_string(),
+                    "Gleicher vollständiger Name: E-Mail-Adresse und Telefonnummer werden zusammengeführt.".to_string(),
+                    fingerprints.names.get(&normalized_name).cloned(),
+                );
+            }
         }
     }
 
@@ -3095,7 +3369,6 @@ fn classify_outlook_contact(
         }
     }
 
-    let normalized_name = display_name.trim().to_lowercase();
     if email.is_empty() && !normalized_name.is_empty() {
         if let Some(existing_name) = fingerprints.names.get(&normalized_name) {
             return (
@@ -3152,9 +3425,21 @@ fn add_fingerprint(
             .entry(phone)
             .or_insert_with(|| label.clone());
     }
-    let normalized_name = display_name.trim().to_lowercase();
+    let normalized_name = display_name
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
     if !normalized_name.is_empty() {
-        fingerprints.names.entry(normalized_name).or_insert(label);
+        fingerprints
+            .names
+            .entry(normalized_name.clone())
+            .or_insert(label);
+        fingerprints
+            .contacts_by_name
+            .entry(normalized_name)
+            .or_default()
+            .push(contact.clone());
     }
 }
 
@@ -5088,11 +5373,14 @@ fn outlook_duplicate_key(record: &OutlookAppointmentRecord) -> Option<String> {
         return None;
     }
     Some(format!(
-        "{}\n{}\n{}\n{}",
-        record.title.trim().to_lowercase(),
-        starts_at,
-        record.ends_at.trim(),
-        record.location.trim().to_lowercase()
+        "{}\n{}",
+        record
+            .title
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase(),
+        starts_at
     ))
 }
 
@@ -5177,7 +5465,7 @@ fn build_outlook_calendar_preview(read_result: &OutlookCalendarReadData) -> Outl
         .into_values()
         .filter_map(
             |(title, starts_at, ends_at, location, calendars, occurrence_count)| {
-                (calendars.len() > 1).then(|| OutlookCalendarDuplicateGroup {
+                (occurrence_count > 1).then(|| OutlookCalendarDuplicateGroup {
                     title,
                     starts_at,
                     ends_at,
@@ -5527,6 +5815,9 @@ pub fn run() {
             undo_last_outlook_contact_import,
             get_backup_data,
             create_automatic_backup,
+            create_recovery_checkpoint,
+            get_recovery_archive_status,
+            restore_recovery_checkpoint,
             restore_automatic_backup,
             restore_backup,
             write_export_file,
@@ -5669,7 +5960,9 @@ mod tests {
                 (6, 'Hans Müller', '', '07157 111111', ''),
                 (7, 'Hans Müller', '', '07157 222222', ''),
                 (8, 'Max Mustermann', 'max@example.org', '', ''),
-                (9, 'Max M.', 'max@example.org', '07157 333333', 'Aus Thunderbird');
+                (9, 'Max M.', 'max@example.org', '07157 333333', 'Aus Thunderbird'),
+                (10, 'Barbara Beispiel', '', '07157 444444', ''),
+                (11, 'Barbara Beispiel', 'barbara@example.org', '', '');
             INSERT INTO contact_groups VALUES (1, 11), (2, 12), (3, 13);
             ",
         )
@@ -5678,11 +5971,11 @@ mod tests {
         let merged = consolidate_contact_duplicates(&conn, "current-batch", "2026-09-02")
             .expect("consolidate contacts");
 
-        assert_eq!(merged, 3);
+        assert_eq!(merged, 4);
         let total: i64 = conn
             .query_row("SELECT COUNT(*) FROM contacts", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(total, 6);
+        assert_eq!(total, 7);
         let alexandra: (String, String, String) = conn
             .query_row(
                 "SELECT email, phone, notes FROM contacts WHERE display_name = 'Alexandra Heyde'",
@@ -5729,6 +6022,16 @@ mod tests {
         assert_eq!(max.0, 1);
         assert_eq!(max.1, "07157 333333");
         assert_eq!(max.2, "Aus Thunderbird");
+        let barbara: (i64, String, String) = conn
+            .query_row(
+                "SELECT COUNT(*), email, phone FROM contacts WHERE display_name = 'Barbara Beispiel'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(barbara.0, 1);
+        assert_eq!(barbara.1, "barbara@example.org");
+        assert_eq!(barbara.2, "07157 444444");
     }
 
     #[test]
@@ -6212,6 +6515,35 @@ mod tests {
     }
 
     #[test]
+    fn contact_preview_merges_same_name_with_complementary_phone_and_email() {
+        let phone_only = sample_contact("Barbara Beispiel", "", "07157 444444");
+        let email_only = sample_contact("Barbara Beispiel", "barbara@example.org", "");
+
+        let mut phone_first = ContactFingerprintIndex::default();
+        add_fingerprint(&mut phone_first, &phone_only, "Barbara Beispiel", "");
+        let (email_status, email_reason, _) = classify_outlook_contact(
+            &phone_first,
+            &email_only,
+            "Barbara Beispiel",
+            "barbara@example.org",
+        );
+        assert_eq!(email_status, "different");
+        assert!(email_reason.contains("zusammengeführt"));
+
+        let mut email_first = ContactFingerprintIndex::default();
+        add_fingerprint(
+            &mut email_first,
+            &email_only,
+            "Barbara Beispiel",
+            "barbara@example.org",
+        );
+        let (phone_status, phone_reason, _) =
+            classify_outlook_contact(&email_first, &phone_only, "Barbara Beispiel", "");
+        assert_eq!(phone_status, "different");
+        assert!(phone_reason.contains("zusammengeführt"));
+    }
+
+    #[test]
     fn accepts_outlook_empty_collections_serialized_as_objects() {
         let json = r#"{
           "events": {
@@ -6238,8 +6570,14 @@ mod tests {
     }
 
     #[test]
-    fn outlook_preview_separates_calendars_and_detects_cross_calendar_duplicates() {
-        let event = |store_id: &str, folder_path: &str, entry_id: &str, title: &str| {
+    fn outlook_preview_detects_duplicates_by_title_and_start_only() {
+        let event = |store_id: &str,
+                     folder_path: &str,
+                     entry_id: &str,
+                     title: &str,
+                     starts_at: &str,
+                     ends_at: &str,
+                     location: &str| {
             OutlookAppointmentRecord {
                 entry_id: entry_id.to_string(),
                 store_id: store_id.to_string(),
@@ -6247,9 +6585,9 @@ mod tests {
                 folder_path: folder_path.to_string(),
                 global_appointment_id: String::new(),
                 title: title.to_string(),
-                starts_at: "2026-08-20T09:00:00".to_string(),
-                ends_at: "2026-08-20T10:00:00".to_string(),
-                location: "Büro".to_string(),
+                starts_at: starts_at.to_string(),
+                ends_at: ends_at.to_string(),
+                location: location.to_string(),
                 description: String::new(),
                 category: String::new(),
                 color: "blue".to_string(),
@@ -6275,17 +6613,59 @@ mod tests {
                 },
             ],
             events: vec![
-                event("store-a", "\\Kalender", "a-1", "Gemeinsamer Termin"),
-                event("store-b", "\\Kalender", "b-1", "Gemeinsamer Termin"),
-                event("store-a", "\\Kalender", "a-2", "Nur in A"),
+                event(
+                    "store-a",
+                    "\\Kalender",
+                    "a-1",
+                    "Gemeinsamer Termin",
+                    "2026-08-20T09:00:00",
+                    "2026-08-20T10:00:00",
+                    "Büro",
+                ),
+                event(
+                    "store-b",
+                    "\\Kalender",
+                    "b-1",
+                    " gemeinsamer  termin ",
+                    "2026-08-20T09:00:00",
+                    "2026-08-20T11:00:00",
+                    "Zuhause",
+                ),
+                event(
+                    "store-a",
+                    "\\Kalender",
+                    "a-2",
+                    "Gemeinsamer Termin",
+                    "2026-08-20T09:00:00",
+                    "2026-08-20T12:00:00",
+                    "Besprechungsraum",
+                ),
+                event(
+                    "store-a",
+                    "\\Kalender",
+                    "a-3",
+                    "Gemeinsamer Termin",
+                    "2026-08-20T09:30:00",
+                    "2026-08-20T10:00:00",
+                    "Büro",
+                ),
+                event(
+                    "store-a",
+                    "\\Kalender",
+                    "a-4",
+                    "Anderer Termin",
+                    "2026-08-20T09:00:00",
+                    "2026-08-20T10:00:00",
+                    "Büro",
+                ),
             ],
             skipped: 0,
         });
 
         assert_eq!(preview.calendars.len(), 2);
-        assert_eq!(preview.total_events, 3);
+        assert_eq!(preview.total_events, 5);
         assert_eq!(preview.duplicate_groups.len(), 1);
-        assert_eq!(preview.duplicate_groups[0].occurrence_count, 2);
+        assert_eq!(preview.duplicate_groups[0].occurrence_count, 3);
         assert_eq!(preview.duplicate_groups[0].calendars.len(), 2);
     }
 

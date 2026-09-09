@@ -240,10 +240,9 @@ function normalizeCategory(category: CalendarCategory): CalendarCategory {
 
 interface CalendarPageProps {
   onNavigate: (page: Page) => void;
-  onHideSection: () => void;
 }
 
-export function CalendarPage({ onNavigate, onHideSection }: CalendarPageProps) {
+export function CalendarPage({ onNavigate }: CalendarPageProps) {
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [calendarLoaded, setCalendarLoaded] = useState(false);
   const [easyImportOpen, setEasyImportOpen] = useState(false);
@@ -425,7 +424,7 @@ export function CalendarPage({ onNavigate, onHideSection }: CalendarPageProps) {
 
   const reviewExactDuplicates = () => {
     if (exactDuplicateCopies === 0) {
-      setMessage("Keine in allen Kalenderfeldern exakt gleichen Duplikate gefunden.");
+      setMessage("Keine Termine mit gleichem Titel, Datum und Beginn gefunden.");
       return;
     }
     setShowDuplicateDialog(true);
@@ -435,7 +434,7 @@ export function CalendarPage({ onNavigate, onHideSection }: CalendarPageProps) {
     const result = removeExactCalendarDuplicates(events);
     if (result.removedEvents.length === 0) {
       setShowDuplicateDialog(false);
-      setMessage("Keine exakt gleichen Duplikate gefunden.");
+      setMessage("Keine Termine mit gleichem Titel, Datum und Beginn gefunden.");
       return;
     }
 
@@ -449,7 +448,7 @@ export function CalendarPage({ onNavigate, onHideSection }: CalendarPageProps) {
     persist(result.events);
     setShowDuplicateDialog(false);
     setMessage(
-      `${result.removedEvents.length} exakt gleiche überzählige ${result.removedEvents.length === 1 ? "Kopie wurde" : "Kopien wurden"} entfernt und vollständig für „Rückgängig“ gesichert.`
+      `${result.removedEvents.length} überzählige ${result.removedEvents.length === 1 ? "Kopie wurde" : "Kopien wurden"} entfernt und vollständig für „Rückgängig“ gesichert.`
     );
   };
 
@@ -732,7 +731,7 @@ export function CalendarPage({ onNavigate, onHideSection }: CalendarPageProps) {
               <button type="button" onClick={() => { setShowActionsMenu(false); onNavigate("export"); }}><Download size={18} /> Termine exportieren</button>
               <button type="button" onClick={() => { setShowActionsMenu(false); setReconciliationOpen(true); }}><RefreshCw size={18} /> Kalender erneut abgleichen</button>
               <button type="button" onClick={() => { setShowActionsMenu(false); setShowCategoryDialog(true); }}><Plus size={18} /> Kategorie erstellen</button>
-              <button type="button" onClick={() => { setShowActionsMenu(false); reviewExactDuplicates(); }}><ListChecks size={18} /> Exakte Duplikate prüfen</button>
+              <button type="button" onClick={() => { setShowActionsMenu(false); reviewExactDuplicates(); }}><ListChecks size={18} /> Duplikate prüfen</button>
               {duplicateCleanupBackup && <button type="button" onClick={() => { setShowActionsMenu(false); undoDuplicateCleanup(); }}><Undo2 size={18} /> Bereinigung rückgängig</button>}
               <span className="calendar-actions-separator" />
               <button className="danger" type="button" onClick={() => { setShowActionsMenu(false); deleteAllEvents(); }} disabled={events.length === 0}><Trash2 size={18} /> Alle Termine löschen</button>
@@ -779,7 +778,7 @@ export function CalendarPage({ onNavigate, onHideSection }: CalendarPageProps) {
             <section className="form-panel">
               <div className="panel-heading">
                 <div>
-                  <h3 id="calendar-duplicate-title">Exakte Kalenderduplikate</h3>
+                  <h3 id="calendar-duplicate-title">Kalenderduplikate</h3>
                   <p>{exactDuplicateCopies} überzählige {exactDuplicateCopies === 1 ? "Kopie" : "Kopien"} in {exactDuplicateGroups.length} {exactDuplicateGroups.length === 1 ? "Gruppe" : "Gruppen"} gefunden.</p>
                 </div>
                 <button className="icon-only" type="button" aria-label="Schließen" onClick={() => setShowDuplicateDialog(false)}>
@@ -788,19 +787,19 @@ export function CalendarPage({ onNavigate, onHideSection }: CalendarPageProps) {
               </div>
 
               <div className="calendar-duplicate-safety" role="note">
-                Entfernt wird nur eine überzählige Kopie, wenn Titel, Beginn, Ende, Ort, Beschreibung, Farbe, Kategorie und Quelle Zeichen für Zeichen gleich sind. Die technische ID darf verschieden sein. Schon eine Abweichung – auch bei Sekunden – erhält beide Termine.
+                Als Duplikat gilt ein Termin nur, wenn Titel, Datum und Startzeit gleich sind. Sobald eines dieser drei Merkmale abweicht, bleiben beide Termine erhalten.
               </div>
 
               <ul className="calendar-duplicate-list">
                 {exactDuplicateGroups.slice(0, 10).map((group) => (
                   <li key={`${group.event.id}-${group.copies}`}>
                     <strong>{group.event.title}</strong>
-                    <span>{formatCalendarDate(group.event.startsAt)} · {group.copies} identische Kopien</span>
+                    <span>{formatCalendarDate(group.event.startsAt)} · {group.copies} Kopien</span>
                     {group.event.source && <small>{group.event.source}</small>}
                   </li>
                 ))}
               </ul>
-              {exactDuplicateGroups.length > 10 && <p>Weitere {exactDuplicateGroups.length - 10} Gruppen werden nach denselben strengen Regeln behandelt.</p>}
+              {exactDuplicateGroups.length > 10 && <p>Weitere {exactDuplicateGroups.length - 10} Gruppen werden nach derselben Regel behandelt.</p>}
 
               <div className="button-row">
                 <button type="button" onClick={() => setShowDuplicateDialog(false)}>Abbrechen</button>
@@ -833,7 +832,7 @@ export function CalendarPage({ onNavigate, onHideSection }: CalendarPageProps) {
       {!calendarLoaded ? (
         <div className="page-loading">Kalender wird geladen …</div>
       ) : events.length === 0 ? (
-        <EmptyImportState kind="calendar" onEasyImport={() => setEasyImportOpen(true)} onManualImport={() => onNavigate("calendar-import")} onNotNeeded={onHideSection} />
+        <EmptyImportState kind="calendar" onEasyImport={() => setEasyImportOpen(true)} onManualImport={() => onNavigate("calendar-import")} />
       ) : <section className="calendar-shell">
         <section className="calendar-toolbar" aria-label="Kalendersteuerung">
           <div className="calendar-toolbar-navigation">

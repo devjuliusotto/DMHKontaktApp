@@ -1,10 +1,10 @@
-import { CalendarDays, Files, KeyRound, Mail, ShieldCheck, Trash2, UserRound } from "lucide-react";
+import { CalendarDays, Files, House, KeyRound, ShieldCheck, Trash2, UserRound } from "lucide-react";
 import { t } from "../i18n";
 
-export type Page = "contacts" | "calendar" | "documents" | "passwords" | "authenticator" | "services" | "import" | "contact-import" | "calendar-import" | "export" | "feature-development" | "m365" | "trash" | "settings" | "appearance" | "simple-import" | "backup" | "synchronizations" | "extras";
+export type Page = "welcome" | "contacts" | "calendar" | "documents" | "passwords" | "authenticator" | "services" | "import" | "contact-import" | "calendar-import" | "export" | "feature-development" | "m365" | "trash" | "settings" | "appearance" | "simple-import" | "backup" | "synchronizations" | "recovery";
 
 const items: Array<{ page: Page; label: string; icon: typeof UserRound; group: "main" | "tools" }> = [
-  { page: "extras", label: "E-Mail-Konfig.", icon: Mail, group: "main" },
+  { page: "welcome", label: "Startseite", icon: House, group: "main" },
   { page: "contacts", label: t.contacts, icon: UserRound, group: "main" },
   { page: "calendar", label: "Kalender", icon: CalendarDays, group: "main" },
   { page: "passwords", label: "Passwörter", icon: KeyRound, group: "main" },

@@ -149,6 +149,18 @@ export function createAutomaticBackup(backup: BackupData, snapshot = false): Pro
   return invoke("create_automatic_backup", { backup, snapshot });
 }
 
+export function createRecoveryCheckpoint(backup: BackupData): Promise<void> {
+  return invoke("create_recovery_checkpoint", { backup });
+}
+
+export function getRecoveryArchiveStatus(): Promise<import("../types/contact").RecoveryArchiveStatus> {
+  return invoke("get_recovery_archive_status");
+}
+
+export function restoreRecoveryCheckpoint(currentBackup: BackupData): Promise<import("../types/contact").RecoveryRestoreResult> {
+  return invoke("restore_recovery_checkpoint", { currentBackup });
+}
+
 export function createAutomaticPasswordBackup(snapshot = false): Promise<void> {
   return invoke("create_automatic_password_backup", { snapshot });
 }

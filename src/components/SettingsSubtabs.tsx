@@ -1,7 +1,7 @@
-import { ArchiveRestore, Home, Mail, Palette, Printer, Settings, SlidersHorizontal } from "lucide-react";
+import { ArchiveRestore, HeartPulse, Home, Mail, Palette, Printer, RefreshCw, Settings, SlidersHorizontal } from "lucide-react";
 import type { Page } from "./Sidebar";
 
-export type SettingsSection = "general" | "mail" | "printer" | "appearance" | "import" | "backup" | "sync" | "advanced" | "trash";
+export type SettingsSection = "general" | "mail" | "printer" | "appearance" | "import" | "backup" | "sync" | "recovery" | "advanced" | "trash";
 
 const items: Array<{ page: Page; section: SettingsSection; label: string; icon: typeof Settings; activePages?: Page[] }> = [
   { page: "settings", section: "general", label: "Allgemein", icon: Settings },
@@ -9,6 +9,8 @@ const items: Array<{ page: Page; section: SettingsSection; label: string; icon: 
   { page: "settings", section: "printer", label: "Drucker", icon: Printer },
   { page: "appearance", section: "appearance", label: "Erscheinungsbild", icon: Palette },
   { page: "backup", section: "backup", label: "Sicherung", icon: ArchiveRestore },
+  { page: "synchronizations", section: "sync", label: "Exchange-Sync", icon: RefreshCw, activePages: ["synchronizations", "m365"] },
+  { page: "recovery", section: "recovery", label: "Wiederherstellung", icon: HeartPulse },
   { page: "feature-development", section: "advanced", label: "Erweitert", icon: SlidersHorizontal }
 ];
 
@@ -36,7 +38,7 @@ export function SettingsSubtabs({ activePage, activeSection, onNavigate }: Setti
           </button>
         );
       })}
-      <button className="settings-subtab settings-subtab-home" onClick={() => onNavigate("contacts")} type="button">
+      <button className="settings-subtab settings-subtab-home" onClick={() => onNavigate("welcome")} type="button">
         <Home size={19} />
         <span>Zur Startseite</span>
       </button>
