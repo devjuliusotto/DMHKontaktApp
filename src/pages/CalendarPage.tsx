@@ -316,6 +316,7 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
       try {
         if ("__TAURI_INTERNALS__" in window) {
           let storedEvents = await listCalendarEvents();
+          let migratedLegacyEvents = false;
           // One-time migration for calendars created by earlier app versions.
           if (storedEvents.length === 0) {
             const legacy = JSON.parse(localStorage.getItem(calendarStorageKey) ?? "[]") as unknown;
@@ -323,11 +324,16 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
               await mergeCalendarEvents(legacy as CalendarEvent[]);
               storedEvents = await listCalendarEvents();
               localStorage.removeItem(calendarStorageKey);
+              migratedLegacyEvents = true;
             }
           }
           const normalized = storedEvents.map(normalizeEvent);
           eventsRef.current = normalized;
           setEvents(normalized);
+          // Only announce the migration after SQLite contains every event.
+          // This makes the first Exchange synchronization see the same data as
+          // the calendar view, even on a very large imported calendar.
+          if (migratedLegacyEvents) window.dispatchEvent(new Event(calendarChangedEventName));
         } else {
           const saved = localStorage.getItem(calendarStorageKey);
           if (saved) {
@@ -510,6 +516,12 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
       void (async () => {
         if (changed.length > 0) await saveCalendarEvents(changed);
         if (removedIds.length > 0) await moveCalendarEventsToTrash(removedIds);
+        // The automatic sync reads from SQLite. Tell it about the change only
+        // once the database write has completed, otherwise a fast sync can
+        // inspect the old state and miss a newly created appointment.
+        if (changed.length > 0 || removedIds.length > 0) {
+          window.dispatchEvent(new Event(calendarChangedEventName));
+        }
       })().catch(() => setMessage("Kalenderänderung konnte nicht sicher gespeichert werden."));
     } else {
       localStorage.setItem(calendarStorageKey, JSON.stringify(sorted));
@@ -905,6 +917,31 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
     setExchangePrompt(exchangeManagement);
   };
 
+  const refreshExchangeCalendarSync = async () => {
+    setExchangeSyncBusy(true);
+    try {
+      // Rebuild the complete, selected calendar configuration before a manual
+      // refresh. This also repairs an incomplete configuration left by an
+      // older release without asking the user to configure every source again.
+      await enableCompleteAutomaticMicrosoft365Sync(true);
+      window.dispatchEvent(new Event(calendarChangedEventName));
+      setExchangeManagement(null);
+      setActionResult({
+        title: "Exchange-Abgleich gestartet",
+        summary: "Der Kalender wird jetzt mit Exchange abgeglichen. Neue und geänderte Termine werden bevorzugt übertragen.",
+        tone: "success"
+      });
+    } catch (error) {
+      setActionResult({
+        title: "Exchange-Abgleich nicht gestartet",
+        summary: `Die Kalenderdaten wurden nicht verändert: ${error}`,
+        tone: "error"
+      });
+    } finally {
+      setExchangeSyncBusy(false);
+    }
+  };
+
   return (
     <div className="page calendar-page">
       <header className="page-header">
@@ -989,7 +1026,7 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
             <p className="action-result-summary">Ihr Kalender ist mit <strong>{exchangeManagement.account.email || exchangeManagement.account.userPrincipalName}</strong> verbunden.</p>
             <p>Neue Änderungen werden automatisch mit Exchange abgeglichen.</p>
             <div className="button-row action-result-actions">
-              <button type="button" onClick={() => { window.dispatchEvent(new Event(calendarChangedEventName)); setExchangeManagement(null); }}>Jetzt aktualisieren</button>
+              <button type="button" onClick={() => void refreshExchangeCalendarSync()} disabled={exchangeSyncBusy}>{exchangeSyncBusy ? "Wird abgeglichen …" : "Jetzt aktualisieren"}</button>
               <button type="button" onClick={changeExchangeAccount}>Anderes Konto</button>
               <button className="primary" type="button" onClick={() => { setExchangeManagement(null); onNavigate("synchronizations"); }}>Synchronisierung verwalten</button>
             </div>

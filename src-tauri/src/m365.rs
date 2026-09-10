@@ -1967,10 +1967,67 @@ struct Microsoft365SyncPlan {
     operations: Vec<PlannedOperation>,
 }
 
-fn push_operation(operations: &mut Vec<PlannedOperation>, operation: PlannedOperation) {
-    if operations.len() < 500 {
-        operations.push(operation);
+const MAX_CONTACT_OPERATIONS_PER_SYNC: usize = 250;
+const MAX_CALENDAR_OPERATIONS_PER_SYNC: usize = 250;
+
+fn operation_limit(operation: &PlannedOperation) -> usize {
+    match operation.change.kind.as_str() {
+        "Kalender" => MAX_CALENDAR_OPERATIONS_PER_SYNC,
+        _ => MAX_CONTACT_OPERATIONS_PER_SYNC,
     }
+}
+
+fn operation_priority(operation: &PlannedOperation) -> u8 {
+    match operation.change.action.as_str() {
+        // Writes from the app must not wait behind a large first import. This
+        // makes a newly created appointment reach Exchange on the next run.
+        "createRemote" | "updateRemote" | "deleteRemote" => 3,
+        "createLocal" | "updateLocal" | "deleteLocal" => 2,
+        "link" => 1,
+        _ => 0,
+    }
+}
+
+fn push_operation(operations: &mut Vec<PlannedOperation>, operation: PlannedOperation) {
+    let kind = operation.change.kind.as_str();
+    let limit = operation_limit(&operation);
+    let matching_count = operations
+        .iter()
+        .filter(|candidate| candidate.change.kind == kind)
+        .count();
+    if matching_count < limit {
+        operations.push(operation);
+        return;
+    }
+
+    // Keep the batch bounded for large mailboxes, but allow a real write to
+    // replace a harmless link/conflict that was planned earlier in the pass.
+    let new_priority = operation_priority(&operation);
+    let replacement = operations
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| candidate.change.kind == kind)
+        .min_by_key(|(_, candidate)| operation_priority(candidate));
+    if let Some((index, candidate)) = replacement {
+        if new_priority > operation_priority(candidate) {
+            operations[index] = operation;
+        }
+    }
+}
+
+fn prioritize_operations(operations: &mut [PlannedOperation]) {
+    // A calendar change is normally the interaction the user has just made.
+    // Execute it before any long contact-import backlog so it reaches Exchange
+    // within the same automatic cycle.
+    operations.sort_by(|left, right| {
+        operation_priority(right)
+            .cmp(&operation_priority(left))
+            .then_with(|| {
+                let left_is_calendar = usize::from(left.change.kind == "Kalender");
+                let right_is_calendar = usize::from(right.change.kind == "Kalender");
+                right_is_calendar.cmp(&left_is_calendar)
+            })
+    });
 }
 
 async fn build_m365_sync_plan(
@@ -2001,8 +2058,17 @@ async fn build_m365_sync_plan(
         .iter()
         .map(|contact| (local_contact_key(contact), contact))
         .collect();
-    let local_events = crate::read_calendar_events(&crate::open_db(app)?, false)?;
-    let deleted_local_events = crate::read_calendar_events(&crate::open_db(app)?, true)?;
+    let mut local_events = crate::read_calendar_events(&crate::open_db(app)?, false)?;
+    // A first import can contain tens of thousands of historical entries. A
+    // newly saved appointment has to be considered before that backlog.
+    local_events.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| right.starts_at.cmp(&left.starts_at))
+    });
+    let mut deleted_local_events = crate::read_calendar_events(&crate::open_db(app)?, true)?;
+    deleted_local_events.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
     let mut operations = Vec::new();
     let mut remote_contacts = 0usize;
     let mut remote_events = 0usize;
@@ -2626,6 +2692,8 @@ async fn build_m365_sync_plan(
             }
         }
     }
+
+    prioritize_operations(&mut operations);
 
     let create_in_m365 = operations
         .iter()
@@ -3726,6 +3794,87 @@ mod tests {
             recurrence_master_id: None,
             recurrence_id: None,
         }
+    }
+
+    fn planned_operation(kind: &str, action: &str, id: usize) -> PlannedOperation {
+        PlannedOperation {
+            change: Microsoft365SyncChange {
+                id: format!("{kind}-{id}"),
+                kind: kind.to_string(),
+                action: action.to_string(),
+                source_id: "source".to_string(),
+                source_name: "Testquelle".to_string(),
+                title: "Test".to_string(),
+                detail: String::new(),
+                local_summary: None,
+                remote_summary: None,
+            },
+            source: calendar_source("source"),
+            payload: PlannedPayload::Calendar {
+                local: Some(calendar_event(&format!("event-{id}"))),
+                remote: None,
+            },
+        }
+    }
+
+    #[test]
+    fn calendar_writes_are_not_starved_by_a_large_contact_queue() {
+        let mut operations = Vec::new();
+        for id in 0..MAX_CONTACT_OPERATIONS_PER_SYNC {
+            push_operation(&mut operations, planned_operation("Kontakt", "link", id));
+        }
+        for id in 0..MAX_CALENDAR_OPERATIONS_PER_SYNC {
+            push_operation(
+                &mut operations,
+                planned_operation("Kalender", "createRemote", id),
+            );
+        }
+
+        assert_eq!(
+            operations
+                .iter()
+                .filter(|operation| operation.change.kind == "Kontakt")
+                .count(),
+            MAX_CONTACT_OPERATIONS_PER_SYNC
+        );
+        assert_eq!(
+            operations
+                .iter()
+                .filter(|operation| operation.change.kind == "Kalender")
+                .count(),
+            MAX_CALENDAR_OPERATIONS_PER_SYNC
+        );
+    }
+
+    #[test]
+    fn a_calendar_write_replaces_a_low_priority_link_in_a_full_batch() {
+        let mut operations = Vec::new();
+        for id in 0..MAX_CALENDAR_OPERATIONS_PER_SYNC {
+            push_operation(&mut operations, planned_operation("Kalender", "link", id));
+        }
+        push_operation(
+            &mut operations,
+            planned_operation("Kalender", "createRemote", 999),
+        );
+
+        assert!(operations.iter().any(|operation| {
+            operation.change.kind == "Kalender"
+                && operation.change.action == "createRemote"
+                && operation.change.id == "Kalender-999"
+        }));
+    }
+
+    #[test]
+    fn calendar_writes_run_before_a_contact_backlog() {
+        let mut operations = vec![
+            planned_operation("Kontakt", "createRemote", 1),
+            planned_operation("Kalender", "link", 2),
+            planned_operation("Kalender", "createRemote", 3),
+        ];
+        prioritize_operations(&mut operations);
+
+        assert_eq!(operations[0].change.kind, "Kalender");
+        assert_eq!(operations[0].change.action, "createRemote");
     }
 
     #[test]
