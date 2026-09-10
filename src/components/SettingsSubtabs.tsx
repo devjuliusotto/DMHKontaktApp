@@ -1,4 +1,6 @@
 import { ArchiveRestore, HeartPulse, Home, Mail, Palette, Printer, RefreshCw, Settings, SlidersHorizontal } from "lucide-react";
+import { getVersion } from "@tauri-apps/api/app";
+import { useEffect, useState } from "react";
 import type { Page } from "./Sidebar";
 
 export type SettingsSection = "general" | "mail" | "printer" | "appearance" | "import" | "backup" | "sync" | "recovery" | "advanced" | "trash";
@@ -21,6 +23,23 @@ interface SettingsSubtabsProps {
 }
 
 export function SettingsSubtabs({ activePage, activeSection, onNavigate }: SettingsSubtabsProps) {
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void getVersion()
+      .then((version) => {
+        if (active) {
+          setAppVersion(version);
+        }
+      })
+      .catch(() => undefined);
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
   return (
     <nav className="settings-subtabs" aria-label="Unterseiten der EDV Tools">
       {items.map((item) => {
@@ -42,6 +61,7 @@ export function SettingsSubtabs({ activePage, activeSection, onNavigate }: Setti
         <Home size={19} />
         <span>Zur Startseite</span>
       </button>
+      {appVersion && <small className="settings-app-version">DMH Backup v{appVersion}</small>}
     </nav>
   );
 }

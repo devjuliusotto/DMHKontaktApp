@@ -1,12 +1,33 @@
 import { CheckCircle2, CircleAlert, DownloadCloud, LoaderCircle } from "lucide-react";
 import { useEffect, useState } from "react";
+import { isTauri } from "@tauri-apps/api/core";
 import { check } from "@tauri-apps/plugin-updater";
 import { restartApp } from "../services/db";
 
 type AvailableUpdate = NonNullable<Awaited<ReturnType<typeof check>>>;
 type UpdateStatus = "available" | "downloading" | "installing" | "installed" | "error";
 
+export const updateAvailableEvent = "dmh:update-available";
 const dismissedUpdateKey = "agendakontakte.dismissedUpdateVersion";
+const retryDelayMs = 60_000;
+const regularCheckDelayMs = 30 * 60_000;
+const snoozeDelayMs = 4 * 60 * 60_000;
+
+function updateIsSnoozed(version: string): boolean {
+  const rawValue = localStorage.getItem(dismissedUpdateKey);
+  if (!rawValue) {
+    return false;
+  }
+
+  try {
+    const snooze = JSON.parse(rawValue) as { version?: unknown; until?: unknown };
+    return snooze.version === version && typeof snooze.until === "number" && snooze.until > Date.now();
+  } catch {
+    // Earlier versions stored only the version. Treat it as expired so a user
+    // can never lose an important update permanently by clicking "Später".
+    return false;
+  }
+}
 
 export function UpdateNotifier() {
   const [availableUpdate, setAvailableUpdate] = useState<AvailableUpdate | null>(null);
@@ -15,25 +36,69 @@ export function UpdateNotifier() {
   const [progress, setProgress] = useState<number | null>(null);
 
   useEffect(() => {
+    // The updater is available only in the installed desktop app. Do not show
+    // a false warning while EDV tests the Vite preview in a browser.
+    if (!isTauri()) {
+      return;
+    }
+
     let cancelled = false;
-    const timer = window.setTimeout(() => {
-      check()
-        .then((nextUpdate) => {
-          if (!nextUpdate || cancelled) {
-            return;
-          }
-          if (localStorage.getItem(dismissedUpdateKey) === nextUpdate.version) {
-            return;
-          }
+    let timer: number | undefined;
+
+    const schedule = (delay: number) => {
+      timer = window.setTimeout(runCheck, delay);
+    };
+
+    const runCheck = async () => {
+      try {
+        const nextUpdate = await check();
+        if (cancelled) {
+          return;
+        }
+
+        if (nextUpdate && !updateIsSnoozed(nextUpdate.version)) {
           setAvailableUpdate(nextUpdate);
           setStatus("available");
-        })
-        .catch(() => undefined);
-    }, 1500);
+        }
+        schedule(regularCheckDelayMs);
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        console.warn("DMH Backup update check failed:", error);
+        schedule(retryDelayMs);
+      }
+    };
+
+    const handleOnline = () => {
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+      }
+      void runCheck();
+    };
+
+    schedule(1500);
+    window.addEventListener("online", handleOnline);
+    const handleManualUpdate = (event: Event) => {
+      const detail = (event as CustomEvent<{ force?: boolean; update?: AvailableUpdate }>).detail;
+      const nextUpdate = detail?.update;
+      if (!nextUpdate || (!detail.force && updateIsSnoozed(nextUpdate.version))) {
+        return;
+      }
+      setAvailableUpdate(nextUpdate);
+      setStatus("available");
+      setMessage("");
+      setProgress(null);
+    };
+    window.addEventListener(updateAvailableEvent, handleManualUpdate);
 
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+      }
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener(updateAvailableEvent, handleManualUpdate);
     };
   }, []);
 
@@ -42,7 +107,10 @@ export function UpdateNotifier() {
   }
 
   const dismiss = () => {
-    localStorage.setItem(dismissedUpdateKey, availableUpdate.version);
+    localStorage.setItem(dismissedUpdateKey, JSON.stringify({
+      version: availableUpdate.version,
+      until: Date.now() + snoozeDelayMs,
+    }));
     setAvailableUpdate(null);
   };
 

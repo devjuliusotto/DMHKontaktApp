@@ -36,7 +36,7 @@ import {
   type CalendarAutomaticSyncStatus
 } from "./utils/automaticCalendarSync";
 import { enableCompleteAutomaticMicrosoft365Sync } from "./utils/microsoft365SyncConfig";
-import { dataSectionVisibilityChangedEventName, readHiddenDataSections, setDataSectionHidden, type DataSection } from "./utils/dataSectionVisibility";
+import { dataSectionVisibilityChangedEventName, readHiddenDataSections, type DataSection } from "./utils/dataSectionVisibility";
 
 const DataTransferPage = lazy(() =>
   import("./pages/DataTransferPage").then((module) => ({ default: module.DataTransferPage }))
@@ -131,12 +131,6 @@ export default function App() {
 
   const changeFeatureAvailability = (feature: AppFeature, enabled: boolean) => {
     setFeatureAvailability(setFeatureOverride(feature, enabled));
-  };
-
-  const hideDataSection = (section: DataSection) => {
-    setDataSectionHidden(section, true);
-    setHiddenDataSections(readHiddenDataSections());
-    applyNavigation("welcome");
   };
 
   const runAutomaticBackup = useCallback(async (snapshot = false): Promise<void> => {
@@ -280,7 +274,7 @@ export default function App() {
       void runAutomaticBackup().catch(() => {
         // Backup failures must not interrupt normal contact/calendar work.
       });
-    }, 15_000);
+    }, 5 * 60_000);
     const recoveryCheckpointInterval = window.setInterval(() => {
       void runRecoveryCheckpoint().catch(() => {
         // The last valid recovery point remains available if this attempt fails.
@@ -368,7 +362,7 @@ export default function App() {
         {settingsAreaOpen && <SettingsSubtabs activePage={page} activeSection={settingsSection} onNavigate={navigate} />}
         <main className="content">
           {page === "welcome" && <WelcomePage onNavigate={navigate} />}
-          {page === "contacts" && !hiddenDataSections.includes("contacts") && <ContactsPage onNavigate={navigate} onHideSection={() => hideDataSection("contacts")} />}
+          {page === "contacts" && !hiddenDataSections.includes("contacts") && <ContactsPage onNavigate={navigate} />}
           {page === "calendar" && !hiddenDataSections.includes("calendar") && (
             <CalendarPage advancedMode={advancedCalendar} onAdvancedModeChange={changeAdvancedCalendar} onNavigate={navigate} />
           )}

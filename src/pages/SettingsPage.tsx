@@ -2,8 +2,10 @@ import { useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent 
 import { AlertTriangle, CheckCircle2, ChevronDown, Download, Eye, EyeOff, Mail, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { PrinterSettings } from "../components/PrinterSettings";
 import { StatusMessage } from "../components/StatusMessage";
+import { updateAvailableEvent } from "../components/UpdateNotifier";
 import type { SettingsSection } from "../components/SettingsSubtabs";
 import type { Page } from "../components/Sidebar";
+import { check } from "@tauri-apps/plugin-updater";
 import {
   getAppSetting,
   importOutlookAccount,
@@ -39,6 +41,7 @@ const settingsSearchItems: SettingsSearchItem[] = [
   { id: "backup", label: "Sicherung öffnen", description: "Sicherung → Öffnen", keywords: "sicherung backup daten wiederherstellen export", page: "backup", section: "backup" },
   { id: "appearance", label: "Erscheinungsbild öffnen", description: "Erscheinungsbild → Darstellung", keywords: "erscheinungsbild thema farbe dunkel hell akzent", page: "appearance", section: "appearance" },
   { id: "advanced", label: "Optionale Bereiche", description: "Erweitert → optionale Bereiche", keywords: "erweitert optional 2fa passwörter dokumente", page: "feature-development", section: "advanced" },
+  { id: "update", label: "App-Aktualisierung", description: "Allgemein → Nach Updates suchen", keywords: "update aktualisierung neue version github", page: "settings", section: "general" },
   { id: "admin-tools", label: "Admin-Werkzeuge", description: "Erweitert → Wartung und Wiederherstellung", keywords: "admin zurücksetzen wiederherstellen wartung app löschen", page: "feature-development", section: "advanced", adminOnly: true }
 ];
 
@@ -108,6 +111,28 @@ export function SettingsPage({ section = "general", onNavigate = () => undefined
       setConfirmDeletions(previous);
       setMessageType("error");
       setMessage(`Einstellung konnte nicht gespeichert werden: ${error}`);
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const checkForAppUpdate = async () => {
+    setBusyAction("app-update");
+    setMessage("");
+    try {
+      const update = await check();
+      if (!update) {
+        setMessageType("success");
+        setMessage("DMH Backup ist bereits auf dem neuesten Stand.");
+        return;
+      }
+      window.dispatchEvent(new CustomEvent(updateAvailableEvent, { detail: { force: true, update } }));
+      setMessageType("info");
+      setMessage(`Version ${update.version} ist verfügbar. Die Aktualisierung kann jetzt gestartet werden.`);
+    } catch (error) {
+      setMessageType("error");
+      setMessage("Aktualisierungen konnten gerade nicht geprüft werden. Bitte Internetverbindung prüfen und später erneut versuchen.");
+      console.warn("DMH Backup manual update check failed:", error);
     } finally {
       setBusyAction(null);
     }
@@ -329,6 +354,21 @@ export function SettingsPage({ section = "general", onNavigate = () => undefined
                 />
                 <span>{confirmDeletions ? "Ein" : "Aus"}</span>
               </label>
+            </article>
+          </section>
+
+          <section className="settings-overview-section">
+            <h3>DMH Backup</h3>
+            <article className="settings-overview-card">
+              <span className="settings-overview-icon"><Download size={27} aria-hidden="true" /></span>
+              <div>
+                <h3>App-Aktualisierung</h3>
+                <p>Neue Versionen werden automatisch angezeigt. Die EDV kann hier zusätzlich manuell prüfen.</p>
+              </div>
+              <button type="button" onClick={() => void checkForAppUpdate()} disabled={busyAction !== null}>
+                <RefreshCw size={19} className={busyAction === "app-update" ? "spin" : ""} />
+                {busyAction === "app-update" ? "Wird geprüft …" : "Nach Updates suchen"}
+              </button>
             </article>
           </section>
 

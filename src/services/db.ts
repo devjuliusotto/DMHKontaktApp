@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CalendarEvent, OutlookCalendarExportResult, OutlookCalendarPreview, OutlookOneTimeCalendarImportResult, ThunderbirdCalendarImportResult } from "../types/calendar";
+import type { CalendarDirectImportResult, CalendarEvent, CalendarEventMergeResult, OutlookCalendarExportResult, OutlookCalendarPreview, OutlookOneTimeCalendarImportResult, ThunderbirdCalendarImportResult } from "../types/calendar";
 import type {
   BackupData,
   AutomaticBackupRestoreResult,
@@ -73,6 +73,42 @@ export function listContacts(search = "", groupId?: number): Promise<Contact[]> 
   return invoke("list_contacts", { search, groupId });
 }
 
+export function listCalendarEvents(): Promise<CalendarEvent[]> {
+  return invoke("list_calendar_events");
+}
+
+export function listDeletedCalendarEvents(): Promise<CalendarEvent[]> {
+  return invoke("list_deleted_calendar_events");
+}
+
+export function mergeCalendarEvents(events: CalendarEvent[]): Promise<CalendarEventMergeResult> {
+  return invoke("merge_calendar_events", { events });
+}
+
+export function importOutlookClassicAppointmentsToCalendar(): Promise<CalendarDirectImportResult> {
+  return invoke("import_outlook_classic_appointments_to_calendar");
+}
+
+export function importThunderbirdCalendarsToCalendar(): Promise<CalendarDirectImportResult> {
+  return invoke("import_thunderbird_calendars_to_calendar");
+}
+
+export function saveCalendarEvents(events: CalendarEvent[]): Promise<void> {
+  return invoke("save_calendar_events", { events });
+}
+
+export function moveCalendarEventsToTrash(ids: string[]): Promise<number> {
+  return invoke("move_calendar_events_to_trash", { ids });
+}
+
+export function restoreCalendarEvents(ids: string[]): Promise<number> {
+  return invoke("restore_calendar_events", { ids });
+}
+
+export function purgeDeletedCalendarEvents(ids: string[]): Promise<number> {
+  return invoke("purge_deleted_calendar_events", { ids });
+}
+
 export function listDeletedContacts(): Promise<Contact[]> {
   return invoke("list_deleted_contacts");
 }
@@ -139,6 +175,10 @@ export function undoLastImport(): Promise<number> {
 
 export function getBackupData(): Promise<BackupData> {
   return invoke("get_backup_data");
+}
+
+export function getSyncBackupData(): Promise<BackupData> {
+  return invoke("get_sync_backup_data");
 }
 
 export function restoreBackup(backup: BackupData): Promise<void> {

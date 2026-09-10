@@ -1,17 +1,16 @@
 import {
   applyMicrosoft365Sync,
-  createAutomaticBackup,
-  createAutomaticPasswordBackup,
   getAppSetting,
-  getBackupData,
+  getSyncBackupData,
   getMicrosoft365ConnectionStatus,
+  moveCalendarEventsToTrash,
+  saveCalendarEvents,
   setAppSetting
 } from "../services/db";
 import type { CalendarEvent } from "../types/calendar";
 import type { Microsoft365SyncHistoryEntry, Microsoft365SyncResult } from "../types/m365";
 import { parseSyncConfig, type SyncConfig } from "../types/sync";
-import { addBrowserDataToBackup } from "./backup";
-import { calendarStorageKey, calendarTrashStorageKey, mergeImportedCalendarCategories } from "./calendar";
+import { mergeImportedCalendarCategories } from "./calendar";
 
 export const synchronizationConfigKey = "synchronization_config_v1";
 export const synchronizationHistoryKey = "synchronization_history_v1";
@@ -92,24 +91,10 @@ function parseHistory(raw: string | null): Microsoft365SyncHistoryEntry[] {
   }
 }
 
-function applyCalendarChanges(calendarUpserts: CalendarEvent[], calendarDeletes: string[]): void {
+async function applyCalendarChanges(calendarUpserts: CalendarEvent[], calendarDeletes: string[]): Promise<void> {
   if (calendarUpserts.length === 0 && calendarDeletes.length === 0) return;
-  const current = JSON.parse(localStorage.getItem(calendarStorageKey) ?? "[]") as CalendarEvent[];
-  const deletedIds = new Set(calendarDeletes);
-  const removed = current
-    .filter((event) => deletedIds.has(event.id))
-    .map((event) => ({ ...event, deletedAt: new Date().toISOString() }));
-  if (removed.length > 0) {
-    const trash = JSON.parse(localStorage.getItem(calendarTrashStorageKey) ?? "[]") as CalendarEvent[];
-    const removedIds = new Set(removed.map((event) => event.id));
-    localStorage.setItem(calendarTrashStorageKey, JSON.stringify([
-      ...removed,
-      ...trash.filter((event) => !removedIds.has(event.id))
-    ]));
-  }
-  const byId = new Map(current.filter((event) => !deletedIds.has(event.id)).map((event) => [event.id, event]));
-  for (const event of calendarUpserts) byId.set(event.id, event);
-  localStorage.setItem(calendarStorageKey, JSON.stringify(Array.from(byId.values())));
+  if (calendarUpserts.length > 0) await saveCalendarEvents(calendarUpserts);
+  if (calendarDeletes.length > 0) await moveCalendarEventsToTrash(calendarDeletes);
   mergeImportedCalendarCategories(calendarUpserts);
   window.dispatchEvent(new Event(calendarStorageUpdatedEventName));
 }
@@ -139,10 +124,10 @@ export async function runAutomaticCalendarSync(trigger: "open" | "change" | "pol
     return { state: "error", message: "Die Änderung wurde lokal gespeichert. Microsoft 365 ist momentan nicht verbunden." };
   }
 
-  const backup = addBrowserDataToBackup(await getBackupData());
-  // Every automatic write starts from a fresh recoverable checkpoint.
-  await createAutomaticBackup(backup, true);
-  await createAutomaticPasswordBackup(true);
+  // Calendar records are read directly by the native synchronizer. This keeps
+  // large calendars out of the WebView and avoids a second full backup on each
+  // 30-second synchronization cycle.
+  const backup = await getSyncBackupData();
   const result = await applyMicrosoft365Sync({
     direction: config.direction,
     base: config.base,
@@ -159,7 +144,7 @@ export async function runAutomaticCalendarSync(trigger: "open" | "change" | "pol
     backup
   });
 
-  applyCalendarChanges(result.calendarUpserts, result.calendarDeletes);
+  await applyCalendarChanges(result.calendarUpserts, result.calendarDeletes);
   if (result.created + result.updated + result.deleted > 0) {
     window.dispatchEvent(new Event(m365DataUpdatedEventName));
   }

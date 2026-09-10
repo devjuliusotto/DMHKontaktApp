@@ -9,6 +9,14 @@ interface EasyImportDialogProps {
   onImported: (result: EasyImportResult) => void | Promise<void>;
 }
 
+function importErrorMessage(error: unknown): string {
+  const raw = String(error);
+  if (raw.includes("QuotaExceededError") || raw.includes("exceeded the quota")) {
+    return "Der alte Zwischenspeicher dieses PCs ist voll. Bitte installieren Sie die aktuelle DMH-Backup-Version; große Kalender werden dort sicher in der lokalen Datenbank gespeichert.";
+  }
+  return "Der Import konnte nicht abgeschlossen werden. Ihre vorhandenen Daten wurden nicht verändert. Bitte versuchen Sie es erneut; bleibt das Problem bestehen, informieren Sie die EDV.";
+}
+
 export function EasyImportDialog({ kind, open, onClose, onImported }: EasyImportDialogProps) {
   const [busyPlatform, setBusyPlatform] = useState<EasyImportPlatform | null>(null);
   const [result, setResult] = useState<EasyImportResult | null>(null);
@@ -35,7 +43,7 @@ export function EasyImportDialog({ kind, open, onClose, onImported }: EasyImport
       setResult(imported);
       await onImported(imported);
     } catch (importError) {
-      setError(String(importError));
+      setError(importErrorMessage(importError));
     } finally {
       setBusyPlatform(null);
     }

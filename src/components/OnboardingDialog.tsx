@@ -15,9 +15,9 @@ import {
 import { useState } from "react";
 import {
   getMicrosoft365ConnectionStatus,
-  importOutlookClassicAppointmentsOnce,
+  importOutlookClassicAppointmentsToCalendar,
   importSelectedOutlookClassicContacts,
-  importThunderbirdCalendarsOnce,
+  importThunderbirdCalendarsToCalendar,
   importThunderbirdContactsOnce,
   listMicrosoft365SyncSources,
   previewOutlookClassicAppointments,
@@ -27,9 +27,7 @@ import {
 import type { OutlookCalendarPreview } from "../types/calendar";
 import type { OutlookContactImportPreview, ThunderbirdDataPreview } from "../types/contact";
 import type { Microsoft365ConnectionStatus } from "../types/m365";
-import { calendarColorFromCategory, calendarStorageKey, mergeImportedCalendarCategories } from "../utils/calendar";
 import { calendarChangedEventName } from "../utils/automaticCalendarSync";
-import { mergeCalendarEventsExactly } from "../utils/calendarDuplicates";
 
 type OnboardingStage = "welcome" | "tour" | "import" | "finished";
 type ImportSelectionKey = "outlookContacts" | "outlookCalendars" | "thunderbirdContacts" | "thunderbirdCalendars";
@@ -89,7 +87,6 @@ function ImportChoiceCard({ checked, count, description, disabled = false, icon:
     </label>
   );
 }
-
 export function OnboardingDialog({ onComplete }: OnboardingDialogProps) {
   const [stage, setStage] = useState<OnboardingStage>("welcome");
   const [tourIndex, setTourIndex] = useState(0);
@@ -199,14 +196,9 @@ export function OnboardingDialog({ onComplete }: OnboardingDialogProps) {
 
     if (selection.outlookCalendars) {
       try {
-        const result = await importOutlookClassicAppointmentsOnce();
-        const stored = readStoredCalendarEvents();
-        const incoming = result.events.map((event) => ({ ...event, color: calendarColorFromCategory(event.category, event.color) }));
-        const merged = mergeCalendarEventsExactly(stored, incoming);
-        localStorage.setItem(calendarStorageKey, JSON.stringify(merged.events));
-        mergeImportedCalendarCategories(incoming);
-        summary.push(`${merged.imported} Outlook-Termine übernommen`);
-        calendarChanged = merged.imported > 0;
+        const result = await importOutlookClassicAppointmentsToCalendar();
+        summary.push(`${result.imported} Outlook-Termine übernommen`);
+        calendarChanged = result.imported > 0;
       } catch (error) { errors.push(`Outlook-Kalender: ${error}`); }
     }
 
@@ -219,13 +211,9 @@ export function OnboardingDialog({ onComplete }: OnboardingDialogProps) {
 
     if (selection.thunderbirdCalendars) {
       try {
-        const result = await importThunderbirdCalendarsOnce();
-        const incoming = result.events.map((event) => ({ ...event, color: calendarColorFromCategory(event.category, event.color) }));
-        const merged = mergeCalendarEventsExactly(readStoredCalendarEvents(), incoming);
-        localStorage.setItem(calendarStorageKey, JSON.stringify(merged.events));
-        mergeImportedCalendarCategories(incoming);
-        summary.push(`${merged.imported} Thunderbird-Termine übernommen`);
-        calendarChanged = calendarChanged || merged.imported > 0;
+        const result = await importThunderbirdCalendarsToCalendar();
+        summary.push(`${result.imported} Thunderbird-Termine übernommen`);
+        calendarChanged = calendarChanged || result.imported > 0;
       } catch (error) { errors.push(`Thunderbird-Kalender: ${error}`); }
     }
 
@@ -341,10 +329,4 @@ export function OnboardingDialog({ onComplete }: OnboardingDialogProps) {
       </section>
     </div>
   );
-}
-
-function readStoredCalendarEvents() {
-  const value: unknown = JSON.parse(localStorage.getItem(calendarStorageKey) ?? "[]");
-  if (!Array.isArray(value)) return [];
-  return value as import("../types/calendar").CalendarEvent[];
 }

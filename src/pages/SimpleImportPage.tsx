@@ -2,19 +2,9 @@ import { AlertTriangle, ArrowLeft, ArrowRight, Bird, CalendarDays, CalendarRange
 import { useState } from "react";
 import { OutlookContactImportDialog } from "../components/OutlookContactImportDialog";
 import { StatusMessage } from "../components/StatusMessage";
-import { importOutlookClassicAppointmentsOnce, importThunderbirdCalendarsOnce, importThunderbirdContactsOnce, previewOutlookClassicAppointments, undoLastOutlookContactImport } from "../services/db";
-import type { CalendarEvent, OutlookCalendarPreview } from "../types/calendar";
+import { importOutlookClassicAppointmentsToCalendar, importThunderbirdCalendarsToCalendar, importThunderbirdContactsOnce, previewOutlookClassicAppointments, undoLastOutlookContactImport } from "../services/db";
+import type { OutlookCalendarPreview } from "../types/calendar";
 import type { OutlookContactImportResult } from "../types/contact";
-import { calendarColorFromCategory, calendarStorageKey, mergeImportedCalendarCategories } from "../utils/calendar";
-import { mergeCalendarEventsExactly } from "../utils/calendarDuplicates";
-
-function storedCalendarEvents(): CalendarEvent[] {
-  const raw = localStorage.getItem(calendarStorageKey);
-  if (!raw) return [];
-  const value: unknown = JSON.parse(raw);
-  if (!Array.isArray(value)) throw new Error("Die lokal gespeicherten Kalenderdaten sind beschädigt.");
-  return value as CalendarEvent[];
-}
 
 function formatPreviewDate(value: string): string {
   const date = new Date(value);
@@ -107,21 +97,13 @@ export function SimpleImportPage({ embedded = false, onOpenFileImport }: SimpleI
     setMessageType("info");
     setMessage("Die angezeigten Outlook-Kalender werden importiert. Dies kann einige Minuten dauern …");
     try {
-      const result = await importOutlookClassicAppointmentsOnce();
-      const existing = storedCalendarEvents();
-      const normalizedIncoming = result.events.map((event) => ({
-        ...event,
-        color: calendarColorFromCategory(event.category, event.color)
-      }));
-      const merged = mergeCalendarEventsExactly(existing, normalizedIncoming);
-      localStorage.setItem(calendarStorageKey, JSON.stringify(merged.events));
-      const categoryResult = mergeImportedCalendarCategories(normalizedIncoming);
-      const duplicates = merged.skippedSameId + merged.skippedExactDuplicates;
+      const result = await importOutlookClassicAppointmentsToCalendar();
+      const duplicates = result.skippedSameId + result.skippedExactDuplicates;
       setMessageType("success");
       setMessage(
         result.found === 0
           ? "In den erreichbaren Outlook-Kalendern wurden keine Termine gefunden."
-          : `${merged.imported} von ${result.found} Outlook-Terminen wurden einmalig übernommen. ${categoryResult.added + categoryResult.updated} Kategorie(n) mit Farbe wurden übernommen. ${duplicates} bereits vorhandene Termine mit gleichem Titel, Datum und Beginn sowie ${result.skippedInvalid} nicht lesbare Einträge wurden ausgelassen.`
+          : `${result.imported} von ${result.found} Outlook-Terminen wurden einmalig übernommen. ${duplicates} bereits vorhandene Termine mit gleichem Titel, Datum und Beginn sowie ${result.skippedInvalid} nicht lesbare Einträge wurden ausgelassen.`
       );
     } catch (error) {
       setMessageType("error");
@@ -179,22 +161,14 @@ export function SimpleImportPage({ embedded = false, onOpenFileImport }: SimpleI
     setMessageType("info");
     setMessage("Thunderbird-Kalender, Terminserien und Ausnahmen werden gelesen …");
     try {
-      const result = await importThunderbirdCalendarsOnce();
-      const existing = storedCalendarEvents();
-      const normalizedIncoming = result.events.map((event) => ({
-        ...event,
-        color: calendarColorFromCategory(event.category, event.color)
-      }));
-      const merged = mergeCalendarEventsExactly(existing, normalizedIncoming);
-      localStorage.setItem(calendarStorageKey, JSON.stringify(merged.events));
-      const categoryResult = mergeImportedCalendarCategories(normalizedIncoming);
-      const alreadyPresent = merged.skippedSameId + merged.skippedExactDuplicates;
+      const result = await importThunderbirdCalendarsToCalendar();
+      const alreadyPresent = result.skippedSameId + result.skippedExactDuplicates;
       setMessageType(result.found > 0 ? "success" : "info");
       setMessage(
         result.found === 0
-          ? `In ${result.calendars} Thunderbird-Kalendern wurden keine Termine gefunden.`
-          : `${merged.imported} neue Thunderbird-Termine oder Serien wurden übernommen. ${alreadyPresent} Termine mit gleichem Titel, Datum und Beginn waren bereits vorhanden. ${categoryResult.added + categoryResult.updated} Kategorie(n) mit Farbe wurden übernommen. `
-            + `${result.calendars} Kalender wurden berücksichtigt; ${result.skippedInvalid} nicht unterstützte oder beschädigte Einträge wurden ausgelassen.`
+          ? "In den erreichbaren Thunderbird-Kalendern wurden keine Termine gefunden."
+          : `${result.imported} neue Thunderbird-Termine oder Serien wurden übernommen. ${alreadyPresent} Termine mit gleichem Titel, Datum und Beginn waren bereits vorhanden. `
+            + `${result.skippedInvalid} nicht unterstützte oder beschädigte Einträge wurden ausgelassen.`
       );
     } catch (error) {
       setMessageType("error");

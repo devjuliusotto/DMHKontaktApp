@@ -14,11 +14,13 @@ import {
   getBackupData,
   importOutlookClassicAppointmentsOnce,
   importThunderbirdCalendarsOnce,
-  restoreBackup
+  listCalendarEvents,
+  restoreBackup,
+  saveCalendarEvents
 } from "../services/db";
 import type { BackupData } from "../types/contact";
 import type { CalendarEvent } from "../types/calendar";
-import { calendarColorFromCategory, calendarStorageKey, mergeImportedCalendarCategories, parseCalendarDate } from "../utils/calendar";
+import { calendarColorFromCategory, mergeImportedCalendarCategories, parseCalendarDate } from "../utils/calendar";
 import {
   applyCalendarReconciliation,
   compareCalendars,
@@ -137,7 +139,7 @@ export function CalendarReconciliationDialog({ open, events, onClose, onChanged 
       setUndoBackup(backup);
 
       const nextEvents = applyCalendarReconciliation(events, preview, conflictChoices);
-      localStorage.setItem(calendarStorageKey, JSON.stringify(nextEvents));
+      await saveCalendarEvents(nextEvents);
       mergeImportedCalendarCategories(nextEvents);
       writeCalendarReconciliationBaseline(platform, incoming);
 
@@ -176,7 +178,7 @@ export function CalendarReconciliationDialog({ open, events, onClose, onChanged 
     try {
       await restoreBackup(undoBackup);
       restoreBrowserDataFromBackup(undoBackup);
-      const restored = JSON.parse(localStorage.getItem(calendarStorageKey) ?? "[]") as CalendarEvent[];
+      const restored = await listCalendarEvents();
       setUndone(true);
       setResultMessage("Der letzte Kalenderabgleich wurde vollständig rückgängig gemacht.");
       try {

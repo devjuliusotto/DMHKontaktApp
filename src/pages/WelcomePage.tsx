@@ -2,9 +2,8 @@ import { ArrowRight, CalendarDays, Check, LoaderCircle, MailCheck, MailOpen, Use
 import { useEffect, useState } from "react";
 import { MigrationCaptureDialog } from "../components/MigrationCaptureDialog";
 import type { Page } from "../components/Sidebar";
-import { getMigrationCaptureStatus, listContacts } from "../services/db";
+import { getMigrationCaptureStatus, listCalendarEvents, listContacts } from "../services/db";
 import type { MigrationCaptureResult, MigrationCaptureStatus } from "../types/mail";
-import { calendarStorageKey } from "../utils/calendar";
 
 interface WelcomePageProps {
   onNavigate: (page: Page) => void;
@@ -20,18 +19,14 @@ export function WelcomePage({ onNavigate }: WelcomePageProps) {
 
   useEffect(() => {
     const loadStatus = async () => {
-      const [mailStatus, contacts] = await Promise.allSettled([
+      const [mailStatus, contacts, calendarEvents] = await Promise.allSettled([
         getMigrationCaptureStatus(),
-        listContacts()
+        listContacts(),
+        listCalendarEvents()
       ]);
       if (mailStatus.status === "fulfilled") setMigrationStatus(mailStatus.value);
       if (contacts.status === "fulfilled") setContactCount(contacts.value.length);
-      try {
-        const stored: unknown = JSON.parse(localStorage.getItem(calendarStorageKey) ?? "[]");
-        setCalendarCount(Array.isArray(stored) ? stored.length : 0);
-      } catch {
-        setCalendarCount(0);
-      }
+      if (calendarEvents.status === "fulfilled") setCalendarCount(calendarEvents.value.length);
       setStatusLoading(false);
     };
     void loadStatus();

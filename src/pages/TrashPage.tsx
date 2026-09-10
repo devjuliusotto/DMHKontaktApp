@@ -5,10 +5,13 @@ import { ActionResultDialog, type ActionResult } from "../components/ActionResul
 import { StatusMessage } from "../components/StatusMessage";
 import {
   getAppSetting,
+  listDeletedCalendarEvents,
   listDeletedContacts,
   listDeletedGroups,
   listDeletedVaultEntries,
   purgeDeletedItems,
+  purgeDeletedCalendarEvents,
+  restoreCalendarEvents,
   restoreContact,
   restoreGroup,
   restoreVaultEntry,
@@ -17,22 +20,9 @@ import {
 import type { CalendarEvent } from "../types/calendar";
 import type { Contact, Group } from "../types/contact";
 import type { VaultEntry } from "../types/vault";
-import { calendarStorageKey, calendarTrashStorageKey, formatCalendarDate } from "../utils/calendar";
+import { formatCalendarDate } from "../utils/calendar";
 import { collectedAddressesDeletedAtSettingKey, collectedAddressesHiddenSettingKey, displayName } from "../utils/contact";
 import { calendarChangedEventName } from "../utils/automaticCalendarSync";
-
-function readCalendarEvents(key: string): CalendarEvent[] {
-  try {
-    const value = JSON.parse(localStorage.getItem(key) ?? "[]") as CalendarEvent[];
-    return Array.isArray(value) ? value : [];
-  } catch {
-    return [];
-  }
-}
-
-function writeCalendarEvents(key: string, events: CalendarEvent[]) {
-  localStorage.setItem(key, JSON.stringify(events));
-}
 
 type TrashCategory = "calendar" | "contacts" | "groups" | "passwords" | "totp";
 type TrashPurgePeriod = "all" | "year" | "six-months" | "month" | "week" | "day" | "hour";
@@ -136,20 +126,22 @@ export function TrashPage() {
   }, [category, deletedCollectedAddressesAt, deletedContacts, deletedEvents, deletedGroups, deletedPasswords, deletedTotpEntries, purgePeriod]);
 
   const refresh = async () => {
-    setDeletedEvents(readCalendarEvents(calendarTrashStorageKey));
     if (!("__TAURI_INTERNALS__" in window)) {
+      setDeletedEvents([]);
       setDeletedContacts([]);
       setDeletedGroups([]);
       setDeletedVaultEntries([]);
       setDeletedCollectedAddressesAt(null);
       return;
     }
-    const [contacts, groups, vaultEntries, collectedAddressesDeletedAt] = await Promise.all([
+    const [events, contacts, groups, vaultEntries, collectedAddressesDeletedAt] = await Promise.all([
+      listDeletedCalendarEvents(),
       listDeletedContacts(),
       listDeletedGroups(),
       listDeletedVaultEntries(),
       getAppSetting(collectedAddressesDeletedAtSettingKey)
     ]);
+    setDeletedEvents(events);
     setDeletedContacts(contacts);
     setDeletedGroups(groups);
     setDeletedVaultEntries(vaultEntries);
@@ -160,16 +152,9 @@ export function TrashPage() {
     refresh().catch((error) => setMessage(`Papierkorb konnte nicht geladen werden: ${error}`));
   }, []);
 
-  const restoreDeletedEvent = (event: CalendarEvent) => {
-    const activeEvents = readCalendarEvents(calendarStorageKey).filter((entry) => entry.id !== event.id);
-    const restored = { ...event, deletedAt: null };
-    writeCalendarEvents(
-      calendarStorageKey,
-      [...activeEvents, restored].sort((left, right) => left.startsAt.localeCompare(right.startsAt))
-    );
-    const remaining = deletedEvents.filter((entry) => entry.id !== event.id);
-    writeCalendarEvents(calendarTrashStorageKey, remaining);
-    setDeletedEvents(remaining);
+  const restoreDeletedEvent = async (event: CalendarEvent) => {
+    await restoreCalendarEvents([event.id]);
+    setDeletedEvents((current) => current.filter((entry) => entry.id !== event.id));
     setActionResult({ title: "Termin wiederhergestellt", summary: `„${event.title || "Ohne Titel"}“ ist wieder im Kalender.`, items: [{ label: event.title || "Ohne Titel", detail: formatCalendarDate(event.startsAt) }], itemsLabel: "Wiederhergestellten Termin anzeigen", tone: "success" });
     window.dispatchEvent(new Event(calendarChangedEventName));
   };
@@ -278,15 +263,13 @@ export function TrashPage() {
           purgePreview.vaultEntryIds
         )
         : { contacts: 0, groups: 0, vaultEntries: 0 };
+      const purgedCalendarEvents = category === "calendar" && "__TAURI_INTERNALS__" in window
+        ? await purgeDeletedCalendarEvents(purgedEvents.map((event) => event.id))
+        : 0;
       if (purgeCollectedAddresses && deletedCollectedAddressesAt && "__TAURI_INTERNALS__" in window) {
         await setAppSetting(collectedAddressesDeletedAtSettingKey, "");
       }
-      const remainingEvents = category === "calendar"
-        ? deletedEvents.filter((event) => !wasDeletedBefore(event.deletedAt, purgePreview.cutoff))
-        : deletedEvents;
-      const removedEvents = deletedEvents.length - remainingEvents.length;
-      if (category === "calendar") writeCalendarEvents(calendarTrashStorageKey, remainingEvents);
-      const removed = removedEvents + result.contacts + result.groups + result.vaultEntries + (purgeCollectedAddresses && deletedCollectedAddressesAt ? 1 : 0);
+      const removed = purgedCalendarEvents + result.contacts + result.groups + result.vaultEntries + (purgeCollectedAddresses && deletedCollectedAddressesAt ? 1 : 0);
       setSelectedContactIds(new Set());
       setContactSelectionMode(false);
       setConfirmPurge(false);

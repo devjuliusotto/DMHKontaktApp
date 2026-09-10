@@ -2001,10 +2001,8 @@ async fn build_m365_sync_plan(
         .iter()
         .map(|contact| (local_contact_key(contact), contact))
         .collect();
-    let local_events: Vec<crate::CalendarEvent> = local_calendar_events(&request.backup)
-        .into_iter()
-        .filter(|event| event.deleted_at.is_none())
-        .collect();
+    let local_events = crate::read_calendar_events(&crate::open_db(app)?, false)?;
+    let deleted_local_events = crate::read_calendar_events(&crate::open_db(app)?, true)?;
     let mut operations = Vec::new();
     let mut remote_contacts = 0usize;
     let mut remote_events = 0usize;
@@ -2559,7 +2557,7 @@ async fn build_m365_sync_plan(
                 }
             }
 
-            for deleted in deleted_calendar_events(&request.backup) {
+            for deleted in deleted_local_events.iter().cloned() {
                 let Some(remote_id) = linked_calendar_remote_id(&deleted, &source.id) else {
                     continue;
                 };

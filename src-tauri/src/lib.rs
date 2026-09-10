@@ -247,6 +247,15 @@ pub struct CalendarEvent {
     pub recurrence_id: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarEventMergeResult {
+    pub imported: usize,
+    pub skipped_same_id: usize,
+    pub skipped_exact_duplicates: usize,
+    pub total: usize,
+}
+
 fn default_calendar_color() -> String {
     "blue".to_string()
 }
@@ -531,6 +540,16 @@ pub struct OutlookOneTimeCalendarImportResult {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CalendarDirectImportResult {
+    pub found: usize,
+    pub skipped_invalid: usize,
+    pub imported: usize,
+    pub skipped_same_id: usize,
+    pub skipped_exact_duplicates: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OutlookCalendarPreviewCalendar {
     pub id: String,
     pub name: String,
@@ -714,6 +733,14 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
             value TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS calendar_events (
+            id TEXT PRIMARY KEY,
+            starts_at TEXT NOT NULL,
+            duplicate_key TEXT NOT NULL,
+            event_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT
+        );
         CREATE TABLE IF NOT EXISTS mail_accounts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             source TEXT NOT NULL DEFAULT 'outlook-classic',
@@ -792,6 +819,10 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
             ON contact_groups(group_id, contact_id);
         CREATE INDEX IF NOT EXISTS idx_m365_contact_links_remote
             ON m365_contact_links(source_id, remote_id);
+        CREATE INDEX IF NOT EXISTS idx_calendar_events_active_start
+            ON calendar_events(deleted_at, starts_at);
+        CREATE INDEX IF NOT EXISTS idx_calendar_events_active_duplicate
+            ON calendar_events(deleted_at, duplicate_key);
         ",
     )
     .map_err(|err| err.to_string())?;
@@ -827,6 +858,275 @@ fn ensure_column(
         .map_err(|err| err.to_string())?;
     }
     Ok(())
+}
+
+fn normalized_calendar_duplicate_key(event: &CalendarEvent) -> String {
+    let title = event
+        .title
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    let starts_at = event.starts_at.trim().replace(' ', "T");
+    let starts_at = if starts_at.len() >= 16 { &starts_at[..16] } else { starts_at.as_str() };
+    format!("{title}\n{starts_at}")
+}
+
+fn read_calendar_events(conn: &Connection, deleted: bool) -> Result<Vec<CalendarEvent>, String> {
+    let mut statement = conn
+        .prepare(
+            if deleted {
+                "SELECT event_json FROM calendar_events WHERE deleted_at IS NOT NULL ORDER BY starts_at"
+            } else {
+                "SELECT event_json FROM calendar_events WHERE deleted_at IS NULL ORDER BY starts_at"
+            },
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?;
+    rows
+        .map(|row| {
+            let json = row.map_err(|error| error.to_string())?;
+            serde_json::from_str::<CalendarEvent>(&json)
+                .map_err(|error| format!("Gespeicherter Kalendertermin ist beschädigt: {error}"))
+        })
+        .collect()
+}
+
+fn write_calendar_events(
+    conn: &Connection,
+    events: &[CalendarEvent],
+) -> Result<(), String> {
+    let transaction = conn.unchecked_transaction().map_err(|error| error.to_string())?;
+    {
+        let mut statement = transaction
+            .prepare(
+                "INSERT INTO calendar_events (id, starts_at, duplicate_key, event_json, updated_at, deleted_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(id) DO UPDATE SET
+                   starts_at = excluded.starts_at,
+                   duplicate_key = excluded.duplicate_key,
+                   event_json = excluded.event_json,
+                   updated_at = excluded.updated_at,
+                   deleted_at = excluded.deleted_at",
+            )
+            .map_err(|error| error.to_string())?;
+        for event in events {
+            if event.id.trim().is_empty() {
+                return Err("Ein Kalendertermin ohne technische ID kann nicht gespeichert werden.".to_string());
+            }
+            let json = serde_json::to_string(event).map_err(|error| error.to_string())?;
+            statement
+                .execute(params![
+                    event.id,
+                    event.starts_at,
+                    normalized_calendar_duplicate_key(event),
+                    json,
+                    if event.updated_at.trim().is_empty() { now() } else { event.updated_at.clone() },
+                    event.deleted_at,
+                ])
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    transaction.commit().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_calendar_events(app: AppHandle) -> Result<Vec<CalendarEvent>, String> {
+    read_calendar_events(&open_db(&app)?, false)
+}
+
+#[tauri::command]
+fn list_deleted_calendar_events(app: AppHandle) -> Result<Vec<CalendarEvent>, String> {
+    read_calendar_events(&open_db(&app)?, true)
+}
+
+#[tauri::command]
+fn merge_calendar_events(
+    app: AppHandle,
+    events: Vec<CalendarEvent>,
+) -> Result<CalendarEventMergeResult, String> {
+    let mut conn = open_db(&app)?;
+    merge_calendar_events_in_db(&mut conn, events)
+}
+
+fn merge_calendar_events_in_db(
+    conn: &mut Connection,
+    events: Vec<CalendarEvent>,
+) -> Result<CalendarEventMergeResult, String> {
+    let mut known_ids = HashSet::new();
+    let mut known_duplicates = HashSet::new();
+    {
+        let mut statement = conn
+            .prepare("SELECT id, duplicate_key FROM calendar_events WHERE deleted_at IS NULL")
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .map_err(|error| error.to_string())?;
+        for row in rows {
+            let (id, duplicate_key) = row.map_err(|error| error.to_string())?;
+            known_ids.insert(id);
+            known_duplicates.insert(duplicate_key);
+        }
+    }
+    {
+        let mut statement = conn
+            .prepare("SELECT id FROM calendar_events WHERE deleted_at IS NOT NULL")
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| error.to_string())?;
+        for row in rows {
+            known_ids.insert(row.map_err(|error| error.to_string())?);
+        }
+    }
+
+    let mut imported = 0usize;
+    let mut skipped_same_id = 0usize;
+    let mut skipped_exact_duplicates = 0usize;
+    let transaction = conn.transaction().map_err(|error| error.to_string())?;
+    {
+        let mut statement = transaction
+            .prepare(
+                "INSERT INTO calendar_events (id, starts_at, duplicate_key, event_json, updated_at, deleted_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )
+            .map_err(|error| error.to_string())?;
+        for event in events {
+            if event.id.trim().is_empty() || event.starts_at.trim().is_empty() {
+                skipped_same_id += 1;
+                continue;
+            }
+            if known_ids.contains(&event.id) {
+                skipped_same_id += 1;
+                continue;
+            }
+            let duplicate_key = normalized_calendar_duplicate_key(&event);
+            if known_duplicates.contains(&duplicate_key) {
+                skipped_exact_duplicates += 1;
+                continue;
+            }
+            let json = serde_json::to_string(&event).map_err(|error| error.to_string())?;
+            statement
+                .execute(params![
+                    &event.id,
+                    &event.starts_at,
+                    duplicate_key.clone(),
+                    json,
+                    if event.updated_at.trim().is_empty() { now() } else { event.updated_at.clone() },
+                    &event.deleted_at,
+                ])
+                .map_err(|error| error.to_string())?;
+            known_ids.insert(event.id.clone());
+            known_duplicates.insert(duplicate_key);
+            imported += 1;
+        }
+    }
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(CalendarEventMergeResult {
+        imported,
+        skipped_same_id,
+        skipped_exact_duplicates,
+        total: known_ids.len(),
+    })
+}
+
+#[tauri::command]
+fn save_calendar_events(app: AppHandle, events: Vec<CalendarEvent>) -> Result<(), String> {
+    write_calendar_events(&open_db(&app)?, &events)
+}
+
+#[tauri::command]
+fn move_calendar_events_to_trash(app: AppHandle, ids: Vec<String>) -> Result<usize, String> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let conn = open_db(&app)?;
+    let mut changed = 0usize;
+    let timestamp = now();
+    let transaction = conn.unchecked_transaction().map_err(|error| error.to_string())?;
+    for id in ids {
+        let json: Option<String> = transaction
+            .query_row(
+                "SELECT event_json FROM calendar_events WHERE id = ?1 AND deleted_at IS NULL",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let Some(json) = json else {
+            continue;
+        };
+        let mut event: CalendarEvent =
+            serde_json::from_str(&json).map_err(|error| error.to_string())?;
+        event.deleted_at = Some(timestamp.clone());
+        let updated_json = serde_json::to_string(&event).map_err(|error| error.to_string())?;
+        changed += transaction
+            .execute(
+                "UPDATE calendar_events SET event_json = ?1, deleted_at = ?2, updated_at = ?2 WHERE id = ?3",
+                params![updated_json, timestamp, id],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(changed)
+}
+
+#[tauri::command]
+fn restore_calendar_events(app: AppHandle, ids: Vec<String>) -> Result<usize, String> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let conn = open_db(&app)?;
+    let mut restored = 0usize;
+    let timestamp = now();
+    let transaction = conn.unchecked_transaction().map_err(|error| error.to_string())?;
+    for id in ids {
+        let json: Option<String> = transaction
+            .query_row(
+                "SELECT event_json FROM calendar_events WHERE id = ?1 AND deleted_at IS NOT NULL",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let Some(json) = json else {
+            continue;
+        };
+        let mut event: CalendarEvent =
+            serde_json::from_str(&json).map_err(|error| error.to_string())?;
+        event.deleted_at = None;
+        let updated_json = serde_json::to_string(&event).map_err(|error| error.to_string())?;
+        restored += transaction
+            .execute(
+                "UPDATE calendar_events SET event_json = ?1, deleted_at = NULL, updated_at = ?2 WHERE id = ?3",
+                params![updated_json, timestamp, id],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(restored)
+}
+
+#[tauri::command]
+fn purge_deleted_calendar_events(app: AppHandle, ids: Vec<String>) -> Result<usize, String> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let conn = open_db(&app)?;
+    let transaction = conn.unchecked_transaction().map_err(|error| error.to_string())?;
+    let mut deleted = 0usize;
+    for id in ids {
+        deleted += transaction
+            .execute(
+                "DELETE FROM calendar_events WHERE id = ?1 AND deleted_at IS NOT NULL",
+                params![id],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(deleted)
 }
 
 const AUTOMATIC_BACKUP_FOLDER: &str = "DMH Kontakte und Kalender\\Automatische Sicherung";
@@ -2323,13 +2623,25 @@ fn load_backup_data(conn: &Connection) -> Result<BackupData, String> {
             .map_err(|err| err.to_string())?
     };
 
+    let active_calendar_events = read_calendar_events(conn, false)?;
+    let deleted_calendar_events = read_calendar_events(conn, true)?;
+    let mut browser_storage = HashMap::new();
+    browser_storage.insert(
+        CALENDAR_ACTIVE_STORAGE_KEY.to_string(),
+        serde_json::to_string(&active_calendar_events).map_err(|error| error.to_string())?,
+    );
+    browser_storage.insert(
+        CALENDAR_DELETED_STORAGE_KEY.to_string(),
+        serde_json::to_string(&deleted_calendar_events).map_err(|error| error.to_string())?,
+    );
+
     Ok(BackupData {
         version: "2.0.0".to_string(),
         exported_at: now(),
         contacts,
         groups,
         settings,
-        browser_storage: HashMap::new(),
+        browser_storage,
     })
 }
 
@@ -2337,6 +2649,17 @@ fn load_backup_data(conn: &Connection) -> Result<BackupData, String> {
 fn get_backup_data(app: AppHandle) -> Result<BackupData, String> {
     let conn = open_db(&app)?;
     load_backup_data(&conn)
+}
+
+#[tauri::command]
+fn get_sync_backup_data(app: AppHandle) -> Result<BackupData, String> {
+    let conn = open_db(&app)?;
+    let mut backup = load_backup_data(&conn)?;
+    // Calendar events are read by the synchronizer directly from SQLite. Keeping
+    // them out of the WebView message prevents very large calendars from being
+    // serialized every 30 seconds.
+    backup.browser_storage.clear();
+    Ok(backup)
 }
 
 #[tauri::command]
@@ -2551,6 +2874,40 @@ fn restore_backup(app: AppHandle, backup: BackupData) -> Result<(), String> {
         }
     }
 
+    // Calendar events are stored in SQLite so large calendars never depend on
+    // the small WebView localStorage quota. Older backups still contain the
+    // same JSON fields, which keeps restores backward compatible.
+    tx.execute("DELETE FROM calendar_events", [])
+        .map_err(|err| err.to_string())?;
+    let active_calendar_events =
+        parse_calendar_events(&backup.browser_storage, CALENDAR_ACTIVE_STORAGE_KEY);
+    let deleted_calendar_events =
+        parse_calendar_events(&backup.browser_storage, CALENDAR_DELETED_STORAGE_KEY);
+    {
+        let mut statement = tx
+            .prepare(
+                "INSERT INTO calendar_events (id, starts_at, duplicate_key, event_json, updated_at, deleted_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )
+            .map_err(|err| err.to_string())?;
+        for event in active_calendar_events
+            .into_iter()
+            .chain(deleted_calendar_events.into_iter())
+        {
+            let json = serde_json::to_string(&event).map_err(|err| err.to_string())?;
+            statement
+                .execute(params![
+                    event.id,
+                    event.starts_at,
+                    normalized_calendar_duplicate_key(&event),
+                    json,
+                    if event.updated_at.trim().is_empty() { now() } else { event.updated_at },
+                    event.deleted_at,
+                ])
+                .map_err(|err| err.to_string())?;
+        }
+    }
+
     restore_backup_settings(&tx, backup.settings)?;
 
     tx.commit().map_err(|err| err.to_string())
@@ -2564,6 +2921,15 @@ fn write_export_file(path: String, content: String) -> Result<(), String> {
 fn clear_local_database(conn: &mut Connection) -> Result<(), String> {
     conn.execute_batch("PRAGMA secure_delete = ON;")
         .map_err(|error| format!("Sicheres Löschen konnte nicht aktiviert werden: {error}"))?;
+    let has_calendar_events = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'calendar_events'",
+            [],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .is_some();
     let transaction = conn.transaction().map_err(|error| error.to_string())?;
     transaction
         .execute_batch(
@@ -2581,6 +2947,11 @@ fn clear_local_database(conn: &mut Connection) -> Result<(), String> {
             ",
         )
         .map_err(|error| format!("Lokale Datenbank konnte nicht geleert werden: {error}"))?;
+    if has_calendar_events {
+        transaction
+            .execute("DELETE FROM calendar_events", [])
+            .map_err(|error| format!("Lokale Kalenderdaten konnten nicht geleert werden: {error}"))?;
+    }
     transaction
         .commit()
         .map_err(|error| format!("Lokale Datenbank konnte nicht zurückgesetzt werden: {error}"))?;
@@ -5525,6 +5896,10 @@ fn outlook_calendar_event_id(record: &OutlookAppointmentRecord, index: usize) ->
 #[tauri::command]
 fn import_outlook_classic_appointments_once() -> Result<OutlookOneTimeCalendarImportResult, String>
 {
+    read_outlook_classic_appointments_for_import()
+}
+
+fn read_outlook_classic_appointments_for_import() -> Result<OutlookOneTimeCalendarImportResult, String> {
     let read_result = read_outlook_classic_appointments()?;
     let found = read_result.events.len();
     let mut skipped_invalid = read_result.skipped;
@@ -5583,6 +5958,44 @@ fn import_outlook_classic_appointments_once() -> Result<OutlookOneTimeCalendarIm
         found,
         skipped_invalid,
         events,
+    })
+}
+
+#[tauri::command]
+fn import_outlook_classic_appointments_to_calendar(
+    app: AppHandle,
+) -> Result<CalendarDirectImportResult, String> {
+    let result = read_outlook_classic_appointments_for_import()?;
+    let found = result.found;
+    let skipped_invalid = result.skipped_invalid;
+    let merged = merge_calendar_events_in_db(&mut open_db(&app)?, result.events)?;
+    Ok(CalendarDirectImportResult {
+        found,
+        skipped_invalid,
+        imported: merged.imported,
+        skipped_same_id: merged.skipped_same_id,
+        skipped_exact_duplicates: merged.skipped_exact_duplicates,
+    })
+}
+
+#[tauri::command]
+fn import_thunderbird_calendars_to_calendar(
+    app: AppHandle,
+) -> Result<CalendarDirectImportResult, String> {
+    let result = thunderbird::import_thunderbird_calendars_once()?;
+    let found = result.found;
+    let skipped_invalid = result.skipped_invalid;
+    let events = serde_json::from_value::<Vec<CalendarEvent>>(
+        serde_json::to_value(result.events).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| format!("Thunderbird-Kalenderdaten konnten nicht übernommen werden: {error}"))?;
+    let merged = merge_calendar_events_in_db(&mut open_db(&app)?, events)?;
+    Ok(CalendarDirectImportResult {
+        found,
+        skipped_invalid,
+        imported: merged.imported,
+        skipped_same_id: merged.skipped_same_id,
+        skipped_exact_duplicates: merged.skipped_exact_duplicates,
     })
 }
 
@@ -5810,10 +6223,18 @@ pub fn run() {
             delete_group,
             restore_group,
             purge_deleted_items,
+            list_calendar_events,
+            list_deleted_calendar_events,
+            merge_calendar_events,
+            save_calendar_events,
+            move_calendar_events_to_trash,
+            restore_calendar_events,
+            purge_deleted_calendar_events,
             import_contacts,
             undo_last_import,
             undo_last_outlook_contact_import,
             get_backup_data,
+            get_sync_backup_data,
             create_automatic_backup,
             create_recovery_checkpoint,
             get_recovery_archive_status,
@@ -5880,6 +6301,8 @@ pub fn run() {
             import_selected_outlook_classic_contacts,
             preview_outlook_classic_appointments,
             import_outlook_classic_appointments_once,
+            import_outlook_classic_appointments_to_calendar,
+            import_thunderbird_calendars_to_calendar,
             thunderbird::import_thunderbird_contacts_once,
             thunderbird::preview_thunderbird_contact_reconciliation,
             thunderbird::import_thunderbird_calendars_once,
@@ -6109,6 +6532,48 @@ mod tests {
             notes: String::new(),
             group_ids: Vec::new(),
         }
+    }
+
+    #[test]
+    fn calendar_sqlite_merge_handles_fifty_thousand_events() {
+        let mut conn = Connection::open_in_memory().expect("in-memory calendar database");
+        conn.execute_batch(
+            "
+            CREATE TABLE calendar_events (
+                id TEXT PRIMARY KEY,
+                starts_at TEXT NOT NULL,
+                duplicate_key TEXT NOT NULL,
+                event_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                deleted_at TEXT
+            );
+            CREATE INDEX idx_calendar_events_active_duplicate
+                ON calendar_events(deleted_at, duplicate_key);
+            ",
+        )
+        .expect("calendar table");
+        let events = (0..50_000)
+            .map(|index| CalendarEvent {
+                id: format!("large-calendar-{index}"),
+                updated_at: "2026-09-10T10:00:00Z".to_string(),
+                title: format!("Termin {index}"),
+                starts_at: format!("2026-09-10T{:02}:{:02}:00", (index / 60) % 24, index % 60),
+                ends_at: "2026-09-10T10:30:00".to_string(),
+                location: String::new(),
+                description: String::new(),
+                color: "#6b7280".to_string(),
+                category: String::new(),
+                source: "Test".to_string(),
+                recurrence: None,
+                excluded_dates: Vec::new(),
+                deleted_at: None,
+                recurrence_master_id: None,
+                recurrence_id: None,
+            })
+            .collect();
+        let result = merge_calendar_events_in_db(&mut conn, events).expect("large calendar merge");
+        assert_eq!(result.imported, 50_000);
+        assert_eq!(read_calendar_events(&conn, false).expect("read merged calendar").len(), 50_000);
     }
 
     #[test]

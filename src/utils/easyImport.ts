@@ -1,13 +1,13 @@
 import {
-  importOutlookClassicAppointmentsOnce,
+  importOutlookClassicAppointmentsToCalendar,
   importSelectedOutlookClassicContacts,
-  importThunderbirdCalendarsOnce,
+  importThunderbirdCalendarsToCalendar,
   importThunderbirdContactsOnce,
+  mergeCalendarEvents,
   previewOutlookClassicContacts
 } from "../services/db";
 import type { CalendarEvent } from "../types/calendar";
-import { calendarColorFromCategory, calendarStorageKey, mergeImportedCalendarCategories } from "./calendar";
-import { mergeCalendarEventsExactly } from "./calendarDuplicates";
+import { calendarColorFromCategory, mergeImportedCalendarCategories } from "./calendar";
 
 export type EasyImportPlatform = "outlook" | "thunderbird";
 export type EasyImportKind = "contacts" | "calendar";
@@ -15,14 +15,6 @@ export type EasyImportKind = "contacts" | "calendar";
 export interface EasyImportResult {
   detail: string;
   imported: number;
-}
-
-function storedCalendarEvents(): CalendarEvent[] {
-  const raw = localStorage.getItem(calendarStorageKey);
-  if (!raw) return [];
-  const value: unknown = JSON.parse(raw);
-  if (!Array.isArray(value)) throw new Error("Die lokal gespeicherten Kalenderdaten sind beschädigt.");
-  return value as CalendarEvent[];
 }
 
 export async function easyImportContacts(platform: EasyImportPlatform): Promise<EasyImportResult> {
@@ -52,34 +44,19 @@ export async function easyImportContacts(platform: EasyImportPlatform): Promise<
 
 export async function easyImportCalendar(platform: EasyImportPlatform): Promise<EasyImportResult> {
   if (platform === "outlook") {
-    const result = await importOutlookClassicAppointmentsOnce();
-    const normalized = result.events.map((event) => ({
-      ...event,
-      color: calendarColorFromCategory(event.category, event.color)
-    }));
-    const merged = mergeCalendarEventsExactly(storedCalendarEvents(), normalized);
-    localStorage.setItem(calendarStorageKey, JSON.stringify(merged.events));
-    mergeImportedCalendarCategories(normalized);
-    const existing = merged.skippedSameId + merged.skippedExactDuplicates;
+    const result = await importOutlookClassicAppointmentsToCalendar();
+    const existing = result.skippedSameId + result.skippedExactDuplicates;
     return {
-      imported: merged.imported,
-      detail: `${merged.imported} neu importiert · ${existing} bereits vorhanden`
+      imported: result.imported,
+      detail: `${result.imported} neu importiert · ${existing} bereits vorhanden`
     };
   }
 
-  const result = await importThunderbirdCalendarsOnce();
-  const existing = storedCalendarEvents();
-  const normalized = result.events.map((event) => ({
-    ...event,
-    color: calendarColorFromCategory(event.category, event.color)
-  }));
-  const merged = mergeCalendarEventsExactly(existing, normalized);
-  localStorage.setItem(calendarStorageKey, JSON.stringify(merged.events));
-  mergeImportedCalendarCategories(normalized);
-  const alreadyPresent = merged.skippedSameId + merged.skippedExactDuplicates;
+  const result = await importThunderbirdCalendarsToCalendar();
+  const alreadyPresent = result.skippedSameId + result.skippedExactDuplicates;
   return {
-    imported: merged.imported,
-    detail: `${merged.imported} neu importiert · ${alreadyPresent} bereits vorhanden`
+    imported: result.imported,
+    detail: `${result.imported} neu importiert · ${alreadyPresent} bereits vorhanden`
   };
 }
 

@@ -14,14 +14,13 @@ import {
 import { StatusMessage } from "../components/StatusMessage";
 import type { SettingsSection } from "../components/SettingsSubtabs";
 import type { Page } from "../components/Sidebar";
-import { applyMicrosoft365Sync, createAutomaticBackup, createAutomaticPasswordBackup, getAppSetting, getBackupData, getMicrosoft365ConnectionStatus, listMicrosoft365SyncSources, previewMicrosoft365Sync, setAppSetting } from "../services/db";
+import { applyMicrosoft365Sync, createAutomaticBackup, createAutomaticPasswordBackup, getAppSetting, getBackupData, getMicrosoft365ConnectionStatus, getSyncBackupData, listMicrosoft365SyncSources, moveCalendarEventsToTrash, previewMicrosoft365Sync, saveCalendarEvents, setAppSetting } from "../services/db";
 import type { Microsoft365ConflictDecision, Microsoft365ConnectionStatus, Microsoft365SyncHistoryEntry, Microsoft365SyncPreview, Microsoft365SyncSource, Microsoft365SyncSources } from "../types/m365";
 import { defaultSyncConfig, parseSyncConfig, type SyncConfig, type SyncDirection } from "../types/sync";
 import { addBrowserDataToBackup } from "../utils/backup";
-import { calendarStorageKey, calendarTrashStorageKey, mergeImportedCalendarCategories } from "../utils/calendar";
+import { mergeImportedCalendarCategories } from "../utils/calendar";
 import { calendarChangedEventName, recordMicrosoft365SynchronizationError, recordMicrosoft365SynchronizationSuccess, synchronizationConfigKey as syncConfigKey, synchronizationHistoryKey as syncHistoryKey } from "../utils/automaticCalendarSync";
 import { initializeMicrosoft365SourceSelection, isTechnicalMicrosoft365Source } from "../utils/microsoft365SyncConfig";
-import type { CalendarEvent } from "../types/calendar";
 
 interface SynchronizationsPageProps {
   onNavigate: (page: Page, section?: SettingsSection) => void;
@@ -141,7 +140,7 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
     setBusy(true);
     setMessage("");
     try {
-      const backup = addBrowserDataToBackup(await getBackupData());
+      const backup = await getSyncBackupData();
       const nextPreview = await previewMicrosoft365Sync({
         direction: config.direction,
         base: config.base,
@@ -236,9 +235,10 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
     setBusy(true);
     setMessage("");
     try {
-      const backup = addBrowserDataToBackup(await getBackupData());
-      await createAutomaticBackup(backup, true);
+      const snapshot = addBrowserDataToBackup(await getBackupData());
+      await createAutomaticBackup(snapshot, true);
       await createAutomaticPasswordBackup(true);
+      const backup = await getSyncBackupData();
       const result = await applyMicrosoft365Sync({
         direction: config.direction,
         base: config.base,
@@ -255,17 +255,8 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
         backup
       });
       if (result.calendarUpserts.length > 0 || result.calendarDeletes.length > 0) {
-        const current = JSON.parse(localStorage.getItem(calendarStorageKey) ?? "[]") as CalendarEvent[];
-        const deletedIds = new Set(result.calendarDeletes);
-        const removed = current.filter((event) => deletedIds.has(event.id)).map((event) => ({ ...event, deletedAt: new Date().toISOString() }));
-        if (removed.length > 0) {
-          const trash = JSON.parse(localStorage.getItem(calendarTrashStorageKey) ?? "[]") as CalendarEvent[];
-          const removedIds = new Set(removed.map((event) => event.id));
-          localStorage.setItem(calendarTrashStorageKey, JSON.stringify([...removed, ...trash.filter((event) => !removedIds.has(event.id))]));
-        }
-        const byId = new Map(current.filter((event) => !deletedIds.has(event.id)).map((event) => [event.id, event]));
-        for (const event of result.calendarUpserts) byId.set(event.id, event);
-        localStorage.setItem(calendarStorageKey, JSON.stringify(Array.from(byId.values())));
+        if (result.calendarUpserts.length > 0) await saveCalendarEvents(result.calendarUpserts);
+        if (result.calendarDeletes.length > 0) await moveCalendarEventsToTrash(result.calendarDeletes);
         mergeImportedCalendarCategories(result.calendarUpserts);
       }
       await persistHistory({ ...result, id: `${result.startedAt}-${Date.now()}` });

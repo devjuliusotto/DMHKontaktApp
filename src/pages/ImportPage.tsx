@@ -5,11 +5,10 @@ import type { CSSProperties } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { StatusMessage } from "../components/StatusMessage";
 import { t } from "../i18n";
-import { importContacts, importOutlookStore, listGroups, saveGroup } from "../services/db";
+import { importContacts, importOutlookStore, listGroups, mergeCalendarEvents, saveGroup } from "../services/db";
 import type { CalendarEvent } from "../types/calendar";
 import type { Group } from "../types/contact";
-import { calendarColorFromCategory, calendarColorOptions, calendarColorValue, calendarStorageKey, defaultCalendarColor, mergeImportedCalendarCategories, parseCalendarFile } from "../utils/calendar";
-import { mergeCalendarEventsExactly } from "../utils/calendarDuplicates";
+import { calendarColorFromCategory, calendarColorOptions, calendarColorValue, defaultCalendarColor, mergeImportedCalendarCategories, parseCalendarFile } from "../utils/calendar";
 import { parseCsvBytes, parseXlsx, type ImportPreview } from "../utils/importers";
 
 type ImportMode = "contacts" | "calendar";
@@ -153,12 +152,10 @@ export function ImportPage({ embedded = false, initialMode }: ImportPageProps) {
     );
   };
 
-  const savePendingEvents = () => {
+  const savePendingEvents = async () => {
     if (!pendingEvents.length) return { imported: 0, skipped: 0, categories: 0 };
-    const existing = JSON.parse(localStorage.getItem(calendarStorageKey) ?? "[]") as CalendarEvent[];
     const incoming = pendingEvents.map((event) => applyCalendarImportCategory(event, calendarCategory, calendarColor));
-    const merged = mergeCalendarEventsExactly(existing, incoming);
-    localStorage.setItem(calendarStorageKey, JSON.stringify(merged.events));
+    const merged = await mergeCalendarEvents(incoming);
     const categoryResult = mergeImportedCalendarCategories(incoming);
     return {
       imported: merged.imported,
@@ -178,7 +175,7 @@ export function ImportPage({ embedded = false, initialMode }: ImportPageProps) {
     }
 
     try {
-      const calendarResult = savePendingEvents();
+      const calendarResult = await savePendingEvents();
       let importedContacts = 0;
       let skippedContactDuplicates = 0;
 

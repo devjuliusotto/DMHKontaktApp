@@ -87,10 +87,9 @@ function contactInGroup(contact: Contact, groupId: number) {
 
 interface ContactsPageProps {
   onNavigate: (page: Page) => void;
-  onHideSection: () => void;
 }
 
-export function ContactsPage({ onNavigate, onHideSection }: ContactsPageProps) {
+export function ContactsPage({ onNavigate }: ContactsPageProps) {
   const notifyLocalM365Change = () => window.dispatchEvent(new Event(calendarChangedEventName));
   const [tab, setTab] = useState<ContactsTab>("all");
   const [contacts, setContacts] = useState<Contact[]>([]);
@@ -901,7 +900,7 @@ export function ContactsPage({ onNavigate, onHideSection }: ContactsPageProps) {
       )}
 
       {tab === "all" && totalContactCount === 0 ? (
-        <EmptyImportState kind="contacts" onEasyImport={() => setEasyImportOpen(true)} onManualImport={() => onNavigate("contact-import")} onNotNeeded={onHideSection} />
+        <EmptyImportState kind="contacts" onEasyImport={() => setEasyImportOpen(true)} onManualImport={() => onNavigate("contact-import")} />
       ) : tab === "all" ? (
         <ContactTable
           contacts={contacts}

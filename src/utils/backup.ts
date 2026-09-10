@@ -24,21 +24,14 @@ export function captureBrowserStorage(): Record<string, string> {
     if (value !== null) browserStorage[key] = value;
   }
 
-  // Presence matters for the automatic archive: an explicit empty calendar
-  // means that the user really has no current events, while a missing key can
-  // mean that the frontend has not initialized yet.
-  if (!Object.prototype.hasOwnProperty.call(browserStorage, "agendakontakte.calendarEvents")) {
-    browserStorage["agendakontakte.calendarEvents"] = "[]";
-  }
-  if (!Object.prototype.hasOwnProperty.call(browserStorage, "agendakontakte.deletedCalendarEvents")) {
-    browserStorage["agendakontakte.deletedCalendarEvents"] = "[]";
-  }
-
   return browserStorage;
 }
 
 export function addBrowserDataToBackup(backup: BackupData): BackupData {
-  const browserStorage = captureBrowserStorage();
+  // Calendar events live in SQLite. They are already part of the native
+  // backup payload and must never be copied back into the quota-limited
+  // WebView localStorage.
+  const browserStorage = { ...backup.browserStorage, ...captureBrowserStorage() };
   return {
     ...backup,
     version: "2.0.0",
@@ -48,9 +41,17 @@ export function addBrowserDataToBackup(backup: BackupData): BackupData {
 
 export function restoreBrowserDataFromBackup(backup: Pick<BackupData, "browserStorage">): void {
   if (!backup.browserStorage) return;
-  for (const key of browserStorageKeys) localStorage.removeItem(key);
+  const webStorageOnlyKeys = browserStorageKeys.filter(
+    (key) => key !== "agendakontakte.calendarEvents" && key !== "agendakontakte.deletedCalendarEvents"
+  );
+  for (const key of webStorageOnlyKeys) localStorage.removeItem(key);
   for (const [key, value] of Object.entries(backup.browserStorage)) {
-    if (allowedStorageKeys.has(key) && typeof value === "string") {
+    if (
+      key !== "agendakontakte.calendarEvents"
+      && key !== "agendakontakte.deletedCalendarEvents"
+      && allowedStorageKeys.has(key)
+      && typeof value === "string"
+    ) {
       localStorage.setItem(key, value);
     }
   }

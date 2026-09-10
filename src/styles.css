@@ -3880,11 +3880,6 @@ table {
   margin-top: 1.35rem;
 }
 
-.first-import-options.with-not-needed {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  max-width: 1120px;
-}
-
 .first-import-option {
   align-items: center;
   display: grid;
@@ -3941,16 +3936,6 @@ table {
   color: var(--on-primary);
 }
 
-.first-import-option-not-needed {
-  background: var(--surface-alt);
-}
-
-.first-import-option-not-needed:hover,
-.first-import-option-not-needed:focus-visible {
-  background: var(--soft);
-  border-color: var(--primary);
-}
-
 .first-import-checklist {
   align-items: center;
   background: var(--success-surface);
@@ -3973,8 +3958,7 @@ table {
 }
 
 @media (max-width: 700px) {
-  .first-import-options,
-  .first-import-options.with-not-needed {
+  .first-import-options {
     grid-template-columns: 1fr;
   }
 }
@@ -9905,8 +9889,11 @@ td small {
   }
 }
 
-/* Settings use a compact application rail plus a dedicated vertical section rail. */
-.settings-app-shell {
+/* Settings use a compact application rail plus a dedicated vertical section rail.
+   Settings also use the compact app rail. Keep this combined selector so the
+   later compact-sidebar rule cannot collapse the three-column EDV layout. */
+.settings-app-shell,
+.settings-app-shell.compact-sidebar-shell {
   grid-template-columns: 72px 240px minmax(0, 1fr);
 }
 
@@ -10001,6 +9988,22 @@ td small {
   width: auto;
 }
 
+.settings-app-shell > .sidebar.compact {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.settings-app-shell > .settings-subtabs {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.settings-app-shell > .content {
+  grid-column: 3;
+  grid-row: 1;
+  min-width: 0;
+}
+
 .settings-app-shell .settings-subtab {
   border: 0;
   border-left: 4px solid transparent;
@@ -10019,12 +10022,21 @@ td small {
   color: var(--primary-dark);
 }
 
-.settings-app-shell .settings-subtab:last-child {
+.settings-app-shell .settings-subtab-home {
   border-top: 1px solid var(--border);
   border-left-color: transparent;
   border-radius: 0;
   margin-top: auto;
   padding-top: 1rem;
+}
+
+.settings-app-version {
+  color: var(--muted);
+  display: block;
+  font-size: 0.7rem;
+  letter-spacing: 0.01em;
+  padding: 0.55rem 0.75rem 0.1rem;
+  text-align: center;
 }
 
 .settings-page-header {
@@ -11036,7 +11048,8 @@ td small {
 }
 
 @media (max-width: 1100px) {
-  .settings-app-shell {
+  .settings-app-shell,
+  .settings-app-shell.compact-sidebar-shell {
     display: grid;
     grid-template-columns: 68px 210px minmax(0, 1fr);
   }
@@ -11064,7 +11077,8 @@ td small {
 }
 
 @media (max-width: 680px) {
-  .settings-app-shell {
+  .settings-app-shell,
+  .settings-app-shell.compact-sidebar-shell {
     grid-template-columns: 58px 176px minmax(0, 1fr);
   }
 

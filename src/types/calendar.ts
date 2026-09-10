@@ -29,6 +29,21 @@ export interface CalendarEvent {
   recurrenceId?: string;
 }
 
+export interface CalendarEventMergeResult {
+  imported: number;
+  skippedSameId: number;
+  skippedExactDuplicates: number;
+  total: number;
+}
+
+export interface CalendarDirectImportResult {
+  found: number;
+  skippedInvalid: number;
+  imported: number;
+  skippedSameId: number;
+  skippedExactDuplicates: number;
+}
+
 export interface OutlookOneTimeCalendarImportResult {
   found: number;
   skippedInvalid: number;

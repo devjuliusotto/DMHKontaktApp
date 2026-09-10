@@ -3,11 +3,11 @@ import { CalendarClock, CalendarDays, CheckCircle2, ContactRound, Download, Load
 import { useEffect, useMemo, useState } from "react";
 import { StatusMessage } from "../components/StatusMessage";
 import { t } from "../i18n";
-import { listContacts, listGroups, listMailAccounts, pushProjectAppointmentsToOutlook, pushProjectContactsToOutlook, writeExportFile } from "../services/db";
-import type { CalendarEvent, OutlookCalendarExportResult } from "../types/calendar";
+import { listCalendarEvents, listContacts, listGroups, listMailAccounts, pushProjectAppointmentsToOutlook, pushProjectContactsToOutlook, writeExportFile } from "../services/db";
+import type { OutlookCalendarExportResult } from "../types/calendar";
 import type { Contact, Group, OutlookContactExportResult } from "../types/contact";
 import type { MailAccount } from "../types/mail";
-import { calendarStorageKey, exportCalendarIcs } from "../utils/calendar";
+import { exportCalendarIcs } from "../utils/calendar";
 import { exportGeneralCsv, exportNewOutlookCsv, exportOutlookClassicCsv } from "../utils/exporters";
 
 type ContactExportKind = "classic" | "new" | "general";
@@ -81,8 +81,8 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
     return Array.from(byId.values());
   };
 
-  const loadCalendarEvents = () => {
-    const stored = JSON.parse(localStorage.getItem(calendarStorageKey) ?? "[]") as CalendarEvent[];
+  const loadCalendarEvents = async () => {
+    const stored = await listCalendarEvents();
     return stored.sort((left, right) => left.startsAt.localeCompare(right.startsAt));
   };
 
@@ -111,7 +111,7 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
 
   const runCalendarExport = async (target: CalendarExportTarget) => {
     try {
-      const events = loadCalendarEvents();
+      const events = await loadCalendarEvents();
       if (!events.length) {
         setMessage("Es gibt keine Kalendertermine zum Exportieren.");
         return;
@@ -165,7 +165,7 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
       setMessage("Die direkte Outlook-Übertragung ist nur in der installierten Windows-App verfügbar.");
       return;
     }
-    const events = loadCalendarEvents();
+    const events = await loadCalendarEvents();
     if (!events.length) {
       setMessage("Es gibt keine Termine zum Übertragen.");
       return;

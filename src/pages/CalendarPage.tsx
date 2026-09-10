@@ -9,7 +9,7 @@ import { StatusMessage } from "../components/StatusMessage";
 import type { Page } from "../components/Sidebar";
 import type { CalendarEvent } from "../types/calendar";
 import type { Microsoft365ConnectionStatus } from "../types/m365";
-import { calendarCategoriesStorageKey, calendarColorOptions, calendarColorStyle, calendarColorValue, calendarStorageKey, calendarTrashStorageKey, defaultCalendarColor, expandCalendarEvents, formatCalendarDate, parseCalendarDate } from "../utils/calendar";
+import { calendarCategoriesStorageKey, calendarColorOptions, calendarColorStyle, calendarColorValue, calendarStorageKey, defaultCalendarColor, expandCalendarEvents, formatCalendarDate, parseCalendarDate } from "../utils/calendar";
 import { findExactCalendarDuplicateGroups, removeExactCalendarDuplicates } from "../utils/calendarDuplicates";
 import {
   calendarAutomaticSyncStatusEventName,
@@ -18,7 +18,15 @@ import {
   type CalendarAutomaticSyncStatus
 } from "../utils/automaticCalendarSync";
 import { enableCompleteAutomaticMicrosoft365Sync } from "../utils/microsoft365SyncConfig";
-import { connectMicrosoft365Interactively, disconnectMicrosoft365Account, getMicrosoft365ConnectionStatus } from "../services/db";
+import {
+  connectMicrosoft365Interactively,
+  disconnectMicrosoft365Account,
+  getMicrosoft365ConnectionStatus,
+  listCalendarEvents,
+  mergeCalendarEvents,
+  moveCalendarEventsToTrash,
+  saveCalendarEvents
+} from "../services/db";
 
 const duplicateCleanupBackupKey = "agendakontakte.calendarExactDuplicateCleanupBackup.v1";
 const calendarViewStorageKey = "agendakontakte.calendarView.v1";
@@ -287,6 +295,8 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
   const [showDuplicateDialog, setShowDuplicateDialog] = useState(false);
   const [showActionsMenu, setShowActionsMenu] = useState(false);
   const [exchangePrompt, setExchangePrompt] = useState<Microsoft365ConnectionStatus | null>(null);
+  const [exchangeManagement, setExchangeManagement] = useState<Microsoft365ConnectionStatus | null>(null);
+  const [exchangeSyncStatus, setExchangeSyncStatus] = useState<Microsoft365ConnectionStatus | null>(null);
   const [exchangeSyncBusy, setExchangeSyncBusy] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
   const [newCategoryColor, setNewCategoryColor] = useState(defaultCalendarColor);
@@ -299,17 +309,40 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
   const timeSelectionRef = useRef<CalendarTimeSelection | null>(null);
   const draggedEventIdRef = useRef<string | null>(null);
   const timeGridScrollRef = useRef<HTMLDivElement | null>(null);
+  const eventsRef = useRef<CalendarEvent[]>([]);
 
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem(calendarStorageKey);
-      if (saved) {
-        const storedEvents = (JSON.parse(saved) as CalendarEvent[]).map(normalizeEvent);
-        setEvents(storedEvents);
+    const loadEvents = async () => {
+      try {
+        if ("__TAURI_INTERNALS__" in window) {
+          let storedEvents = await listCalendarEvents();
+          // One-time migration for calendars created by earlier app versions.
+          if (storedEvents.length === 0) {
+            const legacy = JSON.parse(localStorage.getItem(calendarStorageKey) ?? "[]") as unknown;
+            if (Array.isArray(legacy) && legacy.length > 0) {
+              await mergeCalendarEvents(legacy as CalendarEvent[]);
+              storedEvents = await listCalendarEvents();
+              localStorage.removeItem(calendarStorageKey);
+            }
+          }
+          const normalized = storedEvents.map(normalizeEvent);
+          eventsRef.current = normalized;
+          setEvents(normalized);
+        } else {
+          const saved = localStorage.getItem(calendarStorageKey);
+          if (saved) {
+            const normalized = (JSON.parse(saved) as CalendarEvent[]).map(normalizeEvent);
+            eventsRef.current = normalized;
+            setEvents(normalized);
+          }
+        }
+      } catch {
+        setMessage("Die gespeicherten Kalenderdaten konnten nicht geladen werden.");
+      } finally {
+        setCalendarLoaded(true);
       }
-    } catch {
-      setMessage("Die gespeicherten Kalenderdaten konnten nicht geladen werden.");
-    }
+    };
+    void loadEvents();
 
     try {
       const savedCategories = localStorage.getItem(calendarCategoriesStorageKey);
@@ -320,8 +353,17 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
     } catch {
       setMessage("Die gespeicherten Kalenderkategorien konnten nicht geladen werden.");
     }
-    setCalendarLoaded(true);
   }, []);
+
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    void getMicrosoft365ConnectionStatus().then(setExchangeSyncStatus).catch(() => setExchangeSyncStatus(null));
+  }, []);
+
+  useEffect(() => {
+    if (!showActionsMenu || !("__TAURI_INTERNALS__" in window)) return;
+    void getMicrosoft365ConnectionStatus().then(setExchangeSyncStatus).catch(() => setExchangeSyncStatus(null));
+  }, [showActionsMenu]);
 
   useEffect(() => {
     localStorage.setItem(calendarViewStorageKey, view);
@@ -332,10 +374,14 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
   }, [advancedSettings]);
 
   useEffect(() => {
-    const reloadStoredEvents = () => {
+    const reloadStoredEvents = async () => {
       try {
-        const storedEvents = JSON.parse(localStorage.getItem(calendarStorageKey) ?? "[]") as CalendarEvent[];
-        setEvents(storedEvents.map(normalizeEvent));
+        const storedEvents = "__TAURI_INTERNALS__" in window
+          ? await listCalendarEvents()
+          : JSON.parse(localStorage.getItem(calendarStorageKey) ?? "[]") as CalendarEvent[];
+        const normalized = storedEvents.map(normalizeEvent);
+        eventsRef.current = normalized;
+        setEvents(normalized);
         setCalendarLoaded(true);
       } catch {
         setMessage("Die von Microsoft 365 empfangenen Kalenderdaten konnten nicht angezeigt werden.");
@@ -345,10 +391,11 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
       const detail = (event as CustomEvent<CalendarAutomaticSyncStatus>).detail;
       if (detail?.message) setMessage(detail.message);
     };
-    window.addEventListener(calendarStorageUpdatedEventName, reloadStoredEvents);
+    const reload = () => void reloadStoredEvents();
+    window.addEventListener(calendarStorageUpdatedEventName, reload);
     window.addEventListener(calendarAutomaticSyncStatusEventName, showAutomaticSyncStatus);
     return () => {
-      window.removeEventListener(calendarStorageUpdatedEventName, reloadStoredEvents);
+      window.removeEventListener(calendarStorageUpdatedEventName, reload);
       window.removeEventListener(calendarAutomaticSyncStatusEventName, showAutomaticSyncStatus);
     };
   }, []);
@@ -453,8 +500,20 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
 
   const persist = (nextEvents: CalendarEvent[]) => {
     const sorted = nextEvents.map(normalizeEvent).sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+    const previousById = new Map(eventsRef.current.map((event) => [event.id, JSON.stringify(event)]));
+    const changed = sorted.filter((event) => previousById.get(event.id) !== JSON.stringify(event));
+    const nextIds = new Set(sorted.map((event) => event.id));
+    const removedIds = eventsRef.current.filter((event) => !nextIds.has(event.id)).map((event) => event.id);
+    eventsRef.current = sorted;
     setEvents(sorted);
-    localStorage.setItem(calendarStorageKey, JSON.stringify(sorted));
+    if ("__TAURI_INTERNALS__" in window) {
+      void (async () => {
+        if (changed.length > 0) await saveCalendarEvents(changed);
+        if (removedIds.length > 0) await moveCalendarEventsToTrash(removedIds);
+      })().catch(() => setMessage("Kalenderänderung konnte nicht sicher gespeichert werden."));
+    } else {
+      localStorage.setItem(calendarStorageKey, JSON.stringify(sorted));
+    }
   };
 
   const persistCategories = (nextCategories: CalendarCategory[]) => {
@@ -770,18 +829,6 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
     const master = event.recurrenceMasterId ? events.find((entry) => entry.id === event.recurrenceMasterId) ?? event : event;
     const objectName = master.recurrence ? `Terminserie "${master.title}"` : `Termin "${master.title}"`;
     if (!window.confirm(`${objectName} wirklich löschen?`)) return;
-    let deletedEvents: CalendarEvent[] = [];
-    try {
-      deletedEvents = JSON.parse(localStorage.getItem(calendarTrashStorageKey) ?? "[]") as CalendarEvent[];
-      if (!Array.isArray(deletedEvents)) deletedEvents = [];
-    } catch {
-      deletedEvents = [];
-    }
-    const deletedEvent = { ...normalizeEvent(master), deletedAt: new Date().toISOString() };
-    localStorage.setItem(
-      calendarTrashStorageKey,
-      JSON.stringify([deletedEvent, ...deletedEvents.filter((entry) => entry.id !== master.id)])
-    );
     persist(events.filter((entry) => entry.id !== master.id));
     setEditingEvent(null);
     setActionResult({
@@ -796,20 +843,7 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
 
   const deleteAllEvents = () => {
     if (events.length === 0 || !window.confirm(`Alle ${events.length} Termine und Terminserien in den Papierkorb verschieben?`)) return;
-    let deletedEvents: CalendarEvent[] = [];
-    try {
-      deletedEvents = JSON.parse(localStorage.getItem(calendarTrashStorageKey) ?? "[]") as CalendarEvent[];
-      if (!Array.isArray(deletedEvents)) deletedEvents = [];
-    } catch {
-      deletedEvents = [];
-    }
-    const deletedAt = new Date().toISOString();
-    const activeIds = new Set(events.map((event) => event.id));
-    const movedEvents = events.map((event) => ({ ...normalizeEvent(event), deletedAt }));
-    localStorage.setItem(calendarTrashStorageKey, JSON.stringify([
-      ...movedEvents,
-      ...deletedEvents.filter((event) => !activeIds.has(event.id))
-    ]));
+    const movedEvents = events.map(normalizeEvent);
     persist([]);
     setEditingEvent(null);
     setActionResult({
@@ -824,7 +858,14 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
 
   const openExchangeSync = async () => {
     try {
-      setExchangePrompt(await getMicrosoft365ConnectionStatus());
+      const status = await getMicrosoft365ConnectionStatus();
+      setExchangeSyncStatus(status);
+      setShowActionsMenu(false);
+      if (status.connected && status.account) {
+        setExchangeManagement(status);
+      } else {
+        setExchangePrompt(status);
+      }
     } catch (error) {
       setActionResult({ title: "Exchange nicht erreichbar", summary: `Die Microsoft-365-Verbindung konnte nicht geprüft werden: ${error}`, tone: "error" });
     }
@@ -842,6 +883,7 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
       if (!account) account = await connectMicrosoft365Interactively();
       await enableCompleteAutomaticMicrosoft365Sync(true);
       window.dispatchEvent(new Event(calendarChangedEventName));
+      setExchangeSyncStatus({ ...exchangePrompt, connected: true, account });
       setExchangePrompt(null);
       const address = account.email || account.userPrincipalName;
       setActionResult({
@@ -857,6 +899,12 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
     }
   };
 
+  const changeExchangeAccount = () => {
+    if (!exchangeManagement) return;
+    setExchangeManagement(null);
+    setExchangePrompt(exchangeManagement);
+  };
+
   return (
     <div className="page calendar-page">
       <header className="page-header">
@@ -865,9 +913,6 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
           <p>Termine übersichtlich planen und verwalten.</p>
         </div>
         <div className="calendar-header-actions">
-          <button type="button" onClick={() => void openExchangeSync()}>
-            <Cloud size={19} /> Kalender mit Exchange synchronisieren
-          </button>
           <button className="primary" type="button" onClick={() => openNewEvent()}>
             <Plus size={20} /> {advancedMode ? "Neue Besprechung" : "Neuer Termin"}
           </button>
@@ -876,6 +921,10 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
               <MoreHorizontal size={21} />
             </button>
             {showActionsMenu && <div className="calendar-actions-menu" role="menu">
+              <button type="button" onClick={() => void openExchangeSync()}>
+                <Cloud size={18} /> {exchangeSyncStatus?.connected ? "Exchange synchronisiert" : "Kalender mit Exchange synchronisieren"}
+              </button>
+              <span className="calendar-actions-separator" />
               <button type="button" onClick={() => { setShowActionsMenu(false); onNavigate("import"); }}><Upload size={18} /> Termine importieren</button>
               <button type="button" onClick={() => { setShowActionsMenu(false); onNavigate("export"); }}><Download size={18} /> Termine exportieren</button>
               <button type="button" onClick={() => { setShowActionsMenu(false); setReconciliationOpen(true); }}><RefreshCw size={18} /> Kalender erneut abgleichen</button>
@@ -921,6 +970,28 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
               <button className="primary" type="button" onClick={() => void enableExchangeCalendarSync(false)} disabled={exchangeSyncBusy}>
                 {exchangeSyncBusy ? "Wird verbunden …" : exchangePrompt.connected ? "Ja, synchronisieren" : "Mit Microsoft anmelden"}
               </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {exchangeManagement && exchangeManagement.account && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="exchange-management-title">
+          <section className="form-panel modal-card action-result-dialog">
+            <div className="action-result-heading">
+              <span className="action-result-icon success" aria-hidden="true"><Cloud size={28} /></span>
+              <div>
+                <p className="action-result-kicker">Exchange-Kalender</p>
+                <h3 id="exchange-management-title">Exchange synchronisiert</h3>
+              </div>
+              <button className="icon-only" type="button" aria-label="Schließen" onClick={() => setExchangeManagement(null)}><X size={22} /></button>
+            </div>
+            <p className="action-result-summary">Ihr Kalender ist mit <strong>{exchangeManagement.account.email || exchangeManagement.account.userPrincipalName}</strong> verbunden.</p>
+            <p>Neue Änderungen werden automatisch mit Exchange abgeglichen.</p>
+            <div className="button-row action-result-actions">
+              <button type="button" onClick={() => { window.dispatchEvent(new Event(calendarChangedEventName)); setExchangeManagement(null); }}>Jetzt aktualisieren</button>
+              <button type="button" onClick={changeExchangeAccount}>Anderes Konto</button>
+              <button className="primary" type="button" onClick={() => { setExchangeManagement(null); onNavigate("synchronizations"); }}>Synchronisierung verwalten</button>
             </div>
           </section>
         </div>
@@ -1306,9 +1377,13 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
         kind="calendar"
         open={easyImportOpen}
         onClose={() => setEasyImportOpen(false)}
-        onImported={() => {
-          const storedEvents = JSON.parse(localStorage.getItem(calendarStorageKey) ?? "[]") as CalendarEvent[];
-          setEvents(storedEvents.map(normalizeEvent));
+        onImported={async () => {
+          const storedEvents = "__TAURI_INTERNALS__" in window
+            ? await listCalendarEvents()
+            : JSON.parse(localStorage.getItem(calendarStorageKey) ?? "[]") as CalendarEvent[];
+          const normalized = storedEvents.map(normalizeEvent);
+          eventsRef.current = normalized;
+          setEvents(normalized);
           const storedCategories = JSON.parse(localStorage.getItem(calendarCategoriesStorageKey) ?? "[]") as CalendarCategory[];
           setCategories(storedCategories.map(normalizeCategory).filter((category) => category.name));
         }}
