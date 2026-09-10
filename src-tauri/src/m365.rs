@@ -211,6 +211,32 @@ pub struct Microsoft365SyncResult {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarOutboxSyncRequest {
+    pub direction: String,
+    #[serde(default)]
+    pub selected_calendar_source_ids: Vec<String>,
+    #[serde(default)]
+    pub source_directions: HashMap<String, String>,
+    #[serde(default)]
+    pub shared_calendars: bool,
+    #[serde(default)]
+    pub shared_mailbox_addresses: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarOutboxSyncResult {
+    pub processed: usize,
+    pub created: usize,
+    pub updated: usize,
+    pub deleted: usize,
+    pub pending: usize,
+    pub errors: usize,
+    pub error_messages: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct DeviceCodeResponse {
     device_code: String,
     user_code: String,
@@ -2787,6 +2813,211 @@ async fn graph_write(
         .map_err(|_| "Microsoft Graph hat eine ungültige Antwort geliefert.".to_string())
 }
 
+const CALENDAR_OUTBOX_BATCH_SIZE: usize = 24;
+
+fn outbox_source_direction(request: &CalendarOutboxSyncRequest, source_id: &str) -> String {
+    request
+        .source_directions
+        .get(source_id)
+        .cloned()
+        .unwrap_or_else(|| request.direction.clone())
+}
+
+fn outbox_source_is_available(
+    request: &CalendarOutboxSyncRequest,
+    source: &Microsoft365SyncSource,
+) -> bool {
+    request
+        .selected_calendar_source_ids
+        .iter()
+        .any(|id| id == &source.id)
+        && source.editable
+        && (!source.shared || request.shared_calendars)
+}
+
+async fn find_matching_exchange_event_for_outbox(
+    access_token: &str,
+    source: &Microsoft365SyncSource,
+    event: &crate::CalendarEvent,
+) -> Result<Option<Value>, String> {
+    let start = encode_graph_path_segment(event.starts_at.trim());
+    let end = encode_graph_path_segment(event.ends_at.trim());
+    let url = format!(
+        "{}/calendarView?startDateTime={start}&endDateTime={end}&$select=id,subject,start,end,lastModifiedDateTime,location,body,categories&$top=50",
+        source.resource_path
+    );
+    let values = graph_collection(access_token, &url).await?;
+    Ok(values
+        .into_iter()
+        .find(|remote| remote_event_key(remote) == local_event_key(event)))
+}
+
+#[tauri::command]
+pub async fn flush_m365_calendar_outbox(
+    app: AppHandle,
+    request: CalendarOutboxSyncRequest,
+) -> Result<CalendarOutboxSyncResult, String> {
+    // The runtime is owned by the application's shared state.  Looking it up
+    // as a separately managed Tauri state panics at runtime because it is not
+    // registered independently.  Keep the guard on the actual AppState so a
+    // calendar write cannot overlap a manual sync.
+    let state = app.state::<crate::AppState>();
+    let _sync_guard = state.m365.sync_gate.lock().await;
+    let access_token = refreshed_access_token(&app).await?;
+    let sources = list_m365_sync_sources(app.clone(), Some(request.shared_mailbox_addresses.clone())).await?;
+    let has_export_target = sources.calendars.iter().any(|source| {
+        outbox_source_is_available(&request, source)
+            && outbox_source_direction(&request, &source.id) != "import"
+    });
+    // Upgrade path: appointments created before the outbox existed are fed
+    // through the same safe, duplicate-aware queue in small batches.
+    if has_export_target && crate::calendar_sync_outbox_count(&app)? == 0 {
+        crate::enqueue_unlinked_calendar_events_for_exchange(&app, CALENDAR_OUTBOX_BATCH_SIZE)?;
+    }
+    let entries = crate::read_calendar_sync_outbox(&app, CALENDAR_OUTBOX_BATCH_SIZE)?;
+    let mut result = CalendarOutboxSyncResult {
+        processed: 0,
+        created: 0,
+        updated: 0,
+        deleted: 0,
+        pending: entries.len(),
+        errors: 0,
+        error_messages: Vec::new(),
+    };
+
+    for entry in entries {
+        let event = entry.event;
+        let linked_source = sources.calendars.iter().find_map(|source| {
+            linked_calendar_remote_id(&event, &source.id)
+                .map(|remote_id| (source, remote_id.to_string()))
+        });
+        let outcome = if entry.action == "delete" {
+            match linked_source {
+                Some((source, remote_id)) if outbox_source_direction(&request, &source.id) != "import" => {
+                    let url = format!(
+                        "{}/events/{}",
+                        source.resource_path,
+                        encode_graph_path_segment(&remote_id)
+                    );
+                    graph_write(&access_token, reqwest::Method::DELETE, &url, &Value::Null)
+                        .await
+                        .map(|_| "deleted")
+                }
+                // A local-only event has no remote copy that could be deleted.
+                Some(_) | None => Ok("ignored"),
+            }
+        } else {
+            match linked_source {
+                Some((source, remote_id)) if outbox_source_direction(&request, &source.id) != "import" => {
+                    let url = format!(
+                        "{}/events/{}",
+                        source.resource_path,
+                        encode_graph_path_segment(&remote_id)
+                    );
+                    graph_write(
+                        &access_token,
+                        reqwest::Method::PATCH,
+                        &url,
+                        &graph_event_payload(&event),
+                    )
+                    .await
+                    .map(|_| "updated")
+                }
+                Some(_) => Ok("ignored"),
+                None => {
+                    let target = sources.calendars.iter().find(|source| {
+                        outbox_source_is_available(&request, source)
+                            && outbox_source_direction(&request, &source.id) != "import"
+                    });
+                    if let Some(target) = target {
+                        match find_matching_exchange_event_for_outbox(&access_token, target, &event).await {
+                            Ok(Some(remote)) => {
+                                let remote_id = value_text(&remote, "id");
+                                let url = format!(
+                                    "{}/events/{}",
+                                    target.resource_path,
+                                    encode_graph_path_segment(remote_id)
+                                );
+                                match graph_write(
+                                    &access_token,
+                                    reqwest::Method::PATCH,
+                                    &url,
+                                    &graph_event_payload(&event),
+                                )
+                                .await
+                                {
+                                    Ok(_) => {
+                                        let mut linked = event.clone();
+                                        linked.id = format!("m365:{}:{remote_id}", target.id);
+                                        linked.source = target.name.clone();
+                                        crate::link_calendar_event_after_exchange_create(&app, &event.id, &linked)?;
+                                        Ok("updated")
+                                    }
+                                    Err(error) => Err(error),
+                                }
+                            }
+                            Ok(None) => {
+                                let url = format!("{}/events", target.resource_path);
+                                match graph_write(
+                                    &access_token,
+                                    reqwest::Method::POST,
+                                    &url,
+                                    &graph_event_payload(&event),
+                                )
+                                .await
+                                {
+                                    Ok(remote) if value_text(&remote, "id").is_empty() => Err(
+                                        "Microsoft 365 hat keine Termin-ID zurückgegeben.".to_string(),
+                                    ),
+                                    Ok(remote) => {
+                                        let linked = remote_event_to_local(&remote, target, Some(&event));
+                                        crate::link_calendar_event_after_exchange_create(&app, &event.id, &linked)?;
+                                        Ok("created")
+                                    }
+                                    Err(error) => Err(error),
+                                }
+                            }
+                            Err(error) => Err(error),
+                        }
+                    } else {
+                        Err("Kein beschreibbarer Exchange-Kalender ist ausgewählt.".to_string())
+                    }
+                }
+            }
+        };
+        match outcome {
+            Ok("created") => {
+                result.processed += 1;
+                result.created += 1;
+            }
+            Ok("deleted") => {
+                crate::complete_calendar_sync_outbox_entry(&app, &event.id)?;
+                result.processed += 1;
+                result.deleted += 1;
+            }
+            Ok("updated") => {
+                crate::complete_calendar_sync_outbox_entry(&app, &event.id)?;
+                result.processed += 1;
+                result.updated += 1;
+            }
+            Ok("ignored") => {
+                crate::complete_calendar_sync_outbox_entry(&app, &event.id)?;
+                result.processed += 1;
+            }
+            Ok(_) => unreachable!(),
+            Err(error) => {
+                let _ = crate::record_calendar_sync_outbox_error(&app, &event.id, &error);
+                result.errors += 1;
+                if result.error_messages.len() < 5 {
+                    result.error_messages.push(format!("{}: {error}", event.title));
+                }
+            }
+        }
+    }
+    result.pending = crate::calendar_sync_outbox_count(&app)?;
+    Ok(result)
+}
+
 fn contact_input_from_contact(contact: &crate::Contact) -> crate::ContactInput {
     crate::ContactInput {
         id: contact.id,
@@ -2825,8 +3056,8 @@ pub async fn apply_m365_sync(
     // A manual sync can overlap the automatic change/poll sync. Building the
     // second plan only after the first write is visible lets the remote-key
     // matching relink the event instead of creating it a second time.
-    let runtime = app.state::<Microsoft365Runtime>();
-    let _sync_guard = runtime.sync_gate.lock().await;
+    let state = app.state::<crate::AppState>();
+    let _sync_guard = state.m365.sync_gate.lock().await;
     let started_at = Utc::now().to_rfc3339();
     let access_token = refreshed_access_token(&app).await?;
     if request.contacts && request.contact_groups {

@@ -35,7 +35,8 @@ import type {
   Microsoft365ConflictDecision,
   Microsoft365SyncResult,
   Microsoft365SyncPreview,
-  Microsoft365SyncSources
+  Microsoft365SyncSources,
+  CalendarOutboxSyncResult
 } from "../types/m365";
 import type { DocumentConflictDecision, DocumentItem, DocumentMutationRequest, DocumentOfflineFolderResult, DocumentSource, DocumentSyncConflict, DocumentSyncSummary, DocumentTransferRequest, DocumentTransferResult, DocumentUploadResult, DocumentVersion, SystemFileIcon } from "../types/documents";
 import type { PhoneTransferStatus } from "../types/phoneTransfer";
@@ -97,8 +98,16 @@ export function saveCalendarEvents(events: CalendarEvent[]): Promise<void> {
   return invoke("save_calendar_events", { events });
 }
 
+export function saveCalendarEventsFromMicrosoft365(events: CalendarEvent[]): Promise<void> {
+  return invoke("save_calendar_events_from_m365", { events });
+}
+
 export function moveCalendarEventsToTrash(ids: string[]): Promise<number> {
   return invoke("move_calendar_events_to_trash", { ids });
+}
+
+export function moveCalendarEventsToTrashFromMicrosoft365(ids: string[]): Promise<number> {
+  return invoke("move_calendar_events_to_trash_from_m365", { ids });
 }
 
 export function restoreCalendarEvents(ids: string[]): Promise<number> {
@@ -330,6 +339,16 @@ export function applyMicrosoft365Sync(request: {
   backup: BackupData;
 }): Promise<Microsoft365SyncResult> {
   return invoke("apply_m365_sync", { request });
+}
+
+export function flushMicrosoft365CalendarOutbox(request: {
+  direction: string;
+  selectedCalendarSourceIds: string[];
+  sourceDirections: Record<string, string>;
+  sharedCalendars: boolean;
+  sharedMailboxAddresses: string[];
+}): Promise<CalendarOutboxSyncResult> {
+  return invoke("flush_m365_calendar_outbox", { request });
 }
 
 export function listDocumentSources(scope: "all" | "onedrive" | "sharepoint" = "all"): Promise<DocumentSource[]> {

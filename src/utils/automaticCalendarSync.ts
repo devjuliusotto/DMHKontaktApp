@@ -1,10 +1,11 @@
 import {
   applyMicrosoft365Sync,
+  flushMicrosoft365CalendarOutbox,
   getAppSetting,
   getSyncBackupData,
   getMicrosoft365ConnectionStatus,
-  moveCalendarEventsToTrash,
-  saveCalendarEvents,
+  moveCalendarEventsToTrashFromMicrosoft365,
+  saveCalendarEventsFromMicrosoft365,
   setAppSetting
 } from "../services/db";
 import type { CalendarEvent } from "../types/calendar";
@@ -93,8 +94,8 @@ function parseHistory(raw: string | null): Microsoft365SyncHistoryEntry[] {
 
 async function applyCalendarChanges(calendarUpserts: CalendarEvent[], calendarDeletes: string[]): Promise<void> {
   if (calendarUpserts.length === 0 && calendarDeletes.length === 0) return;
-  if (calendarUpserts.length > 0) await saveCalendarEvents(calendarUpserts);
-  if (calendarDeletes.length > 0) await moveCalendarEventsToTrash(calendarDeletes);
+  if (calendarUpserts.length > 0) await saveCalendarEventsFromMicrosoft365(calendarUpserts);
+  if (calendarDeletes.length > 0) await moveCalendarEventsToTrashFromMicrosoft365(calendarDeletes);
   mergeImportedCalendarCategories(calendarUpserts);
   window.dispatchEvent(new Event(calendarStorageUpdatedEventName));
 }
@@ -124,6 +125,51 @@ export async function runAutomaticCalendarSync(trigger: "open" | "change" | "pol
     return { state: "error", message: "Die Änderung wurde lokal gespeichert. Microsoft 365 ist momentan nicht verbunden." };
   }
 
+  // Local calendar changes use a durable SQLite outbox. They are sent first
+  // and are only removed after Microsoft Graph confirms the write. This avoids
+  // re-scanning a 50,000-item calendar before a newly saved appointment can
+  // leave the app.
+  const queued = await flushMicrosoft365CalendarOutbox({
+    direction: config.direction,
+    selectedCalendarSourceIds: config.selectedCalendarSourceIds,
+    sourceDirections: config.sourceDirections,
+    sharedCalendars: config.sharedCalendars,
+    sharedMailboxAddresses: config.sharedMailboxAddresses
+  });
+  const queuedExchangeCount = queued.created + queued.updated + queued.deleted;
+  if (queued.created > 0) window.dispatchEvent(new Event(calendarStorageUpdatedEventName));
+
+  // Outbound calendar writes and inbound reconciliation are two independent
+  // halves of the same cycle.  Finishing the cycle after flushing the outbox
+  // meant that a busy local calendar could indefinitely starve changes made
+  // in Exchange/Teams.  The full synchronizer now receives only calendar
+  // sources that permit importing, and those sources are forced to import-only
+  // here because outbound writes are already handled safely by the outbox.
+  const inboundCalendarSourceIds = config.calendars
+    ? config.selectedCalendarSourceIds.filter((sourceId) =>
+        (config.sourceDirections[sourceId] ?? config.direction) !== "export")
+    : [];
+  const reconciliationSourceDirections = { ...config.sourceDirections };
+  for (const sourceId of inboundCalendarSourceIds) reconciliationSourceDirections[sourceId] = "import";
+  const shouldRunReconciliation = config.contacts || inboundCalendarSourceIds.length > 0;
+
+  if (!shouldRunReconciliation) {
+    if (queued.errors > 0) {
+      const message = queued.errorMessages.join(" · ") || "Die ausstehenden Kalenderänderungen werden erneut versucht.";
+      await recordMicrosoft365SynchronizationError(message);
+      return { state: "error", message: `Exchange konnte ${queued.errors} Kalenderänderung(en) noch nicht übernehmen: ${message}` };
+    }
+    if (queued.processed > 0) window.dispatchEvent(new Event(m365DataUpdatedEventName));
+    return queued.processed > 0
+      ? {
+          state: "success",
+          message: queuedExchangeCount > 0
+            ? `${queuedExchangeCount} Kalenderänderung(en) sicher an Exchange übertragen.`
+            : "Lokale Kalenderänderung wurde abgeglichen."
+        }
+      : { state: "success", message: "Microsoft 365 ist bereits synchron." };
+  }
+
   // Calendar records are read directly by the native synchronizer. This keeps
   // large calendars out of the WebView and avoids a second full backup on each
   // 30-second synchronization cycle.
@@ -133,13 +179,13 @@ export async function runAutomaticCalendarSync(trigger: "open" | "change" | "pol
     base: config.base,
     contacts: config.contacts,
     contactGroups: config.contactGroups,
-    calendars: config.calendars,
+    calendars: inboundCalendarSourceIds.length > 0,
     sharedCalendars: config.sharedCalendars,
     sharedMailboxes: false,
     sharedMailboxAddresses: [],
     selectedContactSourceIds,
-    selectedCalendarSourceIds: config.selectedCalendarSourceIds,
-    sourceDirections: config.sourceDirections,
+    selectedCalendarSourceIds: inboundCalendarSourceIds,
+    sourceDirections: reconciliationSourceDirections,
     decisions: {},
     backup
   });
@@ -148,26 +194,34 @@ export async function runAutomaticCalendarSync(trigger: "open" | "change" | "pol
   if (result.created + result.updated + result.deleted > 0) {
     window.dispatchEvent(new Event(m365DataUpdatedEventName));
   }
+  const combinedResult: Microsoft365SyncResult = {
+    ...result,
+    created: result.created + queued.created,
+    updated: result.updated + queued.updated,
+    deleted: result.deleted + queued.deleted,
+    errors: result.errors + queued.errors,
+    errorMessages: [...queued.errorMessages, ...result.errorMessages]
+  };
   const history = parseHistory(await getAppSetting(synchronizationHistoryKey));
   const entry: Microsoft365SyncHistoryEntry = {
-    id: `${result.startedAt}-${Date.now()}`,
-    startedAt: result.startedAt,
-    finishedAt: result.finishedAt,
-    created: result.created,
-    updated: result.updated,
-    deleted: result.deleted,
-    ignored: result.ignored,
-    conflicts: result.conflicts,
-    errors: result.errors,
-    errorMessages: result.errorMessages
+    id: `${combinedResult.startedAt}-${Date.now()}`,
+    startedAt: combinedResult.startedAt,
+    finishedAt: combinedResult.finishedAt,
+    created: combinedResult.created,
+    updated: combinedResult.updated,
+    deleted: combinedResult.deleted,
+    ignored: combinedResult.ignored,
+    conflicts: combinedResult.conflicts,
+    errors: combinedResult.errors,
+    errorMessages: combinedResult.errorMessages
   };
   await setAppSetting(synchronizationHistoryKey, JSON.stringify([entry, ...history].slice(0, 30)));
 
-  const exchangeCount = result.created + result.updated + result.deleted;
-  await recordMicrosoft365SynchronizationSuccess(config, result);
+  const exchangeCount = combinedResult.created + combinedResult.updated + combinedResult.deleted;
+  await recordMicrosoft365SynchronizationSuccess(config, combinedResult);
 
-  if (result.errors > 0) {
-    return { state: "error", message: `Microsoft-365-Synchronisierung mit ${result.errors} Fehler(n) abgeschlossen.` };
+  if (combinedResult.errors > 0) {
+    return { state: "error", message: `Microsoft-365-Synchronisierung mit ${combinedResult.errors} Fehler(n) abgeschlossen.` };
   }
   if (result.conflicts > 0) {
     return {

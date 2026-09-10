@@ -256,6 +256,15 @@ pub struct CalendarEventMergeResult {
     pub total: usize,
 }
 
+/// A durable local write waiting for Exchange. It deliberately lives in SQLite
+/// instead of the WebView so closing the app, a reboot, or a temporary network
+/// failure cannot discard a newly created appointment.
+#[derive(Debug, Clone)]
+pub struct CalendarSyncOutboxEntry {
+    pub event: CalendarEvent,
+    pub action: String,
+}
+
 fn default_calendar_color() -> String {
     "blue".to_string()
 }
@@ -741,6 +750,13 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
             updated_at TEXT NOT NULL,
             deleted_at TEXT
         );
+        CREATE TABLE IF NOT EXISTS calendar_sync_outbox (
+            event_id TEXT PRIMARY KEY,
+            action TEXT NOT NULL,
+            queued_at TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT
+        );
         CREATE TABLE IF NOT EXISTS mail_accounts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             source TEXT NOT NULL DEFAULT 'outlook-classic',
@@ -823,6 +839,8 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
             ON calendar_events(deleted_at, starts_at);
         CREATE INDEX IF NOT EXISTS idx_calendar_events_active_duplicate
             ON calendar_events(deleted_at, duplicate_key);
+        CREATE INDEX IF NOT EXISTS idx_calendar_sync_outbox_queued
+            ON calendar_sync_outbox(queued_at DESC);
         ",
     )
     .map_err(|err| err.to_string())?;
@@ -897,6 +915,7 @@ fn read_calendar_events(conn: &Connection, deleted: bool) -> Result<Vec<Calendar
 fn write_calendar_events(
     conn: &Connection,
     events: &[CalendarEvent],
+    queue_for_exchange: bool,
 ) -> Result<(), String> {
     let transaction = conn.unchecked_transaction().map_err(|error| error.to_string())?;
     {
@@ -912,21 +931,51 @@ fn write_calendar_events(
                    deleted_at = excluded.deleted_at",
             )
             .map_err(|error| error.to_string())?;
+        let mut outbox_statement = if queue_for_exchange {
+            Some(
+                transaction
+                    .prepare(
+                        "INSERT INTO calendar_sync_outbox (event_id, action, queued_at, attempts, last_error)
+                         VALUES (?1, ?2, ?3, 0, NULL)
+                         ON CONFLICT(event_id) DO UPDATE SET
+                           action = excluded.action,
+                           queued_at = excluded.queued_at,
+                           attempts = 0,
+                           last_error = NULL",
+                    )
+                    .map_err(|error| error.to_string())?,
+            )
+        } else {
+            None
+        };
         for event in events {
             if event.id.trim().is_empty() {
                 return Err("Ein Kalendertermin ohne technische ID kann nicht gespeichert werden.".to_string());
             }
-            let json = serde_json::to_string(event).map_err(|error| error.to_string())?;
+            let mut stored = event.clone();
+            if stored.updated_at.trim().is_empty() {
+                stored.updated_at = now();
+            }
+            let json = serde_json::to_string(&stored).map_err(|error| error.to_string())?;
             statement
                 .execute(params![
-                    event.id,
-                    event.starts_at,
-                    normalized_calendar_duplicate_key(event),
+                    stored.id,
+                    stored.starts_at,
+                    normalized_calendar_duplicate_key(&stored),
                     json,
-                    if event.updated_at.trim().is_empty() { now() } else { event.updated_at.clone() },
-                    event.deleted_at,
+                    stored.updated_at,
+                    stored.deleted_at,
                 ])
                 .map_err(|error| error.to_string())?;
+            if let Some(outbox) = outbox_statement.as_mut() {
+                outbox
+                    .execute(params![
+                        stored.id,
+                        if stored.deleted_at.is_some() { "delete" } else { "upsert" },
+                        now(),
+                    ])
+                    .map_err(|error| error.to_string())?;
+            }
         }
     }
     transaction.commit().map_err(|error| error.to_string())
@@ -993,6 +1042,17 @@ fn merge_calendar_events_in_db(
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )
             .map_err(|error| error.to_string())?;
+        let mut outbox_statement = transaction
+            .prepare(
+                "INSERT INTO calendar_sync_outbox (event_id, action, queued_at, attempts, last_error)
+                 VALUES (?1, 'upsert', ?2, 0, NULL)
+                 ON CONFLICT(event_id) DO UPDATE SET
+                   action = excluded.action,
+                   queued_at = excluded.queued_at,
+                   attempts = 0,
+                   last_error = NULL",
+            )
+            .map_err(|error| error.to_string())?;
         for event in events {
             if event.id.trim().is_empty() || event.starts_at.trim().is_empty() {
                 skipped_same_id += 1;
@@ -1018,6 +1078,9 @@ fn merge_calendar_events_in_db(
                     &event.deleted_at,
                 ])
                 .map_err(|error| error.to_string())?;
+            outbox_statement
+                .execute(params![&event.id, now()])
+                .map_err(|error| error.to_string())?;
             known_ids.insert(event.id.clone());
             known_duplicates.insert(duplicate_key);
             imported += 1;
@@ -1034,11 +1097,19 @@ fn merge_calendar_events_in_db(
 
 #[tauri::command]
 fn save_calendar_events(app: AppHandle, events: Vec<CalendarEvent>) -> Result<(), String> {
-    write_calendar_events(&open_db(&app)?, &events)
+    write_calendar_events(&open_db(&app)?, &events, true)
 }
 
 #[tauri::command]
-fn move_calendar_events_to_trash(app: AppHandle, ids: Vec<String>) -> Result<usize, String> {
+fn save_calendar_events_from_m365(app: AppHandle, events: Vec<CalendarEvent>) -> Result<(), String> {
+    write_calendar_events(&open_db(&app)?, &events, false)
+}
+
+fn move_calendar_events_to_trash_internal(
+    app: AppHandle,
+    ids: Vec<String>,
+    queue_for_exchange: bool,
+) -> Result<usize, String> {
     if ids.is_empty() {
         return Ok(0);
     }
@@ -1068,9 +1139,33 @@ fn move_calendar_events_to_trash(app: AppHandle, ids: Vec<String>) -> Result<usi
                 params![updated_json, timestamp, id],
             )
             .map_err(|error| error.to_string())?;
+        if queue_for_exchange {
+            transaction
+                .execute(
+                    "INSERT INTO calendar_sync_outbox (event_id, action, queued_at, attempts, last_error)
+                     VALUES (?1, 'delete', ?2, 0, NULL)
+                     ON CONFLICT(event_id) DO UPDATE SET
+                       action = 'delete', queued_at = excluded.queued_at, attempts = 0, last_error = NULL",
+                    params![id, now()],
+                )
+                .map_err(|error| error.to_string())?;
+        }
     }
     transaction.commit().map_err(|error| error.to_string())?;
     Ok(changed)
+}
+
+#[tauri::command]
+fn move_calendar_events_to_trash(app: AppHandle, ids: Vec<String>) -> Result<usize, String> {
+    move_calendar_events_to_trash_internal(app, ids, true)
+}
+
+#[tauri::command]
+fn move_calendar_events_to_trash_from_m365(
+    app: AppHandle,
+    ids: Vec<String>,
+) -> Result<usize, String> {
+    move_calendar_events_to_trash_internal(app, ids, false)
 }
 
 #[tauri::command]
@@ -1104,6 +1199,15 @@ fn restore_calendar_events(app: AppHandle, ids: Vec<String>) -> Result<usize, St
                 params![updated_json, timestamp, id],
             )
             .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "INSERT INTO calendar_sync_outbox (event_id, action, queued_at, attempts, last_error)
+                 VALUES (?1, 'upsert', ?2, 0, NULL)
+                 ON CONFLICT(event_id) DO UPDATE SET
+                   action = 'upsert', queued_at = excluded.queued_at, attempts = 0, last_error = NULL",
+                params![id, now()],
+            )
+            .map_err(|error| error.to_string())?;
     }
     transaction.commit().map_err(|error| error.to_string())?;
     Ok(restored)
@@ -1118,6 +1222,12 @@ fn purge_deleted_calendar_events(app: AppHandle, ids: Vec<String>) -> Result<usi
     let transaction = conn.unchecked_transaction().map_err(|error| error.to_string())?;
     let mut deleted = 0usize;
     for id in ids {
+        transaction
+            .execute(
+                "DELETE FROM calendar_sync_outbox WHERE event_id = ?1",
+                params![&id],
+            )
+            .map_err(|error| error.to_string())?;
         deleted += transaction
             .execute(
                 "DELETE FROM calendar_events WHERE id = ?1 AND deleted_at IS NOT NULL",
@@ -1127,6 +1237,157 @@ fn purge_deleted_calendar_events(app: AppHandle, ids: Vec<String>) -> Result<usi
     }
     transaction.commit().map_err(|error| error.to_string())?;
     Ok(deleted)
+}
+
+pub fn read_calendar_sync_outbox(
+    app: &AppHandle,
+    limit: usize,
+) -> Result<Vec<CalendarSyncOutboxEntry>, String> {
+    let conn = open_db(app)?;
+    // A permanently purged event must never leave an orphaned retry behind.
+    conn.execute(
+        "DELETE FROM calendar_sync_outbox WHERE event_id NOT IN (SELECT id FROM calendar_events)",
+        [],
+    )
+    .map_err(|error| error.to_string())?;
+    let mut statement = conn
+        .prepare(
+            "SELECT calendar_events.event_json, calendar_sync_outbox.action
+             FROM calendar_sync_outbox
+             INNER JOIN calendar_events ON calendar_events.id = calendar_sync_outbox.event_id
+             ORDER BY calendar_sync_outbox.queued_at DESC
+             LIMIT ?1",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params![limit as i64], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| error.to_string())?;
+    rows.map(|row| {
+        let (json, action) = row.map_err(|error| error.to_string())?;
+        Ok(CalendarSyncOutboxEntry {
+            event: serde_json::from_str(&json)
+                .map_err(|error| format!("Ausstehender Kalendertermin ist beschädigt: {error}"))?,
+            action,
+        })
+    })
+    .collect()
+}
+
+pub fn complete_calendar_sync_outbox_entry(app: &AppHandle, event_id: &str) -> Result<(), String> {
+    open_db(app)?
+        .execute(
+            "DELETE FROM calendar_sync_outbox WHERE event_id = ?1",
+            params![event_id],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+pub fn calendar_sync_outbox_count(app: &AppHandle) -> Result<usize, String> {
+    open_db(app)?
+        .query_row("SELECT COUNT(*) FROM calendar_sync_outbox", [], |row| row.get::<_, usize>(0))
+        .map_err(|error| error.to_string())
+}
+
+pub fn enqueue_unlinked_calendar_events_for_exchange(
+    app: &AppHandle,
+    limit: usize,
+) -> Result<usize, String> {
+    let conn = open_db(app)?;
+    let mut statement = conn
+        .prepare(
+            "SELECT id FROM calendar_events
+             WHERE deleted_at IS NULL
+               AND id NOT LIKE 'm365:%'
+               AND id NOT IN (SELECT event_id FROM calendar_sync_outbox)
+             ORDER BY updated_at DESC, starts_at DESC
+             LIMIT ?1",
+        )
+        .map_err(|error| error.to_string())?;
+    let ids = statement
+        .query_map(params![limit as i64], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let transaction = conn.unchecked_transaction().map_err(|error| error.to_string())?;
+    let mut insert = transaction
+        .prepare(
+            "INSERT OR IGNORE INTO calendar_sync_outbox (event_id, action, queued_at, attempts, last_error)
+             VALUES (?1, 'upsert', ?2, 0, NULL)",
+        )
+        .map_err(|error| error.to_string())?;
+    for id in &ids {
+        insert
+            .execute(params![id, now()])
+            .map_err(|error| error.to_string())?;
+    }
+    drop(insert);
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(ids.len())
+}
+
+pub fn record_calendar_sync_outbox_error(
+    app: &AppHandle,
+    event_id: &str,
+    error: &str,
+) -> Result<(), String> {
+    let safe_error = error.chars().filter(|character| !character.is_control()).take(500).collect::<String>();
+    open_db(app)?
+        .execute(
+            "UPDATE calendar_sync_outbox
+             SET attempts = attempts + 1, last_error = ?1
+             WHERE event_id = ?2",
+            params![safe_error, event_id],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+pub fn link_calendar_event_after_exchange_create(
+    app: &AppHandle,
+    previous_id: &str,
+    event: &CalendarEvent,
+) -> Result<(), String> {
+    let conn = open_db(app)?;
+    let transaction = conn.unchecked_transaction().map_err(|error| error.to_string())?;
+    let json = serde_json::to_string(event).map_err(|error| error.to_string())?;
+    transaction
+        .execute(
+            "INSERT INTO calendar_events (id, starts_at, duplicate_key, event_json, updated_at, deleted_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET
+               starts_at = excluded.starts_at,
+               duplicate_key = excluded.duplicate_key,
+               event_json = excluded.event_json,
+               updated_at = excluded.updated_at,
+               deleted_at = excluded.deleted_at",
+            params![
+                event.id,
+                event.starts_at,
+                normalized_calendar_duplicate_key(event),
+                json,
+                if event.updated_at.trim().is_empty() { now() } else { event.updated_at.clone() },
+                event.deleted_at,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    if event.id != previous_id {
+        transaction
+            .execute("DELETE FROM calendar_events WHERE id = ?1", params![previous_id])
+            .map_err(|error| error.to_string())?;
+    }
+    transaction
+        .execute(
+            "DELETE FROM calendar_sync_outbox WHERE event_id = ?1",
+            params![previous_id],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())
 }
 
 const AUTOMATIC_BACKUP_FOLDER: &str = "DMH Kontakte und Kalender\\Automatische Sicherung";
@@ -6227,7 +6488,9 @@ pub fn run() {
             list_deleted_calendar_events,
             merge_calendar_events,
             save_calendar_events,
+            save_calendar_events_from_m365,
             move_calendar_events_to_trash,
+            move_calendar_events_to_trash_from_m365,
             restore_calendar_events,
             purge_deleted_calendar_events,
             import_contacts,
@@ -6267,6 +6530,7 @@ pub fn run() {
             m365::list_m365_sync_sources,
             m365::preview_m365_sync,
             m365::apply_m365_sync,
+            m365::flush_m365_calendar_outbox,
             documents::list_document_sources,
             documents::list_document_items,
             documents::create_document_folder,
@@ -6549,6 +6813,13 @@ mod tests {
             );
             CREATE INDEX idx_calendar_events_active_duplicate
                 ON calendar_events(deleted_at, duplicate_key);
+            CREATE TABLE calendar_sync_outbox (
+                event_id TEXT PRIMARY KEY,
+                action TEXT NOT NULL,
+                queued_at TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT
+            );
             ",
         )
         .expect("calendar table");
@@ -6574,6 +6845,10 @@ mod tests {
         let result = merge_calendar_events_in_db(&mut conn, events).expect("large calendar merge");
         assert_eq!(result.imported, 50_000);
         assert_eq!(read_calendar_events(&conn, false).expect("read merged calendar").len(), 50_000);
+        let queued: i64 = conn
+            .query_row("SELECT COUNT(*) FROM calendar_sync_outbox WHERE action = 'upsert'", [], |row| row.get(0))
+            .expect("queued calendar writes");
+        assert_eq!(queued, 50_000);
     }
 
     #[test]
