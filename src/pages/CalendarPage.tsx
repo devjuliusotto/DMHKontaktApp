@@ -1,12 +1,14 @@
-import { CalendarDays, ChevronLeft, ChevronRight, Download, Filter, ListChecks, MoreHorizontal, Plus, RefreshCw, Rows3, Trash2, Undo2, Upload, X } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, Clock3, Cloud, Download, Filter, ListChecks, MoreHorizontal, PanelLeftClose, Plus, RefreshCw, Rows3, Settings2, Trash2, Undo2, Upload, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { CalendarReconciliationDialog } from "../components/CalendarReconciliationDialog";
 import { CalendarEventForm } from "../components/CalendarEventForm";
+import { ActionResultDialog, type ActionResult } from "../components/ActionResultDialog";
 import { EasyImportDialog } from "../components/EasyImportDialog";
 import { EmptyImportState } from "../components/EmptyImportState";
 import { StatusMessage } from "../components/StatusMessage";
 import type { Page } from "../components/Sidebar";
 import type { CalendarEvent } from "../types/calendar";
+import type { Microsoft365ConnectionStatus } from "../types/m365";
 import { calendarCategoriesStorageKey, calendarColorOptions, calendarColorStyle, calendarColorValue, calendarStorageKey, calendarTrashStorageKey, defaultCalendarColor, expandCalendarEvents, formatCalendarDate, parseCalendarDate } from "../utils/calendar";
 import { findExactCalendarDuplicateGroups, removeExactCalendarDuplicates } from "../utils/calendarDuplicates";
 import {
@@ -15,13 +17,16 @@ import {
   calendarStorageUpdatedEventName,
   type CalendarAutomaticSyncStatus
 } from "../utils/automaticCalendarSync";
+import { enableCompleteAutomaticMicrosoft365Sync } from "../utils/microsoft365SyncConfig";
+import { connectMicrosoft365Interactively, disconnectMicrosoft365Account, getMicrosoft365ConnectionStatus } from "../services/db";
 
 const duplicateCleanupBackupKey = "agendakontakte.calendarExactDuplicateCleanupBackup.v1";
 const calendarViewStorageKey = "agendakontakte.calendarView.v1";
+const advancedCalendarSettingsStorageKey = "agendakontakte.calendarAdvancedSettings.v1";
 const compactCalendarHourHeight = 60;
 const weekdays = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
 const calendarHours = Array.from({ length: 24 }, (_, hour) => hour);
-type CalendarView = "day" | "week" | "month";
+type CalendarView = "day" | "workweek" | "week" | "month";
 type CalendarCategory = {
   name: string;
   color: string;
@@ -31,6 +36,25 @@ const allCategoriesValue = "__all__";
 interface CalendarDuplicateCleanupBackup {
   createdAt: string;
   removedEvents: CalendarEvent[];
+}
+
+interface AdvancedCalendarSettings {
+  hourHeight: number;
+  hiddenSources: string[];
+}
+
+const defaultAdvancedCalendarSettings: AdvancedCalendarSettings = { hourHeight: 68, hiddenSources: [] };
+
+function readAdvancedCalendarSettings(): AdvancedCalendarSettings {
+  try {
+    const value = JSON.parse(localStorage.getItem(advancedCalendarSettingsStorageKey) ?? "{}") as Partial<AdvancedCalendarSettings>;
+    return {
+      hourHeight: value.hourHeight === 52 || value.hourHeight === 68 || value.hourHeight === 84 ? value.hourHeight : defaultAdvancedCalendarSettings.hourHeight,
+      hiddenSources: Array.isArray(value.hiddenSources) ? value.hiddenSources.filter((source): source is string => typeof source === "string") : []
+    };
+  } catch {
+    return defaultAdvancedCalendarSettings;
+  }
 }
 
 function readDuplicateCleanupBackup(): CalendarDuplicateCleanupBackup | null {
@@ -170,7 +194,7 @@ interface CalendarMonthSelection {
 
 function storedCalendarView(): CalendarView {
   const stored = localStorage.getItem(calendarViewStorageKey);
-  return stored === "day" || stored === "week" || stored === "month" ? stored : "month";
+  return stored === "day" || stored === "workweek" || stored === "week" || stored === "month" ? stored : "month";
 }
 
 function isoWeekNumber(date: Date): number {
@@ -239,16 +263,21 @@ function normalizeCategory(category: CalendarCategory): CalendarCategory {
 }
 
 interface CalendarPageProps {
+  advancedMode: boolean;
+  onAdvancedModeChange: (enabled: boolean) => void;
   onNavigate: (page: Page) => void;
 }
 
-export function CalendarPage({ onNavigate }: CalendarPageProps) {
+export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }: CalendarPageProps) {
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [calendarLoaded, setCalendarLoaded] = useState(false);
   const [easyImportOpen, setEasyImportOpen] = useState(false);
   const [reconciliationOpen, setReconciliationOpen] = useState(false);
   const [categories, setCategories] = useState<CalendarCategory[]>([]);
   const [message, setMessage] = useState("");
+  const [actionResult, setActionResult] = useState<ActionResult | null>(null);
+  const [advancedSettings, setAdvancedSettings] = useState<AdvancedCalendarSettings>(readAdvancedCalendarSettings);
+  const [advancedFiltersOpen, setAdvancedFiltersOpen] = useState(false);
   const [view, setView] = useState<CalendarView>(storedCalendarView);
   const [cursor, setCursor] = useState(() => startOfDay(new Date()));
   const [editingEvent, setEditingEvent] = useState<CalendarEvent | null>(null);
@@ -257,6 +286,8 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
   const [showCategoryDialog, setShowCategoryDialog] = useState(false);
   const [showDuplicateDialog, setShowDuplicateDialog] = useState(false);
   const [showActionsMenu, setShowActionsMenu] = useState(false);
+  const [exchangePrompt, setExchangePrompt] = useState<Microsoft365ConnectionStatus | null>(null);
+  const [exchangeSyncBusy, setExchangeSyncBusy] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
   const [newCategoryColor, setNewCategoryColor] = useState(defaultCalendarColor);
   const [duplicateCleanupBackup, setDuplicateCleanupBackup] = useState<CalendarDuplicateCleanupBackup | null>(
@@ -297,6 +328,10 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
   }, [view]);
 
   useEffect(() => {
+    localStorage.setItem(advancedCalendarSettingsStorageKey, JSON.stringify(advancedSettings));
+  }, [advancedSettings]);
+
+  useEffect(() => {
     const reloadStoredEvents = () => {
       try {
         const storedEvents = JSON.parse(localStorage.getItem(calendarStorageKey) ?? "[]") as CalendarEvent[];
@@ -323,16 +358,25 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
       const first = startOfWeek(new Date(cursor.getFullYear(), cursor.getMonth(), 1));
       return { start: first, end: addDays(first, 42) };
     }
+    if (view === "workweek") {
+      const first = startOfWeek(cursor);
+      return { start: first, end: addDays(first, 5) };
+    }
     if (view === "week") {
       const first = startOfWeek(cursor);
       return { start: first, end: addDays(first, 7) };
     }
     return { start: startOfDay(cursor), end: addDays(startOfDay(cursor), 1) };
   }, [cursor, view]);
+  const calendarSources = useMemo(
+    () => Array.from(new Set(events.map((event) => event.source?.trim()).filter((source): source is string => Boolean(source)))).sort((left, right) => left.localeCompare(right, "de")),
+    [events]
+  );
   const allSortedEvents = useMemo(
     () => expandCalendarEvents(events, displayRange.start, displayRange.end)
+      .filter((event) => !advancedMode || !event.source || !advancedSettings.hiddenSources.includes(event.source.trim()))
       .sort((left, right) => left.startsAt.localeCompare(right.startsAt)),
-    [displayRange, events]
+    [advancedMode, advancedSettings.hiddenSources, displayRange, events]
   );
   const categoryOptions = useMemo(
     () => {
@@ -363,8 +407,8 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
 
   const weekDays = useMemo(() => {
     const first = startOfWeek(cursor);
-    return Array.from({ length: 7 }, (_, index) => addDays(first, index));
-  }, [cursor]);
+    return Array.from({ length: view === "workweek" ? 5 : 7 }, (_, index) => addDays(first, index));
+  }, [cursor, view]);
 
   const weekLayouts = useMemo(() => weekDays.map((day) => {
     const dayStart = startOfDay(day);
@@ -383,17 +427,18 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
   );
 
   useEffect(() => {
-    if ((view !== "week" && view !== "day") || !timeGridScrollRef.current) return;
+    if ((view !== "week" && view !== "workweek" && view !== "day") || !timeGridScrollRef.current) return;
     const now = new Date();
-    const rangeStart = view === "week" ? weekDays[0] : startOfDay(cursor);
-    const rangeEnd = view === "week" ? addDays(weekDays[6], 1) : addDays(startOfDay(cursor), 1);
+    const weekBasedView = view === "week" || view === "workweek";
+    const rangeStart = weekBasedView ? weekDays[0] : startOfDay(cursor);
+    const rangeEnd = weekBasedView ? addDays(weekDays[weekDays.length - 1], 1) : addDays(startOfDay(cursor), 1);
     const visibleHour = now >= rangeStart && now < rangeEnd ? Math.max(0, now.getHours() - 1) : 7;
     const scroll = timeGridScrollRef.current;
     const frame = window.requestAnimationFrame(() => {
       scroll.scrollTop = visibleHour * compactCalendarHourHeight;
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [cursor, view, weekDays]);
+  }, [advancedMode, advancedSettings.hourHeight, cursor, view, weekDays]);
 
   const eventsForDay = (day: Date) => sortedEvents.filter((event) => {
     const date = eventDate(event);
@@ -402,8 +447,8 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
 
   const title = view === "month"
     ? new Intl.DateTimeFormat("de-DE", { month: "long", year: "numeric" }).format(cursor)
-    : view === "week"
-      ? `${new Intl.DateTimeFormat("de-DE", { day: "2-digit", month: "2-digit" }).format(weekDays[0])}–${new Intl.DateTimeFormat("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" }).format(weekDays[6])} · Woche ${isoWeekNumber(weekDays[0])}`
+    : view === "week" || view === "workweek"
+      ? `${new Intl.DateTimeFormat("de-DE", { day: "2-digit", month: "2-digit" }).format(weekDays[0])}–${new Intl.DateTimeFormat("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" }).format(weekDays[weekDays.length - 1])} · Woche ${isoWeekNumber(weekDays[0])}`
       : new Intl.DateTimeFormat("de-DE", { weekday: "long", day: "2-digit", month: "long", year: "numeric" }).format(cursor);
 
   const persist = (nextEvents: CalendarEvent[]) => {
@@ -424,7 +469,12 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
 
   const reviewExactDuplicates = () => {
     if (exactDuplicateCopies === 0) {
-      setMessage("Keine Termine mit gleichem Titel, Datum und Beginn gefunden.");
+      setActionResult({
+        title: "Duplikate geprüft",
+        summary: "Es wurden keine doppelten Termine gefunden.",
+        details: ["Verglichen wurden Titel, Datum und Beginn.", "Ihre Termine wurden nicht verändert."],
+        tone: "success"
+      });
       return;
     }
     setShowDuplicateDialog(true);
@@ -434,7 +484,12 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
     const result = removeExactCalendarDuplicates(events);
     if (result.removedEvents.length === 0) {
       setShowDuplicateDialog(false);
-      setMessage("Keine Termine mit gleichem Titel, Datum und Beginn gefunden.");
+      setActionResult({
+        title: "Duplikate geprüft",
+        summary: "Es wurden keine doppelten Termine gefunden.",
+        details: ["Ihre Termine wurden nicht verändert."],
+        tone: "success"
+      });
       return;
     }
 
@@ -447,16 +502,28 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
     setDuplicateCleanupBackup(backup);
     persist(result.events);
     setShowDuplicateDialog(false);
-    setMessage(
-      `${result.removedEvents.length} überzählige ${result.removedEvents.length === 1 ? "Kopie wurde" : "Kopien wurden"} entfernt und vollständig für „Rückgängig“ gesichert.`
-    );
+    setActionResult({
+      title: "Duplikate entfernt",
+      summary: `${result.removedEvents.length} überzählige ${result.removedEvents.length === 1 ? "Kopie wurde" : "Kopien wurden"} entfernt.`,
+      details: [
+        "Je Termin bleibt immer eine Kopie erhalten.",
+        "Die entfernten Kopien sind gesichert und können über „Bereinigung rückgängig“ wiederhergestellt werden."
+      ],
+      items: result.removedEvents.map((event) => ({ label: event.title || "Ohne Titel", detail: formatCalendarDate(event.startsAt) })),
+      itemsLabel: `${result.removedEvents.length} entfernte Kopien anzeigen`,
+      tone: "success"
+    });
   };
 
   const undoDuplicateCleanup = () => {
     const backup = readDuplicateCleanupBackup();
     if (!backup?.removedEvents.length) {
       setDuplicateCleanupBackup(null);
-      setMessage("Keine Sicherung einer Duplikatbereinigung gefunden.");
+      setActionResult({
+        title: "Keine Sicherung vorhanden",
+        summary: "Es gibt keine frühere Duplikatbereinigung, die wiederhergestellt werden kann.",
+        tone: "info"
+      });
       return;
     }
     if (!window.confirm(`${backup.removedEvents.length} zuvor entfernte Kalenderkopien wiederherstellen? Bestehende oder inzwischen geänderte Termine werden nicht überschrieben.`)) return;
@@ -470,7 +537,14 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
     persist([...events, ...restoredEvents]);
     localStorage.removeItem(duplicateCleanupBackupKey);
     setDuplicateCleanupBackup(null);
-    setMessage(`${restoredEvents.length} Kalenderkopien wurden aus der Sicherung wiederhergestellt.`);
+    setActionResult({
+      title: "Bereinigung rückgängig gemacht",
+      summary: `${restoredEvents.length} ${restoredEvents.length === 1 ? "Kalenderkopie wurde" : "Kalenderkopien wurden"} wiederhergestellt.`,
+      details: ["Bestehende Termine wurden dabei nicht überschrieben."],
+      items: restoredEvents.map((event) => ({ label: event.title || "Ohne Titel", detail: formatCalendarDate(event.startsAt) })),
+      itemsLabel: `${restoredEvents.length} wiederhergestellte Kopien anzeigen`,
+      tone: "success"
+    });
   };
 
   const createCategory = () => {
@@ -487,7 +561,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
     setNewCategoryName("");
     setNewCategoryColor(defaultCalendarColor);
     setShowCategoryDialog(false);
-    setMessage(`Kategorie "${name}" wurde erstellt.`);
+    setActionResult({ title: "Kategorie erstellt", summary: `„${name}“ kann jetzt für Termine ausgewählt werden.`, tone: "success" });
   };
 
   const openNewEvent = (date = new Date(), exactTime = false) => {
@@ -514,7 +588,20 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
       setCursor(new Date(cursor.getFullYear(), cursor.getMonth() + direction, 1));
       return;
     }
-    setCursor(addDays(cursor, direction * (view === "week" ? 7 : 1)));
+    setCursor(addDays(cursor, direction * (view === "week" || view === "workweek" ? 7 : 1)));
+  };
+
+  const updateAdvancedSettings = (next: Partial<AdvancedCalendarSettings>) => {
+    setAdvancedSettings((current) => ({ ...current, ...next }));
+  };
+
+  const setSourceVisible = (source: string, visible: boolean) => {
+    setAdvancedSettings((current) => ({
+      ...current,
+      hiddenSources: visible
+        ? current.hiddenSources.filter((entry) => entry !== source)
+        : [...new Set([...current.hiddenSources, source])]
+    }));
   };
 
   const minutesFromPointer = (element: HTMLElement, clientY: number) => {
@@ -602,7 +689,13 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
       endsAt: toLocalDateTime(nextEnd.toISOString()),
       updatedAt: new Date().toISOString()
     } : entry));
-    setMessage(`Termin „${existing.title}“ wurde auf ${new Intl.DateTimeFormat("de-DE", { weekday: "short", hour: "2-digit", minute: "2-digit" }).format(nextStart)} verschoben.`);
+    setActionResult({
+      title: "Termin verschoben",
+      summary: `„${existing.title}“ wurde verschoben.`,
+      items: [{ label: existing.title, detail: new Intl.DateTimeFormat("de-DE", { weekday: "long", day: "2-digit", month: "long", hour: "2-digit", minute: "2-digit" }).format(nextStart) }],
+      itemsLabel: "Neuen Terminzeitpunkt anzeigen",
+      tone: "success"
+    });
     window.dispatchEvent(new Event(calendarChangedEventName));
   };
 
@@ -662,7 +755,13 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
     const date = eventDate(editingEvent);
     if (date) setCursor(startOfDay(date));
     setEditingEvent(null);
-    setMessage(editingIsNew ? "Termin wurde erstellt." : "Termin wurde aktualisiert.");
+    setActionResult({
+      title: editingIsNew ? "Termin erstellt" : "Termin aktualisiert",
+      summary: `„${editingEvent.title || "Ohne Titel"}“ wurde gespeichert.`,
+      items: [{ label: editingEvent.title || "Ohne Titel", detail: date ? formatCalendarDate(editingEvent.startsAt) : undefined }],
+      itemsLabel: "Termin anzeigen",
+      tone: "success"
+    });
     window.dispatchEvent(new Event(calendarChangedEventName));
   };
 
@@ -685,7 +784,13 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
     );
     persist(events.filter((entry) => entry.id !== master.id));
     setEditingEvent(null);
-    setMessage(master.recurrence ? "Terminserie wurde in den Papierkorb verschoben." : "Termin wurde in den Papierkorb verschoben.");
+    setActionResult({
+      title: master.recurrence ? "Terminserie in den Papierkorb verschoben" : "Termin in den Papierkorb verschoben",
+      summary: `„${master.title}“ kann im Papierkorb wiederhergestellt werden.`,
+      items: [{ label: master.title, detail: formatCalendarDate(master.startsAt) }],
+      itemsLabel: "Betroffenen Termin anzeigen",
+      tone: "success"
+    });
     window.dispatchEvent(new Event(calendarChangedEventName));
   };
 
@@ -707,8 +812,49 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
     ]));
     persist([]);
     setEditingEvent(null);
-    setMessage(`${events.length} Termine und Terminserien wurden in den Papierkorb verschoben.`);
+    setActionResult({
+      title: "Termine in den Papierkorb verschoben",
+      summary: `${events.length} Termine und Serien können im Papierkorb wiederhergestellt werden.`,
+      items: movedEvents.map((event) => ({ label: event.title || "Ohne Titel", detail: formatCalendarDate(event.startsAt) })),
+      itemsLabel: `${events.length} verschobene Termine anzeigen`,
+      tone: "success"
+    });
     window.dispatchEvent(new Event(calendarChangedEventName));
+  };
+
+  const openExchangeSync = async () => {
+    try {
+      setExchangePrompt(await getMicrosoft365ConnectionStatus());
+    } catch (error) {
+      setActionResult({ title: "Exchange nicht erreichbar", summary: `Die Microsoft-365-Verbindung konnte nicht geprüft werden: ${error}`, tone: "error" });
+    }
+  };
+
+  const enableExchangeCalendarSync = async (useAnotherAccount = false) => {
+    if (!exchangePrompt) return;
+    setExchangeSyncBusy(true);
+    try {
+      let account = exchangePrompt.account;
+      if (useAnotherAccount && exchangePrompt.connected) {
+        await disconnectMicrosoft365Account();
+        account = null;
+      }
+      if (!account) account = await connectMicrosoft365Interactively();
+      await enableCompleteAutomaticMicrosoft365Sync(true);
+      window.dispatchEvent(new Event(calendarChangedEventName));
+      setExchangePrompt(null);
+      const address = account.email || account.userPrincipalName;
+      setActionResult({
+        title: "Exchange-Synchronisierung aktiviert",
+        summary: `Der Kalender von ${address} wird jetzt sicher abgeglichen und danach automatisch synchronisiert.`,
+        details: ["Gleiche Termine werden zuerst miteinander verknüpft, statt doppelt erstellt zu werden.", "Neue Änderungen werden anschließend automatisch übertragen."],
+        tone: "success"
+      });
+    } catch (error) {
+      setActionResult({ title: "Exchange-Synchronisierung nicht gestartet", summary: `Es wurden keine Kalenderdaten verändert: ${error}`, tone: "error" });
+    } finally {
+      setExchangeSyncBusy(false);
+    }
   };
 
   return (
@@ -719,8 +865,11 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
           <p>Termine übersichtlich planen und verwalten.</p>
         </div>
         <div className="calendar-header-actions">
+          <button type="button" onClick={() => void openExchangeSync()}>
+            <Cloud size={19} /> Kalender mit Exchange synchronisieren
+          </button>
           <button className="primary" type="button" onClick={() => openNewEvent()}>
-            <Plus size={20} /> Neuer Termin
+            <Plus size={20} /> {advancedMode ? "Neue Besprechung" : "Neuer Termin"}
           </button>
           <div className="calendar-actions-menu-wrap">
             <button className="icon-only" type="button" aria-label="Weitere Kalenderaktionen" title="Weitere Aktionen" aria-haspopup="menu" aria-expanded={showActionsMenu} onClick={() => setShowActionsMenu((open) => !open)}>
@@ -734,12 +883,48 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
               <button type="button" onClick={() => { setShowActionsMenu(false); reviewExactDuplicates(); }}><ListChecks size={18} /> Duplikate prüfen</button>
               {duplicateCleanupBackup && <button type="button" onClick={() => { setShowActionsMenu(false); undoDuplicateCleanup(); }}><Undo2 size={18} /> Bereinigung rückgängig</button>}
               <span className="calendar-actions-separator" />
+              <button type="button" onClick={() => { setShowActionsMenu(false); onAdvancedModeChange(!advancedMode); }}>
+                <Settings2 size={18} /> {advancedMode ? "Einfacher Kalender" : "Kalender erweitert"}
+              </button>
+              <span className="calendar-actions-separator" />
               <button className="danger" type="button" onClick={() => { setShowActionsMenu(false); deleteAllEvents(); }} disabled={events.length === 0}><Trash2 size={18} /> Alle Termine löschen</button>
             </div>}
           </div>
         </div>
       </header>
       <StatusMessage message={message} />
+
+      <ActionResultDialog result={actionResult} onClose={() => setActionResult(null)} />
+
+      {exchangePrompt && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="exchange-sync-title">
+          <section className="form-panel modal-card action-result-dialog">
+            <div className="action-result-heading">
+              <span className="action-result-icon" aria-hidden="true"><Cloud size={28} /></span>
+              <div>
+                <p className="action-result-kicker">Exchange-Kalender</p>
+                <h3 id="exchange-sync-title">{exchangePrompt.connected ? "Ist dies Ihr richtiges Microsoft-Konto?" : "Mit Exchange anmelden"}</h3>
+              </div>
+              <button className="icon-only" type="button" aria-label="Schließen" onClick={() => setExchangePrompt(null)} disabled={exchangeSyncBusy}><X size={22} /></button>
+            </div>
+            {exchangePrompt.connected && exchangePrompt.account ? (
+              <>
+                <p className="action-result-summary">Der Kalender wird mit <strong>{exchangePrompt.account.email || exchangePrompt.account.userPrincipalName}</strong> synchronisiert.</p>
+                <p>Bitte bestätigen Sie nur, wenn dies Ihr dienstliches Konto ist.</p>
+              </>
+            ) : (
+              <p className="action-result-summary">Melden Sie sich einmal mit Ihrem dienstlichen Microsoft-Konto an. Danach läuft die Kalender-Synchronisierung automatisch.</p>
+            )}
+            <div className="button-row action-result-actions">
+              <button type="button" onClick={() => setExchangePrompt(null)} disabled={exchangeSyncBusy}>Abbrechen</button>
+              {exchangePrompt.connected && <button type="button" onClick={() => void enableExchangeCalendarSync(true)} disabled={exchangeSyncBusy}>Nein, anderes Konto</button>}
+              <button className="primary" type="button" onClick={() => void enableExchangeCalendarSync(false)} disabled={exchangeSyncBusy}>
+                {exchangeSyncBusy ? "Wird verbunden …" : exchangePrompt.connected ? "Ja, synchronisieren" : "Mit Microsoft anmelden"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
 
       {showCategoryDialog && (
         <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Kategorie erstellen">
@@ -833,8 +1018,35 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
         <div className="page-loading">Kalender wird geladen …</div>
       ) : events.length === 0 ? (
         <EmptyImportState kind="calendar" onEasyImport={() => setEasyImportOpen(true)} onManualImport={() => onNavigate("calendar-import")} />
-      ) : <section className="calendar-shell">
-        <section className="calendar-toolbar" aria-label="Kalendersteuerung">
+      ) : <section className={advancedMode ? "calendar-shell advanced-calendar-shell" : "calendar-shell"}>
+        {advancedMode && (
+          <aside className="advanced-calendar-navigation" aria-label="Erweiterte Kalendernavigation">
+            <div className="advanced-calendar-navigation-heading">
+              <div><span>Kalender</span><strong>Planung</strong></div>
+              <PanelLeftClose size={19} aria-hidden="true" />
+            </div>
+            <div className="advanced-mini-month" role="grid" aria-label="Monatsübersicht">
+              {weekdays.map((day) => <span key={day}>{day[0]}</span>)}
+              {monthDays.map((day) => (
+                <button
+                  className={`${day.getMonth() !== cursor.getMonth() ? "outside" : ""}${sameDay(day, cursor) ? " selected" : ""}${sameDay(day, new Date()) ? " today" : ""}`}
+                  key={day.toISOString()}
+                  type="button"
+                  onClick={() => { setCursor(day); setView("day"); }}
+                >{day.getDate()}</button>
+              ))}
+            </div>
+            <div className="advanced-calendar-source-list">
+              <div><strong>Meine Kalender</strong><button type="button" onClick={() => updateAdvancedSettings({ hiddenSources: [] })}>Alle</button></div>
+              <label><input checked={advancedSettings.hiddenSources.length === 0} type="checkbox" onChange={(event) => updateAdvancedSettings({ hiddenSources: event.target.checked ? [] : calendarSources })} /> Alle Termine</label>
+              {calendarSources.map((source) => (
+                <label key={source}><input checked={!advancedSettings.hiddenSources.includes(source)} type="checkbox" onChange={(event) => setSourceVisible(source, event.target.checked)} /> {source}</label>
+              ))}
+            </div>
+          </aside>
+        )}
+        <div className={advancedMode ? "advanced-calendar-workspace" : undefined}>
+        <section className={advancedMode ? "calendar-toolbar advanced-calendar-toolbar" : "calendar-toolbar"} aria-label="Kalendersteuerung">
           <div className="calendar-toolbar-navigation">
             <button type="button" onClick={() => setCursor(startOfDay(new Date()))}>Heute</button>
             <button className="icon-only" type="button" aria-label="Vorheriger Zeitraum" title="Zurück" onClick={() => navigateCalendar(-1)}><ChevronLeft size={20} /></button>
@@ -842,11 +1054,11 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
             <h3>{title}</h3>
           </div>
           <div className="calendar-toolbar-controls">
-            <label className="calendar-toolbar-field">
+            {!advancedMode && <label className="calendar-toolbar-field">
               <CalendarDays size={18} aria-hidden="true" />
               <span className="sr-only">Datum</span>
               <input type="date" value={dateInputValue(cursor)} onChange={(event) => { const nextDate = dateFromInput(event.target.value); if (nextDate) setCursor(nextDate); }} />
-            </label>
+            </label>}
             <label className="calendar-toolbar-field">
               <Filter size={18} aria-hidden="true" />
               <span className="sr-only">Termine filtern</span>
@@ -860,10 +1072,23 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
               <span className="sr-only">Kalenderansicht</span>
               <select value={view} onChange={(event) => setView(event.target.value as CalendarView)}>
                 <option value="day">Tag</option>
+                {advancedMode && <option value="workweek">Arbeitswoche</option>}
                 <option value="week">Woche</option>
                 <option value="month">Monat</option>
               </select>
             </label>
+            {advancedMode && <div className="advanced-calendar-controls">
+              <button className={advancedFiltersOpen ? "active" : ""} type="button" aria-expanded={advancedFiltersOpen} onClick={() => setAdvancedFiltersOpen((open) => !open)}><Filter size={18} /> Filter</button>
+              <button type="button" onClick={() => openNewEvent(new Date(), true)}><Clock3 size={18} /> Jetzt planen</button>
+              {advancedFiltersOpen && <div className="advanced-calendar-filter-popover">
+                <label><Clock3 size={17} /> Zeitskala
+                  <select value={advancedSettings.hourHeight} onChange={(event) => updateAdvancedSettings({ hourHeight: Number(event.target.value) })}>
+                    <option value={52}>Kompakt</option><option value={68}>Standard</option><option value={84}>Groß</option>
+                  </select>
+                </label>
+                <p>Termine lassen sich ziehen. Ziehen im freien Zeitraster erstellt eine neue Besprechung.</p>
+              </div>}
+            </div>}
           </div>
         </section>
 
@@ -921,8 +1146,8 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
         </section>
       )}
 
-      {view === "week" && (
-        <section className="calendar-week-schedule" aria-label="Wochenkalender">
+      {(view === "week" || view === "workweek") && (
+        <section className={view === "workweek" ? "calendar-week-schedule workweek" : "calendar-week-schedule"} aria-label={view === "workweek" ? "Kalender für die Arbeitswoche" : "Wochenkalender"} style={{ "--calendar-days": weekDays.length } as CSSProperties}>
           <div className="calendar-week-scroll" ref={timeGridScrollRef}>
             <div className="calendar-week-head">
               <div className="calendar-week-timezone" title="Zeitzone">MEZ</div>
@@ -935,10 +1160,10 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
             </div>
             <div
               className="calendar-week-timeline"
-              style={{ "--calendar-hour-height": `${compactCalendarHourHeight}px`, "--calendar-half-hour-height": `${compactCalendarHourHeight / 2}px`, height: `${compactCalendarHourHeight * 24}px` } as CSSProperties}
+              style={{ "--calendar-days": weekDays.length, "--calendar-hour-height": `${advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight}px`, "--calendar-half-hour-height": `${(advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight) / 2}px`, height: `${(advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight) * 24}px` } as CSSProperties}
             >
               <div className="calendar-time-axis" aria-hidden="true">
-                {calendarHours.map((hour) => <time key={hour} style={{ top: `${hour * compactCalendarHourHeight}px` }}>{String(hour).padStart(2, "0")}:00</time>)}
+                {calendarHours.map((hour) => <time key={hour} style={{ top: `${hour * (advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight)}px` }}>{String(hour).padStart(2, "0")}:00</time>)}
               </div>
               <div className="calendar-week-day-tracks">
                 {weekDays.map((day, dayIndex) => {
@@ -958,16 +1183,16 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
                       onDragOver={allowEventDrop}
                       onDrop={(event) => moveEventToPointer(day, event)}
                     >
-                      {sameDay(day, now) && <span className="calendar-current-time-line" style={{ top: `${(nowMinutes / 60) * compactCalendarHourHeight}px` }}><i /></span>}
+                      {sameDay(day, now) && <span className="calendar-current-time-line" style={{ top: `${(nowMinutes / 60) * (advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight)}px` }}><i /></span>}
                       {timeSelection?.dayKey === dateInputValue(day) && (() => {
                         const bounds = calendarTimeSelectionBounds(timeSelection);
-                        return <span className="calendar-time-selection" style={{ top: `${(bounds.startMinutes / 60) * compactCalendarHourHeight}px`, height: `${((bounds.endMinutes - bounds.startMinutes) / 60) * compactCalendarHourHeight}px` }}><strong>{formatTimeSelection(timeSelection)}</strong></span>;
+                        return <span className="calendar-time-selection" style={{ top: `${(bounds.startMinutes / 60) * (advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight)}px`, height: `${((bounds.endMinutes - bounds.startMinutes) / 60) * (advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight)}px` }}><strong>{formatTimeSelection(timeSelection)}</strong></span>;
                       })()}
                       {weekLayouts[dayIndex].map((layout) => {
-                        const durationHeight = ((layout.endMinutes - layout.startMinutes) / 60) * compactCalendarHourHeight;
+                        const durationHeight = ((layout.endMinutes - layout.startMinutes) / 60) * (advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight);
                         const eventStyle = {
                           ...calendarColorStyle(layout.event.color),
-                          top: `${(layout.startMinutes / 60) * compactCalendarHourHeight + 1}px`,
+                          top: `${(layout.startMinutes / 60) * (advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight) + 1}px`,
                           height: `${Math.max(28, durationHeight - 2)}px`,
                           "--event-lane": layout.lane,
                           "--event-lanes": layout.lanes
@@ -1014,10 +1239,10 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
             </div>
             <div
               className="calendar-day-timeline"
-              style={{ "--calendar-hour-height": `${compactCalendarHourHeight}px`, "--calendar-half-hour-height": `${compactCalendarHourHeight / 2}px`, height: `${compactCalendarHourHeight * 24}px` } as CSSProperties}
+              style={{ "--calendar-hour-height": `${advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight}px`, "--calendar-half-hour-height": `${(advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight) / 2}px`, height: `${(advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight) * 24}px` } as CSSProperties}
             >
               <div className="calendar-time-axis" aria-hidden="true">
-                {calendarHours.map((hour) => <time key={hour} style={{ top: `${hour * compactCalendarHourHeight}px` }}>{String(hour).padStart(2, "0")}:00</time>)}
+                {calendarHours.map((hour) => <time key={hour} style={{ top: `${hour * (advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight)}px` }}>{String(hour).padStart(2, "0")}:00</time>)}
               </div>
               <div
                 className={sameDay(cursor, new Date()) ? "calendar-week-day-track calendar-day-track today" : "calendar-week-day-track calendar-day-track"}
@@ -1034,17 +1259,17 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
                 {sameDay(cursor, new Date()) && (() => {
                   const now = new Date();
                   const nowMinutes = now.getHours() * 60 + now.getMinutes();
-                  return <span className="calendar-current-time-line" style={{ top: `${(nowMinutes / 60) * compactCalendarHourHeight}px` }}><i /></span>;
+                  return <span className="calendar-current-time-line" style={{ top: `${(nowMinutes / 60) * (advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight)}px` }}><i /></span>;
                 })()}
                 {timeSelection?.dayKey === dateInputValue(cursor) && (() => {
                   const bounds = calendarTimeSelectionBounds(timeSelection);
-                  return <span className="calendar-time-selection" style={{ top: `${(bounds.startMinutes / 60) * compactCalendarHourHeight}px`, height: `${((bounds.endMinutes - bounds.startMinutes) / 60) * compactCalendarHourHeight}px` }}><strong>{formatTimeSelection(timeSelection)}</strong></span>;
+                  return <span className="calendar-time-selection" style={{ top: `${(bounds.startMinutes / 60) * (advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight)}px`, height: `${((bounds.endMinutes - bounds.startMinutes) / 60) * (advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight)}px` }}><strong>{formatTimeSelection(timeSelection)}</strong></span>;
                 })()}
                 {dayLayouts.map((layout) => {
-                  const durationHeight = ((layout.endMinutes - layout.startMinutes) / 60) * compactCalendarHourHeight;
+                  const durationHeight = ((layout.endMinutes - layout.startMinutes) / 60) * (advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight);
                   const eventStyle = {
                     ...calendarColorStyle(layout.event.color),
-                    top: `${(layout.startMinutes / 60) * compactCalendarHourHeight + 1}px`,
+                    top: `${(layout.startMinutes / 60) * (advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight) + 1}px`,
                     height: `${Math.max(32, durationHeight - 2)}px`,
                     "--event-lane": layout.lane,
                     "--event-lanes": layout.lanes
@@ -1075,18 +1300,17 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
           <p className="calendar-week-help">Freien Zeitraum markieren: Termin erstellen · Termin ziehen: verschieben</p>
         </section>
       )}
-      </section>}
+      </div></section>}
 
       <EasyImportDialog
         kind="calendar"
         open={easyImportOpen}
         onClose={() => setEasyImportOpen(false)}
-        onImported={(result) => {
+        onImported={() => {
           const storedEvents = JSON.parse(localStorage.getItem(calendarStorageKey) ?? "[]") as CalendarEvent[];
           setEvents(storedEvents.map(normalizeEvent));
           const storedCategories = JSON.parse(localStorage.getItem(calendarCategoriesStorageKey) ?? "[]") as CalendarCategory[];
           setCategories(storedCategories.map(normalizeCategory).filter((category) => category.name));
-          setMessage(result.detail);
         }}
       />
 
@@ -1094,7 +1318,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
         open={reconciliationOpen}
         events={events}
         onClose={() => setReconciliationOpen(false)}
-        onChanged={(nextEvents, nextMessage) => {
+        onChanged={(nextEvents) => {
           persist(nextEvents);
           try {
             const storedCategories = JSON.parse(localStorage.getItem(calendarCategoriesStorageKey) ?? "[]") as CalendarCategory[];
@@ -1102,7 +1326,6 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
           } catch {
             // The event changes remain visible even if a category cannot be read.
           }
-          setMessage(nextMessage);
           window.dispatchEvent(new Event(calendarChangedEventName));
         }}
       />

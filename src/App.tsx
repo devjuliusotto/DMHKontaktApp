@@ -53,12 +53,18 @@ const browserPreviewStatus: VaultStatus = {
 };
 
 const edvPages = new Set<Page>(["settings", "appearance", "feature-development", "backup", "synchronizations", "m365", "recovery"]);
+const advancedCalendarStorageKey = "dmh.calendar.advanced.v1";
+
+function readAdvancedCalendarPreference(): boolean {
+  return localStorage.getItem(advancedCalendarStorageKey) === "true";
+}
 
 export default function App() {
   const isAdminTest = import.meta.env.VITE_APP_CHANNEL === "admin-test";
   const sourceCommit = import.meta.env.VITE_SOURCE_COMMIT?.slice(0, 8);
   const [hiddenDataSections, setHiddenDataSections] = useState<DataSection[]>(readHiddenDataSections);
   const [page, setPage] = useState<Page>("welcome");
+  const [advancedCalendar, setAdvancedCalendar] = useState(readAdvancedCalendarPreference);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [featureAvailability, setFeatureAvailability] = useState(readFeatureAvailability);
   const [vaultStatus, setVaultStatus] = useState<VaultStatus | null>(null);
@@ -72,6 +78,12 @@ export default function App() {
   const queuedCalendarSyncTrigger = useRef<"open" | "change" | "poll" | null>(null);
   const closing = useRef(false);
   const settingsAreaOpen = page === "settings" || page === "appearance" || page === "feature-development" || page === "backup" || page === "synchronizations" || page === "m365" || page === "recovery";
+  const compactSidebar = settingsAreaOpen || (page === "calendar" && advancedCalendar);
+
+  const changeAdvancedCalendar = (enabled: boolean) => {
+    localStorage.setItem(advancedCalendarStorageKey, String(enabled));
+    setAdvancedCalendar(enabled);
+  };
 
   useEffect(() => {
     const updateDataSectionVisibility = () => setHiddenDataSections(readHiddenDataSections());
@@ -342,13 +354,13 @@ export default function App() {
           {sourceCommit && <span>Commit {sourceCommit}</span>}
         </div>
       )}
-      <div className={settingsAreaOpen ? "app-shell settings-app-shell" : "app-shell"}>
+      <div className={`app-shell${settingsAreaOpen ? " settings-app-shell" : ""}${compactSidebar ? " compact-sidebar-shell" : ""}`}>
         <Sidebar
           activePage={page}
           calendarEnabled={!hiddenDataSections.includes("calendar")}
           contactsEnabled={!hiddenDataSections.includes("contacts")}
           authenticatorEnabled={featureAvailability.authenticator}
-          compact={settingsAreaOpen}
+          compact={compactSidebar}
           documentsEnabled={featureAvailability.documents}
           onNavigate={navigate}
           passwordsEnabled={featureAvailability.passwords}
@@ -357,7 +369,9 @@ export default function App() {
         <main className="content">
           {page === "welcome" && <WelcomePage onNavigate={navigate} />}
           {page === "contacts" && !hiddenDataSections.includes("contacts") && <ContactsPage onNavigate={navigate} onHideSection={() => hideDataSection("contacts")} />}
-          {page === "calendar" && !hiddenDataSections.includes("calendar") && <CalendarPage onNavigate={navigate} />}
+          {page === "calendar" && !hiddenDataSections.includes("calendar") && (
+            <CalendarPage advancedMode={advancedCalendar} onAdvancedModeChange={changeAdvancedCalendar} onNavigate={navigate} />
+          )}
           {page === "documents" && featureAvailability.documents && <DocumentsPage />}
           {page === "passwords" && featureAvailability.passwords && <PasswordsPage status={vaultStatus} onStatusChanged={setVaultStatus} />}
           {page === "authenticator" && featureAvailability.authenticator && <AuthenticatorPage />}

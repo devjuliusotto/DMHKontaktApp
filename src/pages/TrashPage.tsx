@@ -1,6 +1,7 @@
 import { CalendarDays, FolderClosed, KeyRound, RotateCcw, Trash2, Users } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { ActionResultDialog, type ActionResult } from "../components/ActionResultDialog";
 import { StatusMessage } from "../components/StatusMessage";
 import {
   getAppSetting,
@@ -84,6 +85,7 @@ export function TrashPage() {
   const [deletedVaultEntries, setDeletedVaultEntries] = useState<VaultEntry[]>([]);
   const [deletedCollectedAddressesAt, setDeletedCollectedAddressesAt] = useState<string | null>(null);
   const [message, setMessage] = useState("");
+  const [actionResult, setActionResult] = useState<ActionResult | null>(null);
   const [category, setCategory] = useState<TrashCategory>("calendar");
   const [contactSelectionMode, setContactSelectionMode] = useState(false);
   const [selectedContactIds, setSelectedContactIds] = useState<Set<number>>(() => new Set());
@@ -168,7 +170,7 @@ export function TrashPage() {
     const remaining = deletedEvents.filter((entry) => entry.id !== event.id);
     writeCalendarEvents(calendarTrashStorageKey, remaining);
     setDeletedEvents(remaining);
-    setMessage("Termin wurde wiederhergestellt.");
+    setActionResult({ title: "Termin wiederhergestellt", summary: `„${event.title || "Ohne Titel"}“ ist wieder im Kalender.`, items: [{ label: event.title || "Ohne Titel", detail: formatCalendarDate(event.startsAt) }], itemsLabel: "Wiederhergestellten Termin anzeigen", tone: "success" });
     window.dispatchEvent(new Event(calendarChangedEventName));
   };
 
@@ -180,7 +182,7 @@ export function TrashPage() {
       next.delete(contact.id!);
       return next;
     });
-    setMessage("Kontakt wurde wiederhergestellt.");
+    setActionResult({ title: "Kontakt wiederhergestellt", summary: `„${displayName(contact)}“ ist wieder bei Ihren Kontakten.`, items: [{ label: displayName(contact), detail: contact.email || contact.phone || undefined }], itemsLabel: "Wiederhergestellten Kontakt anzeigen", tone: "success" });
     await refresh();
     window.dispatchEvent(new Event(calendarChangedEventName));
   };
@@ -216,8 +218,9 @@ export function TrashPage() {
 
   const restoreSelectedContacts = async () => {
     if (selectedDeletedContactIds.length === 0) return;
+    const restoredContacts = deletedContacts.filter((contact) => contact.id && selectedDeletedContactIds.includes(contact.id));
     await Promise.all(selectedDeletedContactIds.map((contactId) => restoreContact(contactId)));
-    setMessage(`${selectedDeletedContactIds.length} Kontakte wurden wiederhergestellt.`);
+    setActionResult({ title: "Kontakte wiederhergestellt", summary: `${selectedDeletedContactIds.length} Kontakte sind wieder verfügbar.`, items: restoredContacts.map((contact) => ({ label: displayName(contact), detail: contact.email || contact.phone || undefined })), itemsLabel: `${selectedDeletedContactIds.length} wiederhergestellte Kontakte anzeigen`, tone: "success" });
     setSelectedContactIds(new Set());
     setContactSelectionMode(false);
     await refresh();
@@ -227,7 +230,7 @@ export function TrashPage() {
   const restoreAllDeletedContacts = async () => {
     if (deletedContactIds.length === 0) return;
     await Promise.all(deletedContactIds.map((contactId) => restoreContact(contactId)));
-    setMessage(`${deletedContactIds.length} Kontakte wurden wiederhergestellt.`);
+    setActionResult({ title: "Kontakte wiederhergestellt", summary: `${deletedContactIds.length} Kontakte sind wieder verfügbar.`, items: deletedContacts.map((contact) => ({ label: displayName(contact), detail: contact.email || contact.phone || undefined })), itemsLabel: `${deletedContactIds.length} wiederhergestellte Kontakte anzeigen`, tone: "success" });
     setSelectedContactIds(new Set());
     setContactSelectionMode(false);
     await refresh();
@@ -237,7 +240,7 @@ export function TrashPage() {
   const restoreDeletedGroup = async (group: Group) => {
     if (!group.id) return;
     await restoreGroup(group.id);
-    setMessage("Gruppe wurde wiederhergestellt.");
+    setActionResult({ title: "Gruppe wiederhergestellt", summary: `„${group.name}“ ist wieder verfügbar.`, tone: "success" });
     await refresh();
     window.dispatchEvent(new Event(calendarChangedEventName));
   };
@@ -246,13 +249,13 @@ export function TrashPage() {
     await setAppSetting(collectedAddressesHiddenSettingKey, "false");
     await setAppSetting(collectedAddressesDeletedAtSettingKey, "");
     setDeletedCollectedAddressesAt(null);
-    setMessage("Gruppe wurde wiederhergestellt.");
+    setActionResult({ title: "Gruppe wiederhergestellt", summary: "„Gesammelte Adressen“ ist wieder verfügbar.", tone: "success" });
     window.dispatchEvent(new Event(calendarChangedEventName));
   };
 
   const restoreDeletedPassword = async (entry: VaultEntry) => {
     await restoreVaultEntry(entry.id);
-    setMessage(entry.kind === "totp" ? "2FA-Eintrag wurde wiederhergestellt." : "Passwort wurde wiederhergestellt.");
+    setActionResult({ title: entry.kind === "totp" ? "2FA-Code wiederhergestellt" : "Passwort wiederhergestellt", summary: `„${entry.platform || entry.username || "Eintrag"}“ ist wieder verfügbar.`, tone: "success" });
     await refresh();
   };
 
@@ -288,11 +291,25 @@ export function TrashPage() {
       setContactSelectionMode(false);
       setConfirmPurge(false);
       setShowPurgeOptions(false);
-      setMessage(`${removed} ${removed === 1 ? "Element wurde" : "Elemente wurden"} aus „${trashCategoryLabels[category]}“ endgültig gelöscht.`);
+      const affected = category === "calendar"
+        ? purgedEvents.map((event) => ({ label: event.title || "Ohne Titel", detail: formatCalendarDate(event.startsAt) }))
+        : category === "contacts"
+          ? deletedContacts.filter((contact) => wasDeletedBefore(contact.deletedAt, purgePreview.cutoff)).map((contact) => ({ label: displayName(contact), detail: contact.email || contact.phone || undefined }))
+          : category === "groups"
+            ? deletedGroups.filter((group) => wasDeletedBefore(group.deletedAt, purgePreview.cutoff)).map((group) => ({ label: group.name }))
+            : (category === "passwords" ? deletedPasswords : deletedTotpEntries).filter((entry) => wasDeletedBefore(entry.deletedAt, purgePreview.cutoff)).map((entry) => ({ label: entry.platform || entry.username || "Eintrag", detail: entry.username || undefined }));
+      if (purgeCollectedAddresses) affected.push({ label: "Gesammelte Adressen" });
+      setActionResult({
+        title: "Papierkorb endgültig geleert",
+        summary: `${removed} ${removed === 1 ? "Eintrag wurde" : "Einträge wurden"} endgültig gelöscht und können nicht wiederhergestellt werden.`,
+        items: affected,
+        itemsLabel: `${removed} endgültig gelöschte Einträge anzeigen`,
+        tone: "success"
+      });
       await refresh();
       window.dispatchEvent(new Event(calendarChangedEventName));
     } catch (error) {
-      setMessage(`${trashCategoryLabels[category]} konnten nicht endgültig gelöscht werden: ${error}`);
+      setActionResult({ title: "Papierkorb nicht geleert", summary: `${trashCategoryLabels[category]} wurden nicht endgültig gelöscht: ${error}`, tone: "error" });
     } finally {
       setPurging(false);
     }
@@ -365,6 +382,7 @@ export function TrashPage() {
         </div>
       </header>
       <StatusMessage message={message} />
+      <ActionResultDialog result={actionResult} onClose={() => setActionResult(null)} />
       <nav className="trash-category-grid" aria-label="Bereiche im Papierkorb">
         <button className={category === "calendar" ? "active" : ""} type="button" onClick={() => selectCategory("calendar")}>
           <CalendarDays size={22} /><span><strong>Termine</strong><small>{deletedEvents.length}</small></span>

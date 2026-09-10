@@ -1,5 +1,7 @@
 import {
   applyMicrosoft365Sync,
+  createAutomaticBackup,
+  createAutomaticPasswordBackup,
   getAppSetting,
   getBackupData,
   getMicrosoft365ConnectionStatus,
@@ -138,6 +140,9 @@ export async function runAutomaticCalendarSync(trigger: "open" | "change" | "pol
   }
 
   const backup = addBrowserDataToBackup(await getBackupData());
+  // Every automatic write starts from a fresh recoverable checkpoint.
+  await createAutomaticBackup(backup, true);
+  await createAutomaticPasswordBackup(true);
   const result = await applyMicrosoft365Sync({
     direction: config.direction,
     base: config.base,
@@ -178,6 +183,12 @@ export async function runAutomaticCalendarSync(trigger: "open" | "change" | "pol
 
   if (result.errors > 0) {
     return { state: "error", message: `Microsoft-365-Synchronisierung mit ${result.errors} Fehler(n) abgeschlossen.` };
+  }
+  if (result.conflicts > 0) {
+    return {
+      state: "error",
+      message: `${result.conflicts} bereits vorhandene Einträge wurden vorsichtshalber nicht geändert. Die EDV kann sie später prüfen.`
+    };
   }
   if (exchangeCount === 0) {
     return { state: "success", message: "Microsoft 365 ist bereits synchron." };

@@ -1457,6 +1457,22 @@ fn duplicate_calendar_event_ids(
     duplicate_ids
 }
 
+/// The app stores local appointments as `YYYY-MM-DDTHH:MM`, while Microsoft Graph
+/// can return the same instant with seconds and fractional seconds.  A first sync
+/// must compare the human appointment time, not those transport-format details.
+fn normalized_calendar_start(value: &str) -> String {
+    let value = value.trim().replace(' ', "T");
+    if value.len() >= 16
+        && value.as_bytes().get(4) == Some(&b'-')
+        && value.as_bytes().get(7) == Some(&b'-')
+        && value.as_bytes().get(10) == Some(&b'T')
+        && value.as_bytes().get(13) == Some(&b':')
+    {
+        return value[..16].to_string();
+    }
+    value
+}
+
 fn remote_event_key(value: &Value) -> String {
     let subject = value_text(value, "subject").trim().to_lowercase();
     let start = value
@@ -1465,14 +1481,14 @@ fn remote_event_key(value: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or("")
         .trim();
-    format!("{subject}|{start}")
+    format!("{subject}|{}", normalized_calendar_start(start))
 }
 
 fn local_event_key(event: &crate::CalendarEvent) -> String {
     format!(
         "{}|{}",
         event.title.trim().to_lowercase(),
-        event.starts_at.trim()
+        normalized_calendar_start(&event.starts_at)
     )
 }
 
@@ -1628,8 +1644,8 @@ fn event_equivalent(
 ) -> bool {
     let remote_local = remote_event_to_local(remote, source, Some(local));
     local.title.trim() == remote_local.title.trim()
-        && local.starts_at.trim() == remote_local.starts_at.trim()
-        && local.ends_at.trim() == remote_local.ends_at.trim()
+        && normalized_calendar_start(&local.starts_at) == normalized_calendar_start(&remote_local.starts_at)
+        && normalized_calendar_start(&local.ends_at) == normalized_calendar_start(&remote_local.ends_at)
         && local.location.trim() == remote_local.location.trim()
         && local.description.trim() == remote_local.description.trim()
         && local.category.trim() == remote_local.category.trim()
@@ -2046,14 +2062,22 @@ async fn build_m365_sync_plan(
                     if equivalent && is_linked {
                         continue;
                     }
-                    let action = match direction.as_str() {
-                        "export" => "updateRemote",
-                        "import" => "updateLocal",
-                        _ if equivalent => "updateLocal",
-                        _ if local_changed_after_remote(&local.updated_at, remote) => {
-                            "updateRemote"
+                    // During the first synchronization an equal contact must only be
+                    // linked. Writing either copy here was the source of duplicate
+                    // contacts after a previous manual import.
+                    let action = if equivalent {
+                        "link"
+                    } else if !is_linked {
+                        // A matching identity with different data is ambiguous until a
+                        // user/EDV decision is made. Preserve both copies unchanged.
+                        "conflict"
+                    } else {
+                        match direction.as_str() {
+                            "export" => "updateRemote",
+                            "import" => "updateLocal",
+                            _ if local_changed_after_remote(&local.updated_at, remote) => "updateRemote",
+                            _ => "updateLocal",
                         }
-                        _ => "updateLocal",
                     };
                     push_operation(
                         &mut operations,
@@ -2072,6 +2096,9 @@ async fn build_m365_sync_plan(
                                 title: local.display_name.clone(),
                                 detail: if equivalent {
                                     "Kontakt wird dauerhaft mit Microsoft 365 verknüpft."
+                                        .to_string()
+                                } else if action == "conflict" {
+                                    "Gleiche Kontaktkennung, aber unterschiedliche Angaben. Beide Kopien bleiben unverändert."
                                         .to_string()
                                 } else {
                                     "Neueste Änderung wird übernommen.".to_string()
@@ -2438,14 +2465,19 @@ async fn build_m365_sync_plan(
                     if equivalent && linked_id.is_some() {
                         continue;
                     }
-                    let action = match direction.as_str() {
-                        "export" => "updateRemote",
-                        "import" => "updateLocal",
-                        _ if equivalent => "updateLocal",
-                        _ if local_changed_after_remote(&local.updated_at, remote) => {
-                            "updateRemote"
+                    // Equal appointments are linked without rewriting Exchange or the
+                    // local record. This makes a prior Outlook/Teams import safe.
+                    let action = if equivalent {
+                        "link"
+                    } else if linked_id.is_none() {
+                        "conflict"
+                    } else {
+                        match direction.as_str() {
+                            "export" => "updateRemote",
+                            "import" => "updateLocal",
+                            _ if local_changed_after_remote(&local.updated_at, remote) => "updateRemote",
+                            _ => "updateLocal",
                         }
-                        _ => "updateLocal",
                     };
                     push_operation(
                         &mut operations,
@@ -2464,6 +2496,9 @@ async fn build_m365_sync_plan(
                                 title: local.title.clone(),
                                 detail: if equivalent {
                                     "Termin wird dauerhaft mit Microsoft 365 verknüpft.".to_string()
+                                } else if action == "conflict" {
+                                    "Gleicher Titel und Zeitpunkt, aber unterschiedliche Angaben. Beide Termine bleiben unverändert."
+                                        .to_string()
                                 } else {
                                     "Neueste Änderung wird übernommen.".to_string()
                                 },
@@ -2835,6 +2870,25 @@ pub async fn apply_m365_sync(
                     local: Some(local),
                     remote: Some(remote),
                 },
+                "link",
+            ) => {
+                let local_id = local
+                    .id
+                    .ok_or_else(|| "Lokaler Kontakt hat keine ID.".to_string())?;
+                save_contact_link(
+                    &app,
+                    local_id,
+                    &operation.source.id,
+                    value_text(remote, "id"),
+                )?;
+                result.ignored += 1;
+                Ok(())
+            }
+            (
+                PlannedPayload::Contact {
+                    local: Some(local),
+                    remote: Some(remote),
+                },
                 "updateRemote" | "keepApp",
             ) => {
                 let url = format!(
@@ -3002,6 +3056,23 @@ pub async fn apply_m365_sync(
                     None,
                 ));
                 result.created += 1;
+                Ok(())
+            }
+            (
+                PlannedPayload::Calendar {
+                    local: Some(local),
+                    remote: Some(remote),
+                },
+                "link",
+            ) => {
+                // Calendar links are encoded in the local event ID. Replacing the
+                // local copy with that linked ID performs no Microsoft Graph write.
+                let linked = remote_event_to_local(remote, &operation.source, Some(local));
+                if linked.id != local.id {
+                    result.calendar_deletes.push(local.id.clone());
+                }
+                result.calendar_upserts.push(linked);
+                result.ignored += 1;
                 Ok(())
             }
             (
@@ -3590,6 +3661,18 @@ fn unprotect_secret(_protected_secret: &[u8]) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn matches_calendar_times_independent_of_graph_seconds() {
+        assert_eq!(
+            normalized_calendar_start("2026-09-10T14:30"),
+            normalized_calendar_start("2026-09-10T14:30:00.0000000")
+        );
+        assert_eq!(
+            normalized_calendar_start("2026-09-10T14:30:42Z"),
+            "2026-09-10T14:30"
+        );
+    }
 
     fn calendar_source(id: &str) -> Microsoft365SyncSource {
         Microsoft365SyncSource {

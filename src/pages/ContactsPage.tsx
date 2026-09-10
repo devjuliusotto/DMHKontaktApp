@@ -1,5 +1,5 @@
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { Download, Ellipsis, Inbox, Mail, Minus, Pencil, Plus, RefreshCw, Search, Settings2, Trash2, Upload, UserPlus, UsersRound, X } from "lucide-react";
+import { Download, Ellipsis, Inbox, Mail, Minus, Pencil, Plus, RefreshCw, Search, Trash2, Upload, UserPlus, UsersRound, X } from "lucide-react";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ContactForm } from "../components/ContactForm";
 import { ContactTable } from "../components/ContactTable";
@@ -7,6 +7,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ContactReconciliationDialog } from "../components/ContactReconciliationDialog";
 import { EasyImportDialog } from "../components/EasyImportDialog";
 import { EmptyImportState } from "../components/EmptyImportState";
+import { ActionResultDialog, type ActionResult } from "../components/ActionResultDialog";
 import { StatusMessage } from "../components/StatusMessage";
 import type { Page } from "../components/Sidebar";
 import { t } from "../i18n";
@@ -52,7 +53,7 @@ type DeleteRequest =
   | { kind: "group"; group: Group }
   | { kind: "ungrouped-group" }
   | { kind: "all-contacts" }
-  | { kind: "selected-contacts"; contactIds: number[] };
+  | { kind: "selected-contacts"; contactIds: number[]; contacts: Contact[] };
 
 const blankGroup: Group = { name: "", description: "", createdAt: "", updatedAt: "" };
 const emailAppSettingKey = "default_email_app";
@@ -113,6 +114,7 @@ export function ContactsPage({ onNavigate, onHideSection }: ContactsPageProps) {
   const [testMenuOpen, setTestMenuOpen] = useState(false);
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState<"success" | "error" | "info">("info");
+  const [actionResult, setActionResult] = useState<ActionResult | null>(null);
   const [confirmDeletions, setConfirmDeletions] = useState(true);
   const [deleteRequest, setDeleteRequest] = useState<DeleteRequest | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
@@ -270,8 +272,7 @@ export function ContactsPage({ onNavigate, onHideSection }: ContactsPageProps) {
       setGroupCreateOpen(false);
       setGroupSelection(groupId);
       setTab("groups");
-      setMessage("Gruppe wurde erstellt.");
-      setMessageType("success");
+      setActionResult({ title: "Gruppe erstellt", summary: `„${name}“ steht jetzt bereit.`, tone: "success" });
       await refresh();
       notifyLocalM365Change();
     } catch (error) {
@@ -305,8 +306,7 @@ export function ContactsPage({ onNavigate, onHideSection }: ContactsPageProps) {
       await saveGroup({ ...renamingGroup, name });
       setRenamingGroup(null);
       setGroupRenameError("");
-      setMessage(`Gruppe wurde in „${name}“ umbenannt.`);
-      setMessageType("success");
+      setActionResult({ title: "Gruppe umbenannt", summary: `Die Gruppe heißt jetzt „${name}“.`, tone: "success" });
       await refresh();
       notifyLocalM365Change();
     } catch (error) {
@@ -324,13 +324,11 @@ export function ContactsPage({ onNavigate, onHideSection }: ContactsPageProps) {
     try {
       await saveContact(editing);
       setEditing(null);
-      setMessage("Kontakt wurde lokal gespeichert.");
-      setMessageType("success");
+      setActionResult({ title: "Kontakt gespeichert", summary: `„${displayName(editing)}“ wurde lokal gespeichert.`, tone: "success" });
       await refresh();
       notifyLocalM365Change();
     } catch (error) {
-      setMessage(`Kontakt konnte nicht gespeichert werden: ${error}`);
-      setMessageType("error");
+      setActionResult({ title: "Kontakt nicht gespeichert", summary: `Der Kontakt wurde nicht verändert: ${error}`, tone: "error" });
     }
   };
 
@@ -338,13 +336,11 @@ export function ContactsPage({ onNavigate, onHideSection }: ContactsPageProps) {
     if (!contact.id) return;
     try {
       await deleteContact(contact.id);
-      setMessage("Kontakt wurde lokal in den Papierkorb verschoben.");
-      setMessageType("success");
+      setActionResult({ title: "Kontakt in den Papierkorb verschoben", summary: `„${displayName(contact)}“ kann im Papierkorb wiederhergestellt werden.`, tone: "success" });
       await refresh();
       notifyLocalM365Change();
     } catch (error) {
-      setMessage(`Kontakt konnte nicht gelöscht werden: ${error}`);
-      setMessageType("error");
+      setActionResult({ title: "Kontakt nicht gelöscht", summary: `Der Kontakt bleibt unverändert: ${error}`, tone: "error" });
     }
   };
 
@@ -359,13 +355,11 @@ export function ContactsPage({ onNavigate, onHideSection }: ContactsPageProps) {
     try {
       await deleteGroup(group.id);
       if (groupSelection === group.id) setGroupSelection("ungrouped");
-      setMessage("Gruppe wurde in den Papierkorb verschoben.");
-      setMessageType("success");
+      setActionResult({ title: "Gruppe in den Papierkorb verschoben", summary: `„${group.name}“ kann im Papierkorb wiederhergestellt werden.`, tone: "success" });
       await refresh();
       notifyLocalM365Change();
     } catch (error) {
-      setMessage(`Gruppe konnte nicht gelöscht werden: ${error}`);
-      setMessageType("error");
+      setActionResult({ title: "Gruppe nicht gelöscht", summary: `Die Gruppe bleibt unverändert: ${error}`, tone: "error" });
     }
   };
 
@@ -383,13 +377,11 @@ export function ContactsPage({ onNavigate, onHideSection }: ContactsPageProps) {
       const nextGroupId = groups.find((group) => group.id)?.id;
       if (nextGroupId) setGroupSelection(nextGroupId);
       else setTab("all");
-      setMessage(`„${ungroupedGroupName}“ wurde in den Papierkorb verschoben.`);
-      setMessageType("success");
+      setActionResult({ title: "Gruppe in den Papierkorb verschoben", summary: `„${ungroupedGroupName}“ kann im Papierkorb wiederhergestellt werden.`, tone: "success" });
       await refresh();
       notifyLocalM365Change();
     } catch (error) {
-      setMessage(`„${ungroupedGroupName}“ konnte nicht gelöscht werden: ${error}`);
-      setMessageType("error");
+      setActionResult({ title: "Gruppe nicht gelöscht", summary: `„${ungroupedGroupName}“ bleibt unverändert: ${error}`, tone: "error" });
     }
   };
 
@@ -400,15 +392,20 @@ export function ContactsPage({ onNavigate, onHideSection }: ContactsPageProps) {
 
   const deleteAllContactsNow = async () => {
     try {
+      const affectedContacts = await listContacts("");
       const count = await deleteAllContacts();
       setTestMenuOpen(false);
-      setMessage(`${count} Kontakte wurden lokal in den Papierkorb verschoben.`);
-      setMessageType("success");
+      setActionResult({
+        title: "Kontakte in den Papierkorb verschoben",
+        summary: `${count} ${count === 1 ? "Kontakt wurde" : "Kontakte wurden"} nicht endgültig gelöscht und können wiederhergestellt werden.`,
+        items: affectedContacts.map((contact) => ({ label: displayName(contact), detail: contact.email || contact.phone || undefined })),
+        itemsLabel: `${count} verschobene Kontakte anzeigen`,
+        tone: "success"
+      });
       await refresh();
       notifyLocalM365Change();
     } catch (error) {
-      setMessage(`Kontakte konnten nicht gelöscht werden: ${error}`);
-      setMessageType("error");
+      setActionResult({ title: "Kontakte nicht gelöscht", summary: `Die Kontakte bleiben unverändert: ${error}`, tone: "error" });
     }
   };
 
@@ -417,23 +414,23 @@ export function ContactsPage({ onNavigate, onHideSection }: ContactsPageProps) {
     else void deleteAllContactsNow();
   };
 
-  const deleteSelectedContactsNow = async (contactIds: number[]) => {
+  const deleteSelectedContactsNow = async (contactIds: number[], affectedContacts: Contact[]) => {
     setBulkDeleting(true);
     try {
       const deleted = await deleteContacts(contactIds);
       setSelectedContactIds(new Set());
       setSelectionMode(false);
-      setMessage(
-        deleted === 1
-          ? "1 ausgewählter Kontakt wurde in den Papierkorb verschoben."
-          : `${deleted} ausgewählte Kontakte wurden in den Papierkorb verschoben.`
-      );
-      setMessageType("success");
+      setActionResult({
+        title: "Kontakte in den Papierkorb verschoben",
+        summary: deleted === 1 ? "1 Kontakt kann im Papierkorb wiederhergestellt werden." : `${deleted} Kontakte können im Papierkorb wiederhergestellt werden.`,
+        items: affectedContacts.map((contact) => ({ label: displayName(contact), detail: contact.email || contact.phone || undefined })),
+        itemsLabel: `${deleted} verschobene Kontakte anzeigen`,
+        tone: "success"
+      });
       await refresh();
       notifyLocalM365Change();
     } catch (error) {
-      setMessage(`Ausgewählte Kontakte konnten nicht gelöscht werden: ${error}`);
-      setMessageType("error");
+      setActionResult({ title: "Kontakte nicht gelöscht", summary: `Die ausgewählten Kontakte bleiben unverändert: ${error}`, tone: "error" });
     } finally {
       setBulkDeleting(false);
     }
@@ -442,8 +439,9 @@ export function ContactsPage({ onNavigate, onHideSection }: ContactsPageProps) {
   const removeSelectedContacts = () => {
     const contactIds = selectedVisibleContactIds;
     if (contactIds.length === 0) return;
-    if (confirmDeletions) setDeleteRequest({ kind: "selected-contacts", contactIds });
-    else void deleteSelectedContactsNow(contactIds);
+    const affectedContacts = contacts.filter((contact) => contact.id && contactIds.includes(contact.id));
+    if (confirmDeletions) setDeleteRequest({ kind: "selected-contacts", contactIds, contacts: affectedContacts });
+    else void deleteSelectedContactsNow(contactIds, affectedContacts);
   };
 
   const confirmDeleteRequest = async () => {
@@ -454,7 +452,7 @@ export function ContactsPage({ onNavigate, onHideSection }: ContactsPageProps) {
       if (deleteRequest.kind === "group") await deleteGroupNow(deleteRequest.group);
       if (deleteRequest.kind === "ungrouped-group") await deleteUngroupedGroupNow();
       if (deleteRequest.kind === "all-contacts") await deleteAllContactsNow();
-      if (deleteRequest.kind === "selected-contacts") await deleteSelectedContactsNow(deleteRequest.contactIds);
+      if (deleteRequest.kind === "selected-contacts") await deleteSelectedContactsNow(deleteRequest.contactIds, deleteRequest.contacts);
     } finally {
       setDeleteBusy(false);
       setDeleteRequest(null);
@@ -588,15 +586,20 @@ export function ContactsPage({ onNavigate, onHideSection }: ContactsPageProps) {
       const targetLabel = target === "ungrouped"
         ? ungroupedGroupName
         : groupsRef.current.find((group) => group.id === target)?.name ?? "Gruppe";
-      setMessage(contactIds.length === 1 ? `Kontakt wurde nach "${targetLabel}" verschoben.` : `${contactIds.length} Kontakte wurden nach "${targetLabel}" verschoben.`);
-      setMessageType("success");
+      const affectedContacts = contacts.filter((contact) => contact.id && contactIds.includes(contact.id));
+      setActionResult({
+        title: "Kontakte verschoben",
+        summary: contactIds.length === 1 ? `Der Kontakt ist jetzt in „${targetLabel}“.` : `${contactIds.length} Kontakte sind jetzt in „${targetLabel}“.`,
+        items: affectedContacts.map((contact) => ({ label: displayName(contact), detail: contact.email || contact.phone || undefined })),
+        itemsLabel: `${contactIds.length} verschobene Kontakte anzeigen`,
+        tone: "success"
+      });
       setSelectedContactIds(new Set());
       setSelectionMode(false);
       await refresh();
       notifyLocalM365Change();
     } catch (error) {
-      setMessage(`Kontakte konnten nicht verschoben werden: ${error}`);
-      setMessageType("error");
+      setActionResult({ title: "Kontakte nicht verschoben", summary: `Die Zuordnung wurde nicht geändert: ${error}`, tone: "error" });
     } finally {
       endContactDrag();
     }
@@ -739,6 +742,7 @@ export function ContactsPage({ onNavigate, onHideSection }: ContactsPageProps) {
       </header>
 
       <StatusMessage message={message} type={messageType} />
+      <ActionResultDialog result={actionResult} onClose={() => setActionResult(null)} />
 
       {dragPreview && (
         <div className="contact-drag-preview" style={{ left: dragPreview.x, top: dragPreview.y }}>
@@ -941,7 +945,6 @@ export function ContactsPage({ onNavigate, onHideSection }: ContactsPageProps) {
                 <div className="group-card-bottom">
                   <strong>{ungroupedContactCount} {ungroupedContactCount === 1 ? "Kontakt" : "Kontakte"}</strong>
                   <div className="group-card-actions">
-                    <button type="button" className={groupSelection === "ungrouped" ? "selected" : ""} aria-pressed={groupSelection === "ungrouped"} title="Gruppe verwalten" aria-label="Gesammelte Adressen verwalten" onClick={() => setGroupSelection("ungrouped")}><Settings2 size={20} /></button>
                     <button type="button" title="E-Mail an Gruppe" aria-label="E-Mail an Gesammelte Adressen" onClick={() => chooseGroupEmailApp("ungrouped")}><Mail size={20} /></button>
                     <button className="group-card-delete" type="button" title="Gruppe löschen" aria-label="Gesammelte Adressen löschen" onClick={removeUngroupedGroup}><Trash2 size={20} /></button>
                   </div>
@@ -969,7 +972,6 @@ export function ContactsPage({ onNavigate, onHideSection }: ContactsPageProps) {
                     <div className="group-card-bottom">
                       <strong>{contactCount} {contactCount === 1 ? "Kontakt" : "Kontakte"}</strong>
                       <div className="group-card-actions">
-                        <button type="button" className={groupSelection === group.id ? "selected" : ""} aria-pressed={groupSelection === group.id} title="Gruppe verwalten" aria-label={`${group.name} verwalten`} onClick={() => setGroupSelection(group.id ?? "ungrouped")}><Settings2 size={20} /></button>
                         <button type="button" title="E-Mail an Gruppe" aria-label={`E-Mail an ${group.name}`} onClick={() => chooseGroupEmailApp(group)}><Mail size={20} /></button>
                         <button className="group-card-delete" type="button" title="Gruppe löschen" aria-label={`${group.name} löschen`} onClick={() => removeGroup(group)}><Trash2 size={20} /></button>
                       </div>
