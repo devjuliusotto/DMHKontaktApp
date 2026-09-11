@@ -832,21 +832,28 @@ pub fn get_migration_capture_status(app: AppHandle) -> Result<MigrationCaptureSt
     })
 }
 
+fn clear_migration_capture_state(conn: &Connection) -> Result<usize, String> {
+    conn.execute(
+        "DELETE FROM app_settings WHERE key IN (?1, ?2)",
+        params![
+            MIGRATION_CAPTURE_COMPLETED_KEY,
+            MIGRATION_CAPTURE_SUBMISSION_KEY
+        ],
+    )
+    .map_err(|error| format!("EDV-Übertragung konnte nicht erneut freigegeben werden: {error}"))
+}
+
 #[tauri::command]
 pub fn reset_migration_capture_status(app: AppHandle) -> Result<MigrationCaptureStatus, String> {
     let conn = open_db(&app)?;
-    conn.execute(
-        "DELETE FROM app_settings WHERE key = ?1",
-        [MIGRATION_CAPTURE_COMPLETED_KEY],
-    )
-    .map_err(|error| format!("EDV-Übertragung konnte nicht erneut freigegeben werden: {error}"))?;
+    clear_migration_capture_state(&conn)?;
     let diagnostic_id = Uuid::new_v4().to_string();
     append_migration_diagnostic(
         &app,
         &diagnostic_id,
         "manual_reopen",
         "success",
-        "completion_state_cleared_submission_id_preserved",
+        "completion_state_and_submission_id_cleared",
     );
     drop(conn);
     get_migration_capture_status(app)
@@ -1295,6 +1302,32 @@ pub(crate) fn remove_all_mail_credentials(app: &AppHandle) -> Result<usize, Stri
 mod tests {
     use super::*;
     use rsa::RsaPrivateKey;
+
+    #[test]
+    fn migration_capture_reset_can_run_repeatedly_and_rotates_submission_id() {
+        let conn = Connection::open_in_memory().expect("in-memory database");
+        conn.execute_batch(
+            "CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO app_settings (key, value) VALUES
+               ('migration_capture_v2_completed_at', '2026-09-11T10:00:00Z'),
+               ('migration_capture_v2_submission_id', 'old-submission-id'),
+               ('unrelated', 'keep');",
+        )
+        .expect("migration settings");
+
+        assert_eq!(clear_migration_capture_state(&conn).unwrap(), 2);
+        assert_eq!(clear_migration_capture_state(&conn).unwrap(), 0);
+        assert!(get_migration_setting(&conn, MIGRATION_CAPTURE_COMPLETED_KEY)
+            .unwrap()
+            .is_none());
+        assert!(get_migration_setting(&conn, MIGRATION_CAPTURE_SUBMISSION_KEY)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            get_migration_setting(&conn, "unrelated").unwrap(),
+            Some("keep".to_string())
+        );
+    }
 
     #[test]
     fn diagnostic_fields_cannot_inject_lines_and_are_bounded() {

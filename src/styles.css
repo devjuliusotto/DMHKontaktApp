@@ -5146,6 +5146,129 @@ table {
   margin: 0.75rem 0 0;
 }
 
+.contact-duplicate-dialog {
+  max-width: 860px;
+}
+
+.contact-duplicate-safety {
+  align-items: flex-start;
+  background: var(--info-surface);
+  border: 1px solid var(--info-border);
+  border-radius: 10px;
+  color: var(--info-text);
+  display: flex;
+  gap: 0.75rem;
+  line-height: 1.5;
+  padding: 0.9rem 1rem;
+}
+
+.contact-duplicate-safety svg {
+  flex: 0 0 auto;
+  margin-top: 0.1rem;
+}
+
+.contact-duplicate-safety strong {
+  display: block;
+}
+
+.contact-duplicate-list {
+  display: grid;
+  gap: 0.75rem;
+  margin: 1rem 0;
+  max-height: min(52vh, 480px);
+  overflow: auto;
+  padding-right: 0.25rem;
+}
+
+.contact-duplicate-group {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.contact-duplicate-group > header {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: auto 1fr auto;
+  padding: 0.7rem 0.85rem;
+}
+
+.contact-duplicate-group > header small {
+  color: var(--muted);
+}
+
+.contact-duplicate-confidence {
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  padding: 0.25rem 0.55rem;
+  text-transform: uppercase;
+}
+
+.contact-duplicate-confidence.high {
+  background: var(--success-surface);
+  color: var(--success-text);
+}
+
+.contact-duplicate-confidence.review {
+  background: var(--warning-surface);
+  color: var(--warning-text);
+}
+
+.contact-duplicate-group > div {
+  display: grid;
+}
+
+.contact-duplicate-group > div > button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--text);
+  display: flex;
+  justify-content: space-between;
+  padding: 0.75rem 0.85rem;
+  text-align: left;
+  width: 100%;
+}
+
+.contact-duplicate-group > div > button:last-child {
+  border-bottom: 0;
+}
+
+.contact-duplicate-group > div > button:hover {
+  background: var(--surface);
+}
+
+.contact-duplicate-group > div > button > span:first-child {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.contact-duplicate-group > div > button small {
+  color: var(--muted);
+}
+
+.contact-duplicate-open {
+  align-items: center;
+  color: var(--primary);
+  display: inline-flex;
+  font-size: 0.82rem;
+  font-weight: 700;
+  gap: 0.35rem;
+}
+
+@media (max-width: 700px) {
+  .contact-duplicate-group > header {
+    grid-template-columns: 1fr;
+  }
+}
+
 .calendar-form-actions .danger-button {
   border-color: var(--danger-border);
   color: var(--danger-text);

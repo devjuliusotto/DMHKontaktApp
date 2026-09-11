@@ -1,5 +1,5 @@
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { Download, Ellipsis, Inbox, Mail, Minus, Pencil, Plus, RefreshCw, Search, Trash2, Upload, UserPlus, UsersRound, X } from "lucide-react";
+import { Download, Ellipsis, Inbox, ListChecks, Mail, Minus, Pencil, Plus, RefreshCw, Search, ShieldCheck, Trash2, Upload, UserPlus, UsersRound, X } from "lucide-react";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ContactForm } from "../components/ContactForm";
 import { ContactTable } from "../components/ContactTable";
@@ -32,6 +32,7 @@ import {
 } from "../services/db";
 import type { Contact, ContactInput, Group } from "../types/contact";
 import { collectedAddressesDeletedAtSettingKey, collectedAddressesHiddenSettingKey, displayName, emptyContact, toContactInput } from "../utils/contact";
+import { findContactDuplicateGroups, type ContactDuplicateGroup } from "../utils/contactDuplicates";
 import { deletionConfirmationSettingKey } from "../utils/settings";
 import { calendarChangedEventName, m365DataUpdatedEventName } from "../utils/automaticCalendarSync";
 
@@ -113,6 +114,9 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
   const [groupRenameError, setGroupRenameError] = useState("");
   const [testMenuOpen, setTestMenuOpen] = useState(false);
   const [m365SyncDialogOpen, setM365SyncDialogOpen] = useState(false);
+  const [duplicateReviewOpen, setDuplicateReviewOpen] = useState(false);
+  const [duplicateCheckBusy, setDuplicateCheckBusy] = useState(false);
+  const [duplicateGroups, setDuplicateGroups] = useState<ContactDuplicateGroup[]>([]);
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState<"success" | "error" | "info">("info");
   const [actionResult, setActionResult] = useState<ActionResult | null>(null);
@@ -152,6 +156,10 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
   );
   const allVisibleContactsSelected = visibleContactIds.length > 0 && selectedVisibleContactIds.length === visibleContactIds.length;
   const contactsFontSize = contactsFontSizes[contactsFontSizeIndex];
+  const duplicateCandidateCount = useMemo(
+    () => new Set(duplicateGroups.flatMap((group) => group.contacts.map((contact) => contact.id))).size,
+    [duplicateGroups]
+  );
 
   const changeContactsFontSize = (direction: -1 | 1) => {
     setContactsFontSizeIndex((current) => {
@@ -244,6 +252,39 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
   }, [bulkAddGroup, bulkAddSearch]);
 
   const startNew = () => setEditing({ ...emptyContact });
+
+  const reviewContactDuplicates = async () => {
+    setTestMenuOpen(false);
+    setDuplicateCheckBusy(true);
+    try {
+      const allContacts = await listContacts("");
+      const matches = findContactDuplicateGroups(allContacts);
+      setDuplicateGroups(matches);
+      if (matches.length === 0) {
+        setActionResult({
+          title: "Duplikate geprüft",
+          summary: "Es wurden keine möglichen Kontaktduplikate gefunden.",
+          details: ["Ihre Kontakte wurden nicht verändert."],
+          tone: "success"
+        });
+        return;
+      }
+      setDuplicateReviewOpen(true);
+    } catch (error) {
+      setActionResult({
+        title: "Duplikate konnten nicht geprüft werden",
+        summary: `Die Kontakte bleiben unverändert: ${error}`,
+        tone: "error"
+      });
+    } finally {
+      setDuplicateCheckBusy(false);
+    }
+  };
+
+  const openDuplicateContact = (contact: Contact) => {
+    setDuplicateReviewOpen(false);
+    setEditing(toContactInput(contact));
+  };
 
   const openGroupCreate = () => {
     setGroupForm(blankGroup);
@@ -735,6 +776,9 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
                 <button type="button" onClick={() => { setTestMenuOpen(false); onNavigate("import"); }}><Upload size={18} /> Kontakte importieren</button>
                 <button type="button" onClick={() => { setTestMenuOpen(false); onNavigate("export"); }}><Download size={18} /> Kontakte exportieren</button>
                 <button type="button" onClick={() => { setTestMenuOpen(false); setReconciliationOpen(true); }}><RefreshCw size={18} /> Kontakte erneut abgleichen</button>
+                <button type="button" onClick={() => void reviewContactDuplicates()} disabled={duplicateCheckBusy}>
+                  <ListChecks size={18} /> {duplicateCheckBusy ? "Duplikate werden geprüft …" : "Duplikate prüfen"}
+                </button>
                 {tab === "all" && !selectionMode && <button type="button" onClick={startSelectionMode}>Auswählen</button>}
                 <span className="calendar-actions-separator" />
                 <button className="danger" type="button" onClick={removeAllContacts}><Trash2 size={18} /> Alle Kontakte löschen</button>
@@ -747,6 +791,58 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
       <StatusMessage message={message} type={messageType} />
       <ActionResultDialog result={actionResult} onClose={() => setActionResult(null)} />
       {m365SyncDialogOpen && <Microsoft365SyncDialog context="contacts" onClose={() => setM365SyncDialogOpen(false)} />}
+
+      {duplicateReviewOpen && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="contact-duplicate-title">
+          <div className="modal-card contact-duplicate-dialog">
+            <section className="form-panel">
+              <div className="panel-heading">
+                <div>
+                  <h3 id="contact-duplicate-title">Mögliche Kontaktduplikate</h3>
+                  <p>{duplicateCandidateCount} Kontakte in {duplicateGroups.length} {duplicateGroups.length === 1 ? "Treffergruppe" : "Treffergruppen"} gefunden.</p>
+                </div>
+                <button className="icon-only" type="button" aria-label="Schließen" onClick={() => setDuplicateReviewOpen(false)}>
+                  <X size={22} />
+                </button>
+              </div>
+
+              <div className="contact-duplicate-safety" role="note">
+                <ShieldCheck size={21} aria-hidden="true" />
+                <span><strong>Nur prüfen, nichts automatisch löschen.</strong> Gleiche E-Mail-Adressen sind starke Treffer. Gleiche Namen oder Telefonnummern sollten Sie vor einer Änderung kontrollieren.</span>
+              </div>
+
+              <div className="contact-duplicate-list">
+                {duplicateGroups.map((group) => (
+                  <article className="contact-duplicate-group" key={group.id}>
+                    <header>
+                      <span className={group.confidence === "high" ? "contact-duplicate-confidence high" : "contact-duplicate-confidence review"}>
+                        {group.confidence === "high" ? "Starker Treffer" : "Bitte prüfen"}
+                      </span>
+                      <strong>{group.reason}</strong>
+                      <small>{group.contacts.length} Kontakte</small>
+                    </header>
+                    <div>
+                      {group.contacts.map((contact) => (
+                        <button type="button" key={contact.id} onClick={() => openDuplicateContact(contact)}>
+                          <span>
+                            <strong>{displayName(contact)}</strong>
+                            <small>{[contact.email, contact.mobilePhone || contact.phone].filter(Boolean).join(" · ") || "Keine E-Mail oder Telefonnummer"}</small>
+                          </span>
+                          <span className="contact-duplicate-open"><Pencil size={16} /> Öffnen</span>
+                        </button>
+                      ))}
+                    </div>
+                  </article>
+                ))}
+              </div>
+
+              <div className="button-row">
+                <button className="primary" type="button" onClick={() => setDuplicateReviewOpen(false)}>Fertig</button>
+              </div>
+            </section>
+          </div>
+        </div>
+      )}
 
       {dragPreview && (
         <div className="contact-drag-preview" style={{ left: dragPreview.x, top: dragPreview.y }}>

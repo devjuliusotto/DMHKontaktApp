@@ -97,7 +97,7 @@ export function FeatureDevelopmentPage({ availability, onFeatureChange, onReset 
       const status = await resetMigrationCaptureStatus();
       if (status.completed) throw new Error("Der Versandstatus ist weiterhin als abgeschlossen markiert.");
       setMessageType("success");
-      setMessage("„An EDV senden“ wurde zurückgesetzt. Der vollständige Ablauf kann jetzt erneut vorgeführt werden.");
+      setMessage("„An EDV senden“ wurde vollständig zurückgesetzt. Der Ablauf kann jetzt erneut gestartet und später beliebig oft wieder zurückgesetzt werden.");
     } catch (error) {
       setMessageType("error");
       setMessage(`EDV-Versandstatus konnte nicht zurückgesetzt werden: ${error}`);
@@ -164,7 +164,7 @@ export function FeatureDevelopmentPage({ availability, onFeatureChange, onReset 
               <RotateCcw size={25} aria-hidden="true" />
               <div>
                 <h3>„An EDV senden“ zurücksetzen</h3>
-                <p>Entfernt nur die lokale Abschlussmarkierung, damit der komplette Versandablauf erneut gezeigt werden kann.</p>
+                <p>Bereitet einen neuen Versanddurchlauf vor. Der Reset kann für weitere Vorführungen beliebig oft wiederholt werden.</p>
               </div>
             </div>
             <button type="button" onClick={resetEdvTransfer} disabled={busyAction !== null}>
