@@ -624,16 +624,12 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
       const now = new Date();
       starts.setHours(now.getHours(), now.getMinutes(), 0, 0);
     }
-    const event = blankEvent(starts);
-    const firstCategory = categories[0];
-    setEditingEvent(firstCategory ? { ...event, category: firstCategory.name, color: firstCategory.color } : event);
+    setEditingEvent(blankEvent(starts));
     setEditingIsNew(true);
   };
 
   const openNewEventRange = (starts: Date, ends: Date) => {
-    const event = { ...blankEvent(starts), endsAt: toLocalDateTime(ends.toISOString()) };
-    const firstCategory = categories[0];
-    setEditingEvent(firstCategory ? { ...event, category: firstCategory.name, color: firstCategory.color } : event);
+    setEditingEvent({ ...blankEvent(starts), endsAt: toLocalDateTime(ends.toISOString()) });
     setEditingIsNew(true);
   };
 
