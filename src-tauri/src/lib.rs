@@ -587,7 +587,7 @@ pub struct OutlookCalendarPreview {
     pub duplicate_groups: Vec<OutlookCalendarDuplicateGroup>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LocalOutlookContact {
     id: i64,
@@ -604,6 +604,8 @@ struct LocalOutlookContact {
     short_info: String,
     notes: String,
     groups: Vec<String>,
+    #[serde(skip_serializing)]
+    group_ids: Vec<i64>,
     outlook_entry_id: Option<String>,
     outlook_store_id: Option<String>,
 }
@@ -4745,6 +4747,7 @@ fn load_local_outlook_contacts(conn: &Connection) -> Result<Vec<LocalOutlookCont
                 short_info: row.get(11)?,
                 notes: row.get(12)?,
                 groups: Vec::new(),
+                group_ids: Vec::new(),
                 outlook_entry_id: row.get(13)?,
                 outlook_store_id: row.get(14)?,
             })
@@ -4755,11 +4758,17 @@ fn load_local_outlook_contacts(conn: &Connection) -> Result<Vec<LocalOutlookCont
         .collect::<Result<Vec<_>, _>>()
         .map_err(|err| err.to_string())?;
     for contact in &mut contacts {
-        contact.groups = read_groups_for_contact(conn, contact.id)?
+        let contact_groups = read_groups_for_contact(conn, contact.id)?;
+        let export_groups = contact_groups
             .into_iter()
-            .map(|group| outlook_folder_name_without_local_only_suffix(&group.name))
-            .filter(|name| !name.is_empty())
-            .collect();
+            .filter_map(|group| {
+                let id = group.id?;
+                let name = outlook_folder_name_without_local_only_suffix(&group.name);
+                (!name.is_empty()).then_some((id, name))
+            })
+            .collect::<Vec<_>>();
+        contact.group_ids = export_groups.iter().map(|(id, _)| *id).collect();
+        contact.groups = export_groups.into_iter().map(|(_, name)| name).collect();
     }
     Ok(contacts)
 }
@@ -4780,6 +4789,82 @@ fn load_local_outlook_group_names(conn: &Connection) -> Result<Vec<String>, Stri
         let key = name.to_lowercase();
         (!name.is_empty() && known.insert(key)).then_some(name)
     }));
+    Ok(names)
+}
+
+fn apply_outlook_contact_export_scope(
+    contacts: Vec<LocalOutlookContact>,
+    selected_group_ids: Option<&HashSet<i64>>,
+    include_ungrouped: bool,
+) -> Vec<LocalOutlookContact> {
+    let Some(selected_group_ids) = selected_group_ids else {
+        return contacts;
+    };
+
+    contacts
+        .into_iter()
+        .filter_map(|mut contact| {
+            if contact.group_ids.is_empty() {
+                return include_ungrouped.then_some(contact);
+            }
+
+            let mut selected_names = Vec::new();
+            let mut selected_ids = Vec::new();
+            for (group_id, group_name) in contact.group_ids.iter().zip(contact.groups.iter()) {
+                if selected_group_ids.contains(group_id) {
+                    selected_ids.push(*group_id);
+                    selected_names.push(group_name.clone());
+                }
+            }
+            if selected_names.is_empty() {
+                return None;
+            }
+            contact.group_ids = selected_ids;
+            contact.groups = selected_names;
+            Some(contact)
+        })
+        .collect()
+}
+
+fn load_local_outlook_group_names_for_scope(
+    conn: &Connection,
+    selected_group_ids: Option<&HashSet<i64>>,
+    include_ungrouped: bool,
+) -> Result<Vec<String>, String> {
+    let Some(selected_group_ids) = selected_group_ids else {
+        return load_local_outlook_group_names(conn);
+    };
+
+    let mut statement = conn
+        .prepare(
+            "SELECT id, name FROM groups WHERE deleted_at IS NULL ORDER BY name COLLATE NOCASE",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| error.to_string())?;
+    let mut names = if include_ungrouped {
+        vec!["Gesammelte Adressen".to_string()]
+    } else {
+        Vec::new()
+    };
+    let mut known = names
+        .iter()
+        .map(|name| name.to_lowercase())
+        .collect::<HashSet<_>>();
+    for row in rows {
+        let (group_id, name) = row.map_err(|error| error.to_string())?;
+        if !selected_group_ids.contains(&group_id) {
+            continue;
+        }
+        let name = outlook_folder_name_without_local_only_suffix(&name);
+        let key = name.to_lowercase();
+        if !name.is_empty() && known.insert(key) {
+            names.push(name);
+        }
+    }
     Ok(names)
 }
 
@@ -4812,6 +4897,7 @@ fn load_local_outlook_contact(
                 short_info: row.get(11)?,
                 notes: row.get(12)?,
                 groups: Vec::new(),
+                group_ids: Vec::new(),
                 outlook_entry_id: row.get(13)?,
                 outlook_store_id: row.get(14)?,
             })
@@ -4820,11 +4906,17 @@ fn load_local_outlook_contact(
     .optional()
     .map_err(|err| err.to_string())?
     .map(|mut contact| {
-        contact.groups = read_groups_for_contact(conn, contact.id)?
+        let contact_groups = read_groups_for_contact(conn, contact.id)?;
+        let export_groups = contact_groups
             .into_iter()
-            .map(|group| outlook_folder_name_without_local_only_suffix(&group.name))
-            .filter(|name| !name.is_empty())
-            .collect();
+            .filter_map(|group| {
+                let id = group.id?;
+                let name = outlook_folder_name_without_local_only_suffix(&group.name);
+                (!name.is_empty()).then_some((id, name))
+            })
+            .collect::<Vec<_>>();
+        contact.group_ids = export_groups.iter().map(|(id, _)| *id).collect();
+        contact.groups = export_groups.into_iter().map(|(_, name)| name).collect();
         Ok(contact)
     })
     .transpose()
@@ -4962,9 +5054,22 @@ if ($null -ne $item) {{
 fn push_local_contacts_to_outlook(
     conn: &mut Connection,
     target_email: Option<&str>,
+    selected_group_ids: Option<&[i64]>,
+    include_ungrouped: bool,
+    seed_autocomplete: bool,
 ) -> Result<OutlookPushResult, String> {
-    let contacts = load_local_outlook_contacts(conn)?;
-    let groups = load_local_outlook_group_names(conn)?;
+    let selected_group_ids =
+        selected_group_ids.map(|group_ids| group_ids.iter().copied().collect::<HashSet<_>>());
+    let contacts = apply_outlook_contact_export_scope(
+        load_local_outlook_contacts(conn)?,
+        selected_group_ids.as_ref(),
+        include_ungrouped,
+    );
+    let groups = load_local_outlook_group_names_for_scope(
+        conn,
+        selected_group_ids.as_ref(),
+        include_ungrouped,
+    )?;
     if contacts.is_empty() && groups.is_empty() {
         return Ok(OutlookPushResult {
             total: 0,
@@ -4992,12 +5097,14 @@ fn push_local_contacts_to_outlook(
     fs::write(&json_path, json).map_err(|err| err.to_string())?;
     let escaped_path = json_path.to_string_lossy().replace('\'', "''");
     let target_email = powershell_single_quote(target_email.unwrap_or_default().trim());
+    let seed_autocomplete = if seed_autocomplete { "$true" } else { "$false" };
     let script = format!(
         r#"
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $contactsPath = '{escaped_path}'
 $targetEmail = {target_email}
+$seedAutocomplete = {seed_autocomplete}
 $payload = Get-Content -LiteralPath $contactsPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $localContacts = @($payload.contacts | ForEach-Object {{ $_ }})
 $localGroups = @($payload.groups | ForEach-Object {{ [string]$_ }})
@@ -5063,6 +5170,9 @@ function Get-OrCreate-Contact-Folder($folderName) {{
   if ($null -eq $folder) {{
     $folder = $contactsFolder.Folders.Add($name)
     $script:foldersCreatedCount++
+  }}
+  if ($seedAutocomplete) {{
+    try {{ $folder.ShowAsOutlookAB = $true }} catch {{}}
   }}
   $folderCache[$cacheKey] = $folder
   return $folder
@@ -5254,7 +5364,7 @@ foreach ($local in $localContacts) {{
     }}
   }}
 
-  if ($exportedContact) {{
+  if ($seedAutocomplete -and $exportedContact) {{
     $autocompleteEmail = ([string](Get-Scalar $local.email)).Trim()
     if (-not [string]::IsNullOrWhiteSpace($autocompleteEmail)) {{
       $autocompleteCandidates.Add($autocompleteEmail) | Out-Null
@@ -5563,7 +5673,7 @@ fn import_outlook_classic_contacts_once(
 #[tauri::command]
 fn sync_outlook_classic_contacts(app: AppHandle) -> Result<OutlookSyncResult, String> {
     let mut conn = open_db(&app)?;
-    let pushed = push_local_contacts_to_outlook(&mut conn, None)?;
+    let pushed = push_local_contacts_to_outlook(&mut conn, None, None, true, true)?;
     let contacts = read_outlook_classic_contacts()?.contacts;
     let tx = conn.transaction().map_err(|err| err.to_string())?;
     let timestamp = now();
@@ -5674,9 +5784,18 @@ fn sync_outlook_classic_contacts(app: AppHandle) -> Result<OutlookSyncResult, St
 fn push_project_contacts_to_outlook(
     app: AppHandle,
     target_email: Option<String>,
+    selected_group_ids: Option<Vec<i64>>,
+    include_ungrouped: Option<bool>,
+    seed_autocomplete: Option<bool>,
 ) -> Result<OutlookPushResult, String> {
     let mut conn = open_db(&app)?;
-    push_local_contacts_to_outlook(&mut conn, target_email.as_deref())
+    push_local_contacts_to_outlook(
+        &mut conn,
+        target_email.as_deref(),
+        selected_group_ids.as_deref(),
+        include_ungrouped.unwrap_or(true),
+        seed_autocomplete.unwrap_or(true),
+    )
 }
 
 #[tauri::command]
@@ -6773,6 +6892,25 @@ mod tests {
 
         let folders = load_local_outlook_group_names(&conn).expect("active folders");
         assert_eq!(folders, vec!["Gesammelte Adressen", "Kontakte", "Vorstand"]);
+
+        let selected_group_ids = HashSet::from([2_i64]);
+        let selected_contacts =
+            apply_outlook_contact_export_scope(contacts.clone(), Some(&selected_group_ids), false);
+        assert_eq!(selected_contacts.len(), 1);
+        assert_eq!(selected_contacts[0].display_name, "In zwei Gruppen");
+        assert_eq!(selected_contacts[0].groups, vec!["Vorstand"]);
+        assert_eq!(selected_contacts[0].group_ids, vec![2]);
+        assert_eq!(
+            load_local_outlook_group_names_for_scope(&conn, Some(&selected_group_ids), false,)
+                .expect("selected folders"),
+            vec!["Vorstand"]
+        );
+
+        let no_group_ids = HashSet::new();
+        let ungrouped_contacts =
+            apply_outlook_contact_export_scope(contacts, Some(&no_group_ids), true);
+        assert_eq!(ungrouped_contacts.len(), 1);
+        assert_eq!(ungrouped_contacts[0].display_name, "Ohne Gruppe");
         assert_eq!(
             original_outlook_folder_name(r"\\konto\Kontakte (Nur dieser Computer)"),
             "Kontakte"

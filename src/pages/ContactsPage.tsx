@@ -8,6 +8,7 @@ import { ContactReconciliationDialog } from "../components/ContactReconciliation
 import { EasyImportDialog } from "../components/EasyImportDialog";
 import { EmptyImportState } from "../components/EmptyImportState";
 import { ActionResultDialog, type ActionResult } from "../components/ActionResultDialog";
+import { Microsoft365SyncDialog } from "../components/Microsoft365SyncDialog";
 import { StatusMessage } from "../components/StatusMessage";
 import type { Page } from "../components/Sidebar";
 import { t } from "../i18n";
@@ -111,6 +112,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
   const [renamingGroup, setRenamingGroup] = useState<Group | null>(null);
   const [groupRenameError, setGroupRenameError] = useState("");
   const [testMenuOpen, setTestMenuOpen] = useState(false);
+  const [m365SyncDialogOpen, setM365SyncDialogOpen] = useState(false);
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState<"success" | "error" | "info">("info");
   const [actionResult, setActionResult] = useState<ActionResult | null>(null);
@@ -728,6 +730,8 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
             </button>
             {testMenuOpen && (
               <div className="more-menu" role="menu">
+                <button type="button" onClick={() => { setTestMenuOpen(false); setM365SyncDialogOpen(true); }}><RefreshCw size={18} /> Microsoft 365 / Exchange verwalten</button>
+                <span className="calendar-actions-separator" />
                 <button type="button" onClick={() => { setTestMenuOpen(false); onNavigate("import"); }}><Upload size={18} /> Kontakte importieren</button>
                 <button type="button" onClick={() => { setTestMenuOpen(false); onNavigate("export"); }}><Download size={18} /> Kontakte exportieren</button>
                 <button type="button" onClick={() => { setTestMenuOpen(false); setReconciliationOpen(true); }}><RefreshCw size={18} /> Kontakte erneut abgleichen</button>
@@ -742,6 +746,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
 
       <StatusMessage message={message} type={messageType} />
       <ActionResultDialog result={actionResult} onClose={() => setActionResult(null)} />
+      {m365SyncDialogOpen && <Microsoft365SyncDialog context="contacts" onClose={() => setM365SyncDialogOpen(false)} />}
 
       {dragPreview && (
         <div className="contact-drag-preview" style={{ left: dragPreview.x, top: dragPreview.y }}>

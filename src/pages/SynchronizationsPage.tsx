@@ -1,21 +1,28 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarDays,
   ChevronDown,
   CircleAlert,
   Cloud,
   ContactRound,
+  Copy,
+  ExternalLink,
+  KeyRound,
+  LoaderCircle,
+  LogOut,
   MonitorSmartphone,
   PauseCircle,
   PlayCircle,
   Plus,
+  RefreshCw,
   Save
 } from "lucide-react";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { StatusMessage } from "../components/StatusMessage";
 import type { SettingsSection } from "../components/SettingsSubtabs";
 import type { Page } from "../components/Sidebar";
-import { applyMicrosoft365Sync, createAutomaticBackup, createAutomaticPasswordBackup, getAppSetting, getBackupData, getMicrosoft365ConnectionStatus, getSyncBackupData, listMicrosoft365SyncSources, moveCalendarEventsToTrash, previewMicrosoft365Sync, saveCalendarEvents, setAppSetting } from "../services/db";
-import type { Microsoft365ConflictDecision, Microsoft365ConnectionStatus, Microsoft365SyncHistoryEntry, Microsoft365SyncPreview, Microsoft365SyncSource, Microsoft365SyncSources } from "../types/m365";
+import { applyMicrosoft365Sync, cancelMicrosoft365Connection, connectMicrosoft365Interactively, createAutomaticBackup, createAutomaticPasswordBackup, disconnectMicrosoft365Account, getAppSetting, getBackupData, getMicrosoft365ConnectionStatus, getSyncBackupData, listMicrosoft365SyncSources, moveCalendarEventsToTrash, openMicrosoft365SignIn, pollMicrosoft365Connection, previewMicrosoft365Sync, saveCalendarEvents, setAppSetting, startMicrosoft365Connection, testMicrosoft365Connection } from "../services/db";
+import type { Microsoft365ConflictDecision, Microsoft365ConnectionStatus, Microsoft365DeviceCode, Microsoft365PollResult, Microsoft365SyncHistoryEntry, Microsoft365SyncPreview, Microsoft365SyncSource, Microsoft365SyncSources } from "../types/m365";
 import { defaultSyncConfig, parseSyncConfig, type SyncConfig, type SyncDirection } from "../types/sync";
 import { addBrowserDataToBackup } from "../utils/backup";
 import { mergeImportedCalendarCategories } from "../utils/calendar";
@@ -23,7 +30,9 @@ import { calendarChangedEventName, recordMicrosoft365SynchronizationError, recor
 import { initializeMicrosoft365SourceSelection, isTechnicalMicrosoft365Source } from "../utils/microsoft365SyncConfig";
 
 interface SynchronizationsPageProps {
-  onNavigate: (page: Page, section?: SettingsSection) => void;
+  onNavigate?: (page: Page, section?: SettingsSection) => void;
+  embedded?: boolean;
+  onClose?: () => void;
 }
 
 const emptyStatus: Microsoft365ConnectionStatus = { configured: false, connected: false, account: null };
@@ -42,7 +51,7 @@ function parseHistory(raw: string | null): Microsoft365SyncHistoryEntry[] {
   }
 }
 
-export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) {
+export function SynchronizationsPage({ onNavigate, embedded = false, onClose }: SynchronizationsPageProps) {
   const [config, setConfig] = useState<SyncConfig>(defaultSyncConfig);
   const [m365Status, setM365Status] = useState<Microsoft365ConnectionStatus | null>(null);
   const [m365Sources, setM365Sources] = useState<Microsoft365SyncSources | null>(null);
@@ -54,6 +63,9 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
   const [conflictDecisions, setConflictDecisions] = useState<Record<string, Microsoft365ConflictDecision>>({});
   const [history, setHistory] = useState<Microsoft365SyncHistoryEntry[]>([]);
   const [openProvider, setOpenProvider] = useState<"m365" | null>("m365");
+  const [deviceCode, setDeviceCode] = useState<Microsoft365DeviceCode | null>(null);
+  const [showCodeFallback, setShowCodeFallback] = useState(false);
+  const pollingRef = useRef(false);
 
   useEffect(() => {
     void getAppSetting(syncHistoryKey).then((raw) => setHistory(parseHistory(raw))).catch(() => setHistory([]));
@@ -79,6 +91,43 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
       setM365Status(emptyStatus);
     });
   }, []);
+
+  useEffect(() => {
+    if (!deviceCode) return;
+    pollingRef.current = true;
+    let timeout: number | undefined;
+
+    const poll = async () => {
+      if (!pollingRef.current) return;
+      try {
+        const result: Microsoft365PollResult = await pollMicrosoft365Connection();
+        if (result.state === "connected" && result.account) {
+          pollingRef.current = false;
+          setDeviceCode(null);
+          setShowCodeFallback(false);
+          setBusy(false);
+          setM365Status({ configured: true, connected: true, account: result.account });
+          await refreshM365SourcesForAccount();
+          setMessageType("success");
+          setMessage("Microsoft 365 wurde verbunden. Jetzt können Sie die Synchronisierung hier konfigurieren.");
+          return;
+        }
+        timeout = window.setTimeout(poll, Math.max(3, result.intervalSeconds || deviceCode.intervalSeconds) * 1000);
+      } catch (error) {
+        pollingRef.current = false;
+        setDeviceCode(null);
+        setBusy(false);
+        setMessageType("error");
+        setMessage(`Microsoft-365-Anmeldung wurde nicht abgeschlossen: ${error}`);
+      }
+    };
+
+    timeout = window.setTimeout(poll, Math.max(2, deviceCode.intervalSeconds) * 1000);
+    return () => {
+      pollingRef.current = false;
+      if (timeout) window.clearTimeout(timeout);
+    };
+  }, [deviceCode]);
 
   const selectedSourceCount = config.selectedContactSourceIds.length + config.selectedCalendarSourceIds.length;
   const conflicts = useMemo(() => preview?.changes.filter((change) => change.action === "conflict") ?? [], [preview]);
@@ -195,6 +244,110 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
     }
   };
 
+  const connectAccount = async () => {
+    setBusy(true);
+    setMessage("");
+    try {
+      const account = await connectMicrosoft365Interactively();
+      setM365Status({ configured: true, connected: true, account });
+      setShowCodeFallback(false);
+      setMessageType("success");
+      setMessage("Microsoft 365 wurde verbunden. Jetzt können Sie die Synchronisierung hier konfigurieren.");
+      await refreshM365SourcesForAccount();
+    } catch (error) {
+      setShowCodeFallback(true);
+      setMessageType("error");
+      setMessage(`Microsoft-Anmeldung wurde nicht abgeschlossen: ${error}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const refreshM365SourcesForAccount = async () => {
+    try {
+      const sources = await listMicrosoft365SyncSources(config.sharedMailboxAddresses);
+      setM365Sources(sources);
+      const initialized = initializeSourceSelection(config, sources);
+      setConfig(initialized);
+      if (JSON.stringify(initialized) !== JSON.stringify(config)) await setAppSetting(syncConfigKey, JSON.stringify(initialized));
+    } catch (error) {
+      setMessageType("error");
+      setMessage(`Microsoft-365-Quellen konnten nicht geladen werden: ${error}`);
+    }
+  };
+
+  const connectWithCode = async () => {
+    setBusy(true);
+    setMessage("");
+    try {
+      const code = await startMicrosoft365Connection();
+      setDeviceCode(code);
+      setMessageType("info");
+      setMessage("Geben Sie den angezeigten Code im Microsoft-Anmeldefenster ein.");
+      await openMicrosoft365SignIn();
+    } catch (error) {
+      setBusy(false);
+      setMessageType("error");
+      setMessage(`Alternative Microsoft-Anmeldung konnte nicht gestartet werden: ${error}`);
+    }
+  };
+
+  const cancelAccountConnection = async () => {
+    pollingRef.current = false;
+    setDeviceCode(null);
+    setBusy(false);
+    await cancelMicrosoft365Connection().catch(() => undefined);
+    setMessageType("info");
+    setMessage("Anmeldung wurde abgebrochen.");
+  };
+
+  const copyDeviceCode = async () => {
+    if (!deviceCode) return;
+    try {
+      await writeText(deviceCode.userCode);
+      setMessageType("success");
+      setMessage("Anmeldecode wurde kopiert.");
+    } catch (error) {
+      setMessageType("error");
+      setMessage(`Anmeldecode konnte nicht kopiert werden: ${error}`);
+    }
+  };
+
+  const checkAccount = async () => {
+    setBusy(true);
+    setMessage("");
+    try {
+      const status = await testMicrosoft365Connection();
+      setM365Status(status);
+      setMessageType("success");
+      setMessage("Verbindung zu Microsoft 365 wurde erfolgreich geprüft.");
+      if (status.connected) await refreshM365SourcesForAccount();
+    } catch (error) {
+      setMessageType("error");
+      setMessage(`Microsoft-365-Verbindung konnte nicht bestätigt werden: ${error}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disconnectAccount = async () => {
+    if (!window.confirm("Microsoft-365-Konto von dieser App trennen?\n\nKontakte, Kalender und Daten in Microsoft 365 werden dadurch nicht gelöscht.")) return;
+    setBusy(true);
+    try {
+      await disconnectMicrosoft365Account();
+      setM365Status({ configured: m365Status?.configured ?? true, connected: false, account: null });
+      setM365Sources(null);
+      setPreview(null);
+      setMessageType("success");
+      setMessage("Microsoft-365-Konto wurde von dieser App getrennt.");
+    } catch (error) {
+      setMessageType("error");
+      setMessage(`Microsoft-365-Konto konnte nicht getrennt werden: ${error}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const toggleSource = (source: Microsoft365SyncSource, selected: boolean) => {
     const key = source.kind === "contactFolder" ? "selectedContactSourceIds" : "selectedCalendarSourceIds";
     const current = config[key];
@@ -283,13 +436,13 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
   };
 
   return (
-    <div className="page synchronizations-page">
-      <header className="page-header">
+    <div className={`page synchronizations-page${embedded ? " synchronizations-page-embedded" : ""}`}>
+      {!embedded && <header className="page-header">
         <div>
           <h2>Microsoft-365-Synchronisierung</h2>
           <p>Kontakte und Termine mit Microsoft 365 abgleichen.</p>
         </div>
-      </header>
+      </header>}
 
       <StatusMessage message={message} type={messageType} />
 
@@ -304,18 +457,54 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
 
           {openProvider === "m365" && <div className="sync-provider-content">
             {!m365Status?.connected ? (
-              <div className="sync-provider-empty">
-                <span className="sync-provider-connect-icon"><MonitorSmartphone size={25} aria-hidden="true" /></span>
-                <span className="sync-provider-connect-copy">
-                  <strong>Microsoft 365 verbinden</strong>
-                  <small>Einmal anmelden, danach können Kontakte und Termine synchronisiert werden.</small>
-                </span>
-                <button className="primary sync-provider-connect-button" type="button" onClick={() => onNavigate("m365", "sync")}>
-                  <Cloud size={19} aria-hidden="true" /> Jetzt verbinden
-                </button>
-              </div>
+              <>
+                {!m365Status?.configured ? (
+                  <div className="sync-provider-empty">
+                    <span className="sync-provider-connect-icon"><MonitorSmartphone size={25} aria-hidden="true" /></span>
+                    <span className="sync-provider-connect-copy">
+                      <strong>Microsoft 365 ist noch nicht eingerichtet</strong>
+                      <small>Die Microsoft-Anwendung muss einmalig durch die Systemadministration hinterlegt werden.</small>
+                    </span>
+                  </div>
+                ) : deviceCode ? (
+                  <div className="m365-device-inline" aria-live="polite">
+                    <span className="sync-provider-connect-icon"><KeyRound size={25} aria-hidden="true" /></span>
+                    <div className="sync-provider-connect-copy"><strong>Anmeldung abschließen</strong><small>Geben Sie diesen Code im Microsoft-Anmeldefenster ein.</small></div>
+                    <strong className="m365-device-code-inline">{deviceCode.userCode}</strong>
+                    <div className="button-row">
+                      <button type="button" onClick={() => void copyDeviceCode()}><Copy size={17} /> Code kopieren</button>
+                      <button className="primary" type="button" onClick={() => void openMicrosoft365SignIn()}><ExternalLink size={17} /> Microsoft öffnen</button>
+                      <button type="button" onClick={() => void cancelAccountConnection()}>Abbrechen</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="sync-provider-empty">
+                    <span className="sync-provider-connect-icon"><MonitorSmartphone size={25} aria-hidden="true" /></span>
+                    <span className="sync-provider-connect-copy">
+                      <strong>Microsoft 365 verbinden</strong>
+                      <small>Einmal anmelden, danach können Kontakte und Termine hier synchronisiert werden.</small>
+                    </span>
+                    <div className="button-row sync-provider-connect-actions">
+                      <button className="primary sync-provider-connect-button" type="button" onClick={() => void connectAccount()} disabled={busy}>
+                        {busy ? <LoaderCircle className="spin" size={19} aria-hidden="true" /> : <Cloud size={19} aria-hidden="true" />} {busy ? "Anmeldung läuft …" : "Jetzt anmelden"}
+                      </button>
+                      {showCodeFallback && <button type="button" onClick={() => void connectWithCode()} disabled={busy}>Anmeldung mit Code</button>}
+                    </div>
+                  </div>
+                )}
+              </>
             ) : (
               <>
+                {m365Status.account && <section className="sync-account-card" aria-label="Microsoft-365-Konto">
+                  <div className="sync-account-summary">
+                    <span className="sync-account-avatar">{m365Status.account.displayName.trim().slice(0, 1).toUpperCase() || "M"}</span>
+                    <span><strong>{m365Status.account.displayName}</strong><small>{m365Status.account.email || m365Status.account.userPrincipalName}</small></span>
+                  </div>
+                  <div className="button-row">
+                    <button type="button" onClick={() => void checkAccount()} disabled={busy}><RefreshCw className={busy ? "spin" : ""} size={17} /> Verbindung prüfen</button>
+                    <button className="danger-button" type="button" onClick={() => void disconnectAccount()} disabled={busy}><LogOut size={17} /> Abmelden</button>
+                  </div>
+                </section>}
                 <section className="sync-quick-settings" aria-label="Grundlegende Einstellungen">
                   <label title="Kontakte und Kalender werden alle 30 Sekunden geprüft – auch wenn das Fenster geschlossen ist."><span><strong>Automatisch</strong><small>Alle 30 Sekunden · auch im Hintergrund</small></span><input type="checkbox" checked={config.enabled} onChange={(event) => updateConfig("enabled", event.target.checked)} /></label>
                   <label title="Kontakte zwischen der App und Microsoft 365 berücksichtigen."><ContactRound size={19} /><span><strong>Kontakte</strong></span><input type="checkbox" checked={config.contacts} onChange={(event) => updateConfig("contacts", event.target.checked)} /></label>
@@ -326,7 +515,7 @@ export function SynchronizationsPage({ onNavigate }: SynchronizationsPageProps) 
                   <label><span>Richtung</span><select value={config.direction} onChange={(event) => updateGlobalDirection(event.target.value as SyncDirection)}><option value="bidirectional">Beide Richtungen</option><option value="export">Nur App → Exchange</option><option value="import">Nur Exchange → App</option></select></label>
                   <div className="button-row">
                     <button type="button" onClick={togglePaused} disabled={busy}>{config.paused ? <PlayCircle size={18} /> : <PauseCircle size={18} />}{config.paused ? "Fortsetzen" : "Pausieren"}</button>
-                    <button type="button" onClick={() => onNavigate("m365", "sync")}>Konto</button>
+                     <button type="button" onClick={() => void checkAccount()} disabled={busy}>Konto prüfen</button>
                     <button type="button" onClick={createPreview} disabled={busy || config.paused || selectedSourceCount === 0}>Vorschau</button>
                     <button className="primary" type="button" onClick={saveConfig} disabled={busy}><Save size={17} /> Speichern</button>
                   </div>

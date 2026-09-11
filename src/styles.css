@@ -15097,3 +15097,148 @@ td small {
   .onboarding-scan-start > button { grid-column: 1 / -1; width: 100%; }
   .onboarding-footer { position: sticky; bottom: -1.2rem; background: var(--surface); padding-bottom: 1.2rem; }
 }
+.m365-sync-dialog {
+  width: min(1080px, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  overflow: hidden auto;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  box-shadow: 0 24px 80px rgba(15, 23, 42, .28);
+  padding: 1.25rem;
+}
+
+.m365-sync-dialog-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: .25rem .25rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.m365-sync-dialog-heading h2,
+.m365-sync-dialog-heading p { margin: 0; }
+.m365-sync-dialog-heading h2 { margin-top: .2rem; }
+.m365-sync-dialog-heading > div > p:last-child { margin-top: .35rem; color: var(--muted-text); }
+.m365-sync-dialog .synchronizations-page { padding: 1rem .25rem .25rem; }
+.m365-sync-dialog .synchronizations-page-embedded > .status-message { margin-top: 0; }
+.m365-sync-dialog .sync-provider-list { margin-bottom: 0; }
+.m365-sync-dialog .sync-account-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  padding: .8rem;
+  background: var(--surface-muted, #f6f8fb);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.sync-account-summary { display: flex; align-items: center; gap: .7rem; min-width: 0; }
+.sync-account-summary > span:last-child { display: grid; gap: .15rem; min-width: 0; }
+.sync-account-summary small { color: var(--muted-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sync-account-avatar {
+  display: grid; place-items: center; width: 2.25rem; height: 2.25rem; flex: 0 0 auto;
+  border-radius: 50%; background: var(--accent); color: #fff; font-weight: 700;
+}
+.m365-device-inline { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: .65rem 1rem; }
+.m365-device-inline .button-row { grid-column: 2; flex-wrap: wrap; }
+.m365-device-code-inline { letter-spacing: .16em; font-size: 1.2rem; }
+
+@media (max-width: 720px) {
+  .m365-sync-dialog { width: calc(100vw - 1rem); max-height: calc(100vh - 1rem); padding: .8rem; }
+  .m365-sync-dialog .sync-account-card { align-items: flex-start; flex-direction: column; }
+  .m365-device-inline { grid-template-columns: 1fr; }
+  .m365-device-inline .button-row { grid-column: 1; }
+}
+.export-contact-wizard {
+  max-width: 760px;
+  margin-inline: auto;
+}
+
+.export-single-step {
+  min-height: 270px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: .75rem;
+  padding: 1.5rem 1rem 1.25rem;
+}
+
+.export-single-step h4,
+.export-single-step p { margin: 0; }
+.export-single-step h4 { font-size: 1.35rem; }
+.export-single-step > p { color: var(--muted-text); max-width: 62ch; }
+.export-single-step .export-radio-list,
+.export-single-step .export-group-picker { margin-top: .5rem; }
+.export-single-step .export-radio-option { padding: .9rem 1rem; }
+.export-single-step .outlook-direct-account { max-width: 520px; margin-top: .75rem; }
+
+.export-single-step-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: .75rem;
+  padding: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.export-summary-card {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  width: min(100%, 520px);
+  margin-top: .5rem;
+  padding: .85rem 1rem;
+  background: var(--surface-muted, #f6f8fb);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.export-summary-card > span { display: grid; gap: .15rem; }
+.export-summary-card small { color: var(--muted-text); }
+
+.outlook-folder-picker {
+  display: grid;
+  flex: 0 1 auto;
+  gap: .3rem;
+  width: min(100%, 560px);
+  max-height: 250px;
+  overflow-y: auto;
+  padding: .65rem .8rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-muted, #f6f8fb);
+}
+
+.outlook-folder-picker .checkbox-row {
+  align-items: flex-start;
+  margin: 0;
+  padding: .35rem .2rem;
+}
+
+.outlook-folder-picker .checkbox-row > span {
+  display: grid;
+  gap: .1rem;
+}
+
+.outlook-folder-picker .checkbox-row small { color: var(--muted-text); }
+.export-selection-warning { color: var(--danger, #b42318); font-weight: 700; }
+
+.outlook-autocomplete-note {
+  display: flex;
+  align-items: flex-start;
+  gap: .55rem;
+  width: min(100%, 560px);
+  padding: .75rem .85rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  color: var(--text) !important;
+}
+
+.outlook-autocomplete-note svg { flex: 0 0 auto; margin-top: .1rem; color: var(--accent); }
+
+@media (max-width: 640px) {
+  .export-single-step { min-height: 230px; padding-inline: .25rem; }
+  .export-single-step-actions { padding-inline: 0; }
+}

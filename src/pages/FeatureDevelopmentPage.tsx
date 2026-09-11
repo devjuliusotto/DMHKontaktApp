@@ -4,6 +4,7 @@ import { StatusMessage } from "../components/StatusMessage";
 import {
   createAutomaticBackup,
   getBackupData,
+  resetMigrationCaptureStatus,
   resetLocalAppData,
   restartApp
 } from "../services/db";
@@ -84,6 +85,27 @@ export function FeatureDevelopmentPage({ availability, onFeatureChange, onReset 
     }
   };
 
+  const resetEdvTransfer = async () => {
+    const confirmed = window.confirm(
+      "„An EDV senden“ für eine neue Vorführung zurücksetzen?\n\nDie lokale Markierung „Bereits gesendet“ wird entfernt. E-Mail-Konten, Kennwörter und bereits an die EDV übertragene Daten bleiben unverändert."
+    );
+    if (!confirmed) return;
+
+    setBusyAction("reset-edv-transfer");
+    setMessage("");
+    try {
+      const status = await resetMigrationCaptureStatus();
+      if (status.completed) throw new Error("Der Versandstatus ist weiterhin als abgeschlossen markiert.");
+      setMessageType("success");
+      setMessage("„An EDV senden“ wurde zurückgesetzt. Der vollständige Ablauf kann jetzt erneut vorgeführt werden.");
+    } catch (error) {
+      setMessageType("error");
+      setMessage(`EDV-Versandstatus konnte nicht zurückgesetzt werden: ${error}`);
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
   return (
     <div className="page feature-development-page">
       <header className="page-header">
@@ -136,6 +158,19 @@ export function FeatureDevelopmentPage({ availability, onFeatureChange, onReset 
           </div>
 
           <StatusMessage message={message} type={messageType} />
+
+          <section className="form-panel feature-admin-card">
+            <div className="settings-task-heading">
+              <RotateCcw size={25} aria-hidden="true" />
+              <div>
+                <h3>„An EDV senden“ zurücksetzen</h3>
+                <p>Entfernt nur die lokale Abschlussmarkierung, damit der komplette Versandablauf erneut gezeigt werden kann.</p>
+              </div>
+            </div>
+            <button type="button" onClick={resetEdvTransfer} disabled={busyAction !== null}>
+              <RotateCcw size={18} /> {busyAction === "reset-edv-transfer" ? "Wird zurückgesetzt …" : "Versandstatus zurücksetzen"}
+            </button>
+          </section>
 
           <section className="form-panel settings-reset-panel">
             <div className="settings-task-heading">

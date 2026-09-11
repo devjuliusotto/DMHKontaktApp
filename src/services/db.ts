@@ -222,8 +222,20 @@ export function writeExportFile(path: string, content: string): Promise<void> {
   return invoke("write_export_file", { path, content });
 }
 
-export function pushProjectContactsToOutlook(targetEmail?: string): Promise<OutlookContactExportResult> {
-  return invoke("push_project_contacts_to_outlook", { targetEmail: targetEmail || null });
+export interface OutlookContactExportOptions {
+  targetEmail?: string;
+  selectedGroupIds?: number[];
+  includeUngrouped?: boolean;
+  seedAutocomplete?: boolean;
+}
+
+export function pushProjectContactsToOutlook(options: OutlookContactExportOptions = {}): Promise<OutlookContactExportResult> {
+  return invoke("push_project_contacts_to_outlook", {
+    targetEmail: options.targetEmail || null,
+    selectedGroupIds: options.selectedGroupIds ?? null,
+    includeUngrouped: options.includeUngrouped ?? true,
+    seedAutocomplete: options.seedAutocomplete ?? true
+  });
 }
 
 export function pushProjectAppointmentsToOutlook(events: CalendarEvent[], targetEmail?: string): Promise<OutlookCalendarExportResult> {

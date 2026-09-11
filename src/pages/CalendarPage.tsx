@@ -1,14 +1,14 @@
-import { CalendarDays, ChevronLeft, ChevronRight, Clock3, Cloud, Download, Filter, ListChecks, MoreHorizontal, PanelLeftClose, Plus, RefreshCw, Rows3, Settings2, Trash2, Undo2, Upload, X } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, Clock3, Download, Filter, ListChecks, MoreHorizontal, PanelLeftClose, Plus, RefreshCw, Rows3, Settings2, Trash2, Undo2, Upload, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { CalendarReconciliationDialog } from "../components/CalendarReconciliationDialog";
 import { CalendarEventForm } from "../components/CalendarEventForm";
 import { ActionResultDialog, type ActionResult } from "../components/ActionResultDialog";
 import { EasyImportDialog } from "../components/EasyImportDialog";
 import { EmptyImportState } from "../components/EmptyImportState";
+import { Microsoft365SyncDialog } from "../components/Microsoft365SyncDialog";
 import { StatusMessage } from "../components/StatusMessage";
 import type { Page } from "../components/Sidebar";
 import type { CalendarEvent } from "../types/calendar";
-import type { Microsoft365ConnectionStatus } from "../types/m365";
 import { calendarCategoriesStorageKey, calendarColorOptions, calendarColorStyle, calendarColorValue, calendarStorageKey, defaultCalendarColor, expandCalendarEvents, formatCalendarDate, parseCalendarDate } from "../utils/calendar";
 import { findExactCalendarDuplicateGroups, removeExactCalendarDuplicates } from "../utils/calendarDuplicates";
 import {
@@ -17,11 +17,7 @@ import {
   calendarStorageUpdatedEventName,
   type CalendarAutomaticSyncStatus
 } from "../utils/automaticCalendarSync";
-import { enableCompleteAutomaticMicrosoft365Sync } from "../utils/microsoft365SyncConfig";
 import {
-  connectMicrosoft365Interactively,
-  disconnectMicrosoft365Account,
-  getMicrosoft365ConnectionStatus,
   listCalendarEvents,
   mergeCalendarEvents,
   moveCalendarEventsToTrash,
@@ -294,10 +290,7 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
   const [showCategoryDialog, setShowCategoryDialog] = useState(false);
   const [showDuplicateDialog, setShowDuplicateDialog] = useState(false);
   const [showActionsMenu, setShowActionsMenu] = useState(false);
-  const [exchangePrompt, setExchangePrompt] = useState<Microsoft365ConnectionStatus | null>(null);
-  const [exchangeManagement, setExchangeManagement] = useState<Microsoft365ConnectionStatus | null>(null);
-  const [exchangeSyncStatus, setExchangeSyncStatus] = useState<Microsoft365ConnectionStatus | null>(null);
-  const [exchangeSyncBusy, setExchangeSyncBusy] = useState(false);
+  const [m365SyncDialogOpen, setM365SyncDialogOpen] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
   const [newCategoryColor, setNewCategoryColor] = useState(defaultCalendarColor);
   const [duplicateCleanupBackup, setDuplicateCleanupBackup] = useState<CalendarDuplicateCleanupBackup | null>(
@@ -360,16 +353,6 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
       setMessage("Die gespeicherten Kalenderkategorien konnten nicht geladen werden.");
     }
   }, []);
-
-  useEffect(() => {
-    if (!("__TAURI_INTERNALS__" in window)) return;
-    void getMicrosoft365ConnectionStatus().then(setExchangeSyncStatus).catch(() => setExchangeSyncStatus(null));
-  }, []);
-
-  useEffect(() => {
-    if (!showActionsMenu || !("__TAURI_INTERNALS__" in window)) return;
-    void getMicrosoft365ConnectionStatus().then(setExchangeSyncStatus).catch(() => setExchangeSyncStatus(null));
-  }, [showActionsMenu]);
 
   useEffect(() => {
     localStorage.setItem(calendarViewStorageKey, view);
@@ -868,80 +851,6 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
     window.dispatchEvent(new Event(calendarChangedEventName));
   };
 
-  const openExchangeSync = async () => {
-    try {
-      const status = await getMicrosoft365ConnectionStatus();
-      setExchangeSyncStatus(status);
-      setShowActionsMenu(false);
-      if (status.connected && status.account) {
-        setExchangeManagement(status);
-      } else {
-        setExchangePrompt(status);
-      }
-    } catch (error) {
-      setActionResult({ title: "Exchange nicht erreichbar", summary: `Die Microsoft-365-Verbindung konnte nicht geprüft werden: ${error}`, tone: "error" });
-    }
-  };
-
-  const enableExchangeCalendarSync = async (useAnotherAccount = false) => {
-    if (!exchangePrompt) return;
-    setExchangeSyncBusy(true);
-    try {
-      let account = exchangePrompt.account;
-      if (useAnotherAccount && exchangePrompt.connected) {
-        await disconnectMicrosoft365Account();
-        account = null;
-      }
-      if (!account) account = await connectMicrosoft365Interactively();
-      await enableCompleteAutomaticMicrosoft365Sync(true);
-      window.dispatchEvent(new Event(calendarChangedEventName));
-      setExchangeSyncStatus({ ...exchangePrompt, connected: true, account });
-      setExchangePrompt(null);
-      const address = account.email || account.userPrincipalName;
-      setActionResult({
-        title: "Exchange-Synchronisierung aktiviert",
-        summary: `Der Kalender von ${address} wird jetzt sicher abgeglichen und danach automatisch synchronisiert.`,
-        details: ["Gleiche Termine werden zuerst miteinander verknüpft, statt doppelt erstellt zu werden.", "Neue Änderungen werden anschließend automatisch übertragen."],
-        tone: "success"
-      });
-    } catch (error) {
-      setActionResult({ title: "Exchange-Synchronisierung nicht gestartet", summary: `Es wurden keine Kalenderdaten verändert: ${error}`, tone: "error" });
-    } finally {
-      setExchangeSyncBusy(false);
-    }
-  };
-
-  const changeExchangeAccount = () => {
-    if (!exchangeManagement) return;
-    setExchangeManagement(null);
-    setExchangePrompt(exchangeManagement);
-  };
-
-  const refreshExchangeCalendarSync = async () => {
-    setExchangeSyncBusy(true);
-    try {
-      // Rebuild the complete, selected calendar configuration before a manual
-      // refresh. This also repairs an incomplete configuration left by an
-      // older release without asking the user to configure every source again.
-      await enableCompleteAutomaticMicrosoft365Sync(true);
-      window.dispatchEvent(new Event(calendarChangedEventName));
-      setExchangeManagement(null);
-      setActionResult({
-        title: "Exchange-Abgleich gestartet",
-        summary: "Der Kalender wird jetzt mit Exchange abgeglichen. Neue und geänderte Termine werden bevorzugt übertragen.",
-        tone: "success"
-      });
-    } catch (error) {
-      setActionResult({
-        title: "Exchange-Abgleich nicht gestartet",
-        summary: `Die Kalenderdaten wurden nicht verändert: ${error}`,
-        tone: "error"
-      });
-    } finally {
-      setExchangeSyncBusy(false);
-    }
-  };
-
   return (
     <div className="page calendar-page">
       <header className="page-header">
@@ -958,8 +867,8 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
               <MoreHorizontal size={21} />
             </button>
             {showActionsMenu && <div className="calendar-actions-menu" role="menu">
-              <button type="button" onClick={() => void openExchangeSync()}>
-                <Cloud size={18} /> {exchangeSyncStatus?.connected ? "Exchange synchronisiert" : "Kalender mit Exchange synchronisieren"}
+              <button type="button" onClick={() => { setShowActionsMenu(false); setM365SyncDialogOpen(true); }}>
+                <RefreshCw size={18} /> Microsoft 365 / Exchange verwalten
               </button>
               <span className="calendar-actions-separator" />
               <button type="button" onClick={() => { setShowActionsMenu(false); onNavigate("import"); }}><Upload size={18} /> Termine importieren</button>
@@ -982,57 +891,7 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
 
       <ActionResultDialog result={actionResult} onClose={() => setActionResult(null)} />
 
-      {exchangePrompt && (
-        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="exchange-sync-title">
-          <section className="form-panel modal-card action-result-dialog">
-            <div className="action-result-heading">
-              <span className="action-result-icon" aria-hidden="true"><Cloud size={28} /></span>
-              <div>
-                <p className="action-result-kicker">Exchange-Kalender</p>
-                <h3 id="exchange-sync-title">{exchangePrompt.connected ? "Ist dies Ihr richtiges Microsoft-Konto?" : "Mit Exchange anmelden"}</h3>
-              </div>
-              <button className="icon-only" type="button" aria-label="Schließen" onClick={() => setExchangePrompt(null)} disabled={exchangeSyncBusy}><X size={22} /></button>
-            </div>
-            {exchangePrompt.connected && exchangePrompt.account ? (
-              <>
-                <p className="action-result-summary">Der Kalender wird mit <strong>{exchangePrompt.account.email || exchangePrompt.account.userPrincipalName}</strong> synchronisiert.</p>
-                <p>Bitte bestätigen Sie nur, wenn dies Ihr dienstliches Konto ist.</p>
-              </>
-            ) : (
-              <p className="action-result-summary">Melden Sie sich einmal mit Ihrem dienstlichen Microsoft-Konto an. Danach läuft die Kalender-Synchronisierung automatisch.</p>
-            )}
-            <div className="button-row action-result-actions">
-              <button type="button" onClick={() => setExchangePrompt(null)} disabled={exchangeSyncBusy}>Abbrechen</button>
-              {exchangePrompt.connected && <button type="button" onClick={() => void enableExchangeCalendarSync(true)} disabled={exchangeSyncBusy}>Nein, anderes Konto</button>}
-              <button className="primary" type="button" onClick={() => void enableExchangeCalendarSync(false)} disabled={exchangeSyncBusy}>
-                {exchangeSyncBusy ? "Wird verbunden …" : exchangePrompt.connected ? "Ja, synchronisieren" : "Mit Microsoft anmelden"}
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
-
-      {exchangeManagement && exchangeManagement.account && (
-        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="exchange-management-title">
-          <section className="form-panel modal-card action-result-dialog">
-            <div className="action-result-heading">
-              <span className="action-result-icon success" aria-hidden="true"><Cloud size={28} /></span>
-              <div>
-                <p className="action-result-kicker">Exchange-Kalender</p>
-                <h3 id="exchange-management-title">Exchange synchronisiert</h3>
-              </div>
-              <button className="icon-only" type="button" aria-label="Schließen" onClick={() => setExchangeManagement(null)}><X size={22} /></button>
-            </div>
-            <p className="action-result-summary">Ihr Kalender ist mit <strong>{exchangeManagement.account.email || exchangeManagement.account.userPrincipalName}</strong> verbunden.</p>
-            <p>Neue Änderungen werden automatisch mit Exchange abgeglichen.</p>
-            <div className="button-row action-result-actions">
-              <button type="button" onClick={() => void refreshExchangeCalendarSync()} disabled={exchangeSyncBusy}>{exchangeSyncBusy ? "Wird abgeglichen …" : "Jetzt aktualisieren"}</button>
-              <button type="button" onClick={changeExchangeAccount}>Anderes Konto</button>
-              <button className="primary" type="button" onClick={() => { setExchangeManagement(null); onNavigate("synchronizations"); }}>Synchronisierung verwalten</button>
-            </div>
-          </section>
-        </div>
-      )}
+      {m365SyncDialogOpen && <Microsoft365SyncDialog context="calendar" onClose={() => setM365SyncDialogOpen(false)} />}
 
       {showCategoryDialog && (
         <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Kategorie erstellen">
