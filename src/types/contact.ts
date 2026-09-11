@@ -187,6 +187,18 @@ export interface RecoveryArchiveStatus {
   contacts: number;
   groups: number;
   calendarEvents: number;
+  totalCheckpoints: number;
+  totalSizeBytes: number;
+  checkpoints: RecoveryCheckpointSummary[];
+}
+
+export interface RecoveryCheckpointSummary {
+  id: string;
+  createdAt: string;
+  contacts: number;
+  groups: number;
+  calendarEvents: number;
+  sizeBytes: number;
 }
 
 export interface RecoveryRestoreResult {

@@ -206,8 +206,8 @@ export function getRecoveryArchiveStatus(): Promise<import("../types/contact").R
   return invoke("get_recovery_archive_status");
 }
 
-export function restoreRecoveryCheckpoint(currentBackup: BackupData): Promise<import("../types/contact").RecoveryRestoreResult> {
-  return invoke("restore_recovery_checkpoint", { currentBackup });
+export function restoreRecoveryCheckpoint(currentBackup: BackupData, checkpointId?: string): Promise<import("../types/contact").RecoveryRestoreResult> {
+  return invoke("restore_recovery_checkpoint", { currentBackup, checkpointId: checkpointId ?? null });
 }
 
 export function createAutomaticPasswordBackup(snapshot = false): Promise<void> {

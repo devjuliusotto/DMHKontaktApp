@@ -1,4 +1,5 @@
 use chrono::Utc;
+use flate2::{read::GzDecoder, write::GzEncoder, Compression};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -6,7 +7,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
@@ -850,6 +851,11 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
     if let Err(error) = create_auto_backup(app, &conn) {
         eprintln!("Automatische Sicherung beim Start fehlgeschlagen: {error}");
     }
+    if let Ok(backup) = load_backup_data(&conn) {
+        if let Err(error) = write_recovery_checkpoint(app, backup) {
+            eprintln!("Wiederherstellungspunkt beim Start fehlgeschlagen: {error}");
+        }
+    }
     if let Err(error) = vault::write_automatic_password_backup(app, false) {
         eprintln!("Automatische Kennwort-Sicherung beim Start fehlgeschlagen: {error}");
     }
@@ -1116,6 +1122,7 @@ fn move_calendar_events_to_trash_internal(
         return Ok(0);
     }
     let conn = open_db(&app)?;
+    checkpoint_before_destructive_change(&app, &conn)?;
     let mut changed = 0usize;
     let timestamp = now();
     let transaction = conn.unchecked_transaction().map_err(|error| error.to_string())?;
@@ -1399,7 +1406,9 @@ const AUTOMATIC_BACKUP_LATEST: &str = "DMH-Kontakte-Kalender-Auto-Backup.json";
 const AUTOMATIC_BACKUP_SNAPSHOT_PREFIX: &str = "auto-backup-";
 const RECOVERY_CHECKPOINT_FOLDER: &str = "recovery";
 const RECOVERY_CHECKPOINT_PREFIX: &str = "checkpoint-";
-const RECOVERY_CHECKPOINT_LIMIT: usize = 2016;
+const RECOVERY_CHECKPOINT_LIMIT: usize = 240;
+const RECOVERY_CHECKPOINT_MINIMUM: usize = 12;
+const RECOVERY_CHECKPOINT_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const CALENDAR_ACTIVE_STORAGE_KEY: &str = "agendakontakte.calendarEvents";
 const CALENDAR_DELETED_STORAGE_KEY: &str = "agendakontakte.deletedCalendarEvents";
 const COLLECTED_ADDRESSES_HIDDEN_SETTING: &str = "collected_addresses_hidden";
@@ -1678,7 +1687,7 @@ fn merge_automatic_backup(
     Ok(current)
 }
 
-pub(crate) fn replace_json_file(path: &Path, json: &str) -> Result<(), String> {
+fn replace_file_contents(path: &Path, contents: &[u8]) -> Result<(), String> {
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -1689,7 +1698,7 @@ pub(crate) fn replace_json_file(path: &Path, json: &str) -> Result<(), String> {
             .create_new(true)
             .write(true)
             .open(&temporary)?;
-        file.write_all(json.as_bytes())?;
+        file.write_all(contents)?;
         file.sync_all()?;
         drop(file);
 
@@ -1723,6 +1732,10 @@ pub(crate) fn replace_json_file(path: &Path, json: &str) -> Result<(), String> {
         let _ = fs::remove_file(&temporary);
     }
     result.map_err(|error| format!("{}: {error}", path.display()))
+}
+
+pub(crate) fn replace_json_file(path: &Path, json: &str) -> Result<(), String> {
+    replace_file_contents(path, json.as_bytes())
 }
 
 pub(crate) fn write_external_backup_best_effort(path: &Path, json: &str, label: &str) {
@@ -1804,6 +1817,24 @@ struct RecoveryCheckpoint {
     backup: BackupData,
 }
 
+#[derive(Debug, Clone)]
+struct StoredRecoveryCheckpoint {
+    id: String,
+    checkpoint: RecoveryCheckpoint,
+    size_bytes: u64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryCheckpointSummary {
+    pub id: String,
+    pub created_at: String,
+    pub contacts: usize,
+    pub groups: usize,
+    pub calendar_events: usize,
+    pub size_bytes: u64,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecoveryArchiveStatus {
@@ -1812,6 +1843,9 @@ pub struct RecoveryArchiveStatus {
     pub contacts: usize,
     pub groups: usize,
     pub calendar_events: usize,
+    pub total_checkpoints: usize,
+    pub total_size_bytes: u64,
+    pub checkpoints: Vec<RecoveryCheckpointSummary>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1848,7 +1882,8 @@ fn recovery_checkpoint_paths(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
                     .file_name()
                     .and_then(|name| name.to_str())
                     .is_some_and(|name| {
-                        name.starts_with(RECOVERY_CHECKPOINT_PREFIX) && name.ends_with(".json")
+                        name.starts_with(RECOVERY_CHECKPOINT_PREFIX)
+                            && (name.ends_with(".json") || name.ends_with(".json.gz"))
                     })
         })
         .collect::<Vec<_>>();
@@ -1865,77 +1900,44 @@ fn calendar_event_count(backup: &BackupData) -> usize {
 
 fn recovery_fingerprint(backup: &BackupData) -> Result<String, String> {
     let mut stable = backup.clone();
-    stable.exported_at.clear();
-    let serialized = serde_json::to_vec(&stable).map_err(|error| error.to_string())?;
+    stable.contacts.sort_by(|left, right| {
+        left.id
+            .cmp(&right.id)
+            .then_with(|| left.email.cmp(&right.email))
+            .then_with(|| left.display_name.cmp(&right.display_name))
+    });
+    for contact in &mut stable.contacts {
+        contact.groups.sort_by(|left, right| {
+            left.id
+                .cmp(&right.id)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+    }
+    stable.groups.sort_by(|left, right| {
+        left.id
+            .cmp(&right.id)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    stable.settings.sort_by(|left, right| left.key.cmp(&right.key));
+    let browser_storage = stable.browser_storage.iter().collect::<BTreeMap<_, _>>();
+    let serialized = serde_json::to_vec(&(
+        &stable.version,
+        &stable.contacts,
+        &stable.groups,
+        &stable.settings,
+        browser_storage,
+    ))
+    .map_err(|error| error.to_string())?;
     let mut hasher = Sha256::new();
     hasher.update(serialized);
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn read_recovery_checkpoints(app: &AppHandle) -> Result<Vec<RecoveryCheckpoint>, String> {
-    let mut checkpoints = Vec::new();
-    for path in recovery_checkpoint_paths(app)? {
-        let Ok(content) = fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(checkpoint) = serde_json::from_str::<RecoveryCheckpoint>(&content) else {
-            continue;
-        };
-        checkpoints.push(checkpoint);
-    }
-    checkpoints.sort_by(|left, right| left.created_at.cmp(&right.created_at));
-    Ok(checkpoints)
-}
-
-fn prune_recovery_checkpoints(app: &AppHandle) -> Result<(), String> {
-    let paths = recovery_checkpoint_paths(app)?;
-    let overflow = paths.len().saturating_sub(RECOVERY_CHECKPOINT_LIMIT);
-    for path in paths.iter().take(overflow) {
-        fs::remove_file(path).map_err(|error| {
-            format!("Alter Wiederherstellungspunkt konnte nicht entfernt werden: {error}")
-        })?;
-    }
-    Ok(())
-}
-
-fn write_recovery_checkpoint(app: &AppHandle, backup: BackupData) -> Result<(), String> {
-    let fingerprint = recovery_fingerprint(&backup)?;
-    if read_recovery_checkpoints(app)?
-        .last()
-        .is_some_and(|checkpoint| checkpoint.fingerprint == fingerprint)
-    {
-        return Ok(());
-    }
-
-    let checkpoint = RecoveryCheckpoint {
-        version: "1.0.0".to_string(),
-        created_at: now(),
-        fingerprint,
-        backup,
-    };
-    let json = serde_json::to_string_pretty(&checkpoint).map_err(|error| error.to_string())?;
-    let stamp = Utc::now().format("%Y%m%d-%H%M%S-%f");
-    let path =
-        recovery_checkpoint_dir(app)?.join(format!("{RECOVERY_CHECKPOINT_PREFIX}{stamp}.json"));
-    replace_json_file(&path, &json)?;
-    prune_recovery_checkpoints(app)
-}
-
-fn recovery_status_from_checkpoint(
-    checkpoint: Option<&RecoveryCheckpoint>,
-) -> RecoveryArchiveStatus {
-    let Some(checkpoint) = checkpoint else {
-        return RecoveryArchiveStatus {
-            available: false,
-            latest_at: None,
-            contacts: 0,
-            groups: 0,
-            calendar_events: 0,
-        };
-    };
-    RecoveryArchiveStatus {
-        available: true,
-        latest_at: Some(checkpoint.created_at.clone()),
+fn recovery_checkpoint_summary(stored: &StoredRecoveryCheckpoint) -> RecoveryCheckpointSummary {
+    let checkpoint = &stored.checkpoint;
+    RecoveryCheckpointSummary {
+        id: stored.id.clone(),
+        created_at: checkpoint.created_at.clone(),
         contacts: checkpoint
             .backup
             .contacts
@@ -1949,25 +1951,327 @@ fn recovery_status_from_checkpoint(
             .filter(|group| group.deleted_at.is_none())
             .count(),
         calendar_events: calendar_event_count(&checkpoint.backup),
+        size_bytes: stored.size_bytes,
+    }
+}
+
+fn read_recovery_checkpoint(path: &Path) -> Result<RecoveryCheckpoint, String> {
+    let bytes = fs::read(path).map_err(|error| error.to_string())?;
+    let content = if path.extension().and_then(|value| value.to_str()) == Some("gz") {
+        let mut decoder = GzDecoder::new(bytes.as_slice());
+        let mut content = String::new();
+        decoder
+            .read_to_string(&mut content)
+            .map_err(|error| error.to_string())?;
+        content
+    } else {
+        String::from_utf8(bytes).map_err(|error| error.to_string())?
+    };
+    serde_json::from_str(&content).map_err(|error| error.to_string())
+}
+
+fn read_recovery_checkpoints(app: &AppHandle) -> Result<Vec<StoredRecoveryCheckpoint>, String> {
+    let mut checkpoints = Vec::new();
+    for path in recovery_checkpoint_paths(app)? {
+        let Ok(checkpoint) = read_recovery_checkpoint(&path) else {
+            continue;
+        };
+        let id = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let size_bytes = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+        checkpoints.push(StoredRecoveryCheckpoint {
+            id,
+            checkpoint,
+            size_bytes,
+        });
+    }
+    checkpoints.sort_by(|left, right| {
+        left.checkpoint
+            .created_at
+            .cmp(&right.checkpoint.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(checkpoints)
+}
+
+fn merge_recovery_backup(
+    previous: Option<&BackupData>,
+    current: BackupData,
+) -> Result<BackupData, String> {
+    let mut contacts = BTreeMap::<i64, Contact>::new();
+    let mut contacts_without_id = Vec::new();
+    for contact in previous
+        .into_iter()
+        .flat_map(|backup| backup.contacts.iter())
+        .filter(|contact| contact.deleted_at.is_none())
+    {
+        if let Some(id) = contact.id {
+            contacts.insert(id, contact.clone());
+        } else {
+            contacts_without_id.push(contact.clone());
+        }
+    }
+    for mut contact in current
+        .contacts
+        .into_iter()
+        .filter(|contact| contact.deleted_at.is_none())
+    {
+        contact.deleted_at = None;
+        if let Some(id) = contact.id {
+            if let Some(older) = contacts.get(&id) {
+                let mut groups = BTreeMap::<String, Group>::new();
+                for group in older.groups.iter().chain(contact.groups.iter()) {
+                    if group.deleted_at.is_none() {
+                        let key = group
+                            .id
+                            .map(|group_id| format!("id:{group_id}"))
+                            .unwrap_or_else(|| format!("name:{}", group.name.to_lowercase()));
+                        groups.insert(key, group.clone());
+                    }
+                }
+                contact.groups = groups.into_values().collect();
+            }
+            contacts.insert(id, contact);
+        } else {
+            contacts_without_id.push(contact);
+        }
+    }
+    let mut merged_contacts = contacts.into_values().collect::<Vec<_>>();
+    merged_contacts.extend(contacts_without_id);
+
+    let mut groups = BTreeMap::<String, Group>::new();
+    for group in previous
+        .into_iter()
+        .flat_map(|backup| backup.groups.iter())
+        .chain(current.groups.iter())
+        .filter(|group| group.deleted_at.is_none())
+    {
+        let key = group
+            .id
+            .map(|id| format!("id:{id}"))
+            .unwrap_or_else(|| format!("name:{}", group.name.to_lowercase()));
+        groups.insert(key, group.clone());
+    }
+
+    let mut settings = BTreeMap::<String, String>::new();
+    for setting in previous
+        .into_iter()
+        .flat_map(|backup| backup.settings.iter())
+        .chain(current.settings.iter())
+    {
+        settings.insert(setting.key.clone(), setting.value.clone());
+    }
+
+    let mut calendar_events = BTreeMap::<String, CalendarEvent>::new();
+    if let Some(previous) = previous {
+        for event in parse_calendar_events(&previous.browser_storage, CALENDAR_ACTIVE_STORAGE_KEY)
+            .into_iter()
+            .filter(|event| event.deleted_at.is_none())
+        {
+            calendar_events.insert(event.id.clone(), event);
+        }
+    }
+    for mut event in parse_calendar_events(&current.browser_storage, CALENDAR_ACTIVE_STORAGE_KEY)
+        .into_iter()
+        .filter(|event| event.deleted_at.is_none())
+    {
+        event.deleted_at = None;
+        calendar_events.insert(event.id.clone(), event);
+    }
+
+    let mut browser_storage = previous
+        .map(|backup| backup.browser_storage.clone())
+        .unwrap_or_default();
+    for (key, value) in current.browser_storage {
+        if key != CALENDAR_ACTIVE_STORAGE_KEY && key != CALENDAR_DELETED_STORAGE_KEY {
+            browser_storage.insert(key, value);
+        }
+    }
+    browser_storage.insert(
+        CALENDAR_ACTIVE_STORAGE_KEY.to_string(),
+        serde_json::to_string(&calendar_events.into_values().collect::<Vec<_>>())
+            .map_err(|error| error.to_string())?,
+    );
+    browser_storage.insert(CALENDAR_DELETED_STORAGE_KEY.to_string(), "[]".to_string());
+
+    Ok(BackupData {
+        version: current.version,
+        exported_at: current.exported_at,
+        contacts: merged_contacts,
+        groups: groups.into_values().collect(),
+        settings: settings
+            .into_iter()
+            .map(|(key, value)| AppSetting { key, value })
+            .collect(),
+        browser_storage,
+    })
+}
+
+fn safe_recovery_backup(
+    checkpoints: &[StoredRecoveryCheckpoint],
+    current: BackupData,
+) -> Result<BackupData, String> {
+    let latest_is_safe = checkpoints
+        .last()
+        .is_some_and(|stored| stored.checkpoint.version == "2.0.0");
+    if latest_is_safe {
+        return merge_recovery_backup(
+            checkpoints.last().map(|stored| &stored.checkpoint.backup),
+            current,
+        );
+    }
+
+    let mut baseline: Option<BackupData> = None;
+    for stored in checkpoints {
+        baseline = Some(merge_recovery_backup(
+            baseline.as_ref(),
+            stored.checkpoint.backup.clone(),
+        )?);
+    }
+    merge_recovery_backup(baseline.as_ref(), current)
+}
+
+fn prune_recovery_checkpoints(app: &AppHandle) -> Result<(), String> {
+    let paths = recovery_checkpoint_paths(app)?;
+    let mut total_bytes = paths
+        .iter()
+        .filter_map(|path| path.metadata().ok())
+        .map(|metadata| metadata.len())
+        .sum::<u64>();
+    let mut remove_count = 0usize;
+    while paths.len().saturating_sub(remove_count) > RECOVERY_CHECKPOINT_MINIMUM
+        && (paths.len().saturating_sub(remove_count) > RECOVERY_CHECKPOINT_LIMIT
+            || total_bytes > RECOVERY_CHECKPOINT_MAX_BYTES)
+    {
+        total_bytes = total_bytes.saturating_sub(
+            paths[remove_count]
+                .metadata()
+                .map(|metadata| metadata.len())
+                .unwrap_or(0),
+        );
+        remove_count += 1;
+    }
+    for path in paths.iter().take(remove_count) {
+        fs::remove_file(path).map_err(|error| {
+            format!("Alter Wiederherstellungspunkt konnte nicht entfernt werden: {error}")
+        })?;
+    }
+    Ok(())
+}
+
+fn write_recovery_checkpoint(app: &AppHandle, backup: BackupData) -> Result<(), String> {
+    let checkpoints = read_recovery_checkpoints(app)?;
+    let backup = safe_recovery_backup(&checkpoints, backup)?;
+    let fingerprint = recovery_fingerprint(&backup)?;
+    if checkpoints
+        .last()
+        .is_some_and(|stored| stored.checkpoint.fingerprint == fingerprint)
+    {
+        return Ok(());
+    }
+
+    let checkpoint = RecoveryCheckpoint {
+        version: "2.0.0".to_string(),
+        created_at: now(),
+        fingerprint,
+        backup,
+    };
+    let json = serde_json::to_vec(&checkpoint).map_err(|error| error.to_string())?;
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+    encoder
+        .write_all(&json)
+        .map_err(|error| error.to_string())?;
+    let compressed = encoder.finish().map_err(|error| error.to_string())?;
+    let stamp = Utc::now().format("%Y%m%d-%H%M%S-%f");
+    let path = recovery_checkpoint_dir(app)?
+        .join(format!("{RECOVERY_CHECKPOINT_PREFIX}{stamp}.json.gz"));
+    replace_file_contents(&path, &compressed)?;
+    prune_recovery_checkpoints(app)
+}
+
+fn recovery_status_from_checkpoints(
+    checkpoints: &[StoredRecoveryCheckpoint],
+) -> RecoveryArchiveStatus {
+    let Some(latest) = checkpoints.last() else {
+        return RecoveryArchiveStatus {
+            available: false,
+            latest_at: None,
+            contacts: 0,
+            groups: 0,
+            calendar_events: 0,
+            total_checkpoints: 0,
+            total_size_bytes: 0,
+            checkpoints: Vec::new(),
+        };
+    };
+    let latest_summary = recovery_checkpoint_summary(latest);
+    let mut summaries = checkpoints
+        .iter()
+        .rev()
+        .map(recovery_checkpoint_summary)
+        .collect::<Vec<_>>();
+    summaries.truncate(RECOVERY_CHECKPOINT_LIMIT);
+    RecoveryArchiveStatus {
+        available: true,
+        latest_at: Some(latest_summary.created_at.clone()),
+        contacts: latest_summary.contacts,
+        groups: latest_summary.groups,
+        calendar_events: latest_summary.calendar_events,
+        total_checkpoints: checkpoints.len(),
+        total_size_bytes: checkpoints.iter().map(|stored| stored.size_bytes).sum(),
+        checkpoints: summaries,
     }
 }
 
 fn recovery_checkpoint_for_restore(
-    checkpoints: &[RecoveryCheckpoint],
+    checkpoints: &[StoredRecoveryCheckpoint],
     current_backup: &BackupData,
+    checkpoint_id: Option<&str>,
 ) -> Option<RecoveryCheckpoint> {
+    if let Some(checkpoint_id) = checkpoint_id {
+        return checkpoints
+            .iter()
+            .find(|stored| stored.id == checkpoint_id)
+            .map(|stored| stored.checkpoint.clone());
+    }
     let current_calendar_events = calendar_event_count(current_backup);
+    let current_contacts = current_backup
+        .contacts
+        .iter()
+        .filter(|contact| contact.deleted_at.is_none())
+        .count();
     checkpoints
         .iter()
         .rev()
-        .find(|checkpoint| calendar_event_count(&checkpoint.backup) > current_calendar_events)
-        .cloned()
-        .or_else(|| checkpoints.last().cloned())
+        .find(|stored| {
+            calendar_event_count(&stored.checkpoint.backup) > current_calendar_events
+                || stored
+                    .checkpoint
+                    .backup
+                    .contacts
+                    .iter()
+                    .filter(|contact| contact.deleted_at.is_none())
+                    .count()
+                    > current_contacts
+        })
+        .map(|stored| stored.checkpoint.clone())
+        .or_else(|| checkpoints.last().map(|stored| stored.checkpoint.clone()))
 }
 
 fn create_auto_backup(app: &AppHandle, conn: &Connection) -> Result<(), String> {
     let data = load_backup_data(conn)?;
     write_automatic_backup(app, data, false)
+}
+
+fn checkpoint_before_destructive_change(
+    app: &AppHandle,
+    conn: &Connection,
+) -> Result<(), String> {
+    write_recovery_checkpoint(app, load_backup_data(conn)?)
+        .map_err(|error| format!("Sicherheits-Checkpoint konnte nicht erstellt werden: {error}"))
 }
 
 fn read_groups_for_contact(conn: &Connection, contact_id: i64) -> Result<Vec<Group>, String> {
@@ -2156,6 +2460,7 @@ fn save_contact(app: AppHandle, contact: ContactInput) -> Result<i64, String> {
 #[tauri::command]
 fn delete_contact(app: AppHandle, id: i64) -> Result<(), String> {
     let conn = open_db(&app)?;
+    checkpoint_before_destructive_change(&app, &conn)?;
     conn.execute(
         "UPDATE contacts SET deleted_at = ?, updated_at = ? WHERE id = ?",
         params![now(), now(), id],
@@ -2197,6 +2502,9 @@ fn soft_delete_contacts(
 #[tauri::command]
 fn delete_contacts(app: AppHandle, ids: Vec<i64>) -> Result<usize, String> {
     let mut conn = open_db(&app)?;
+    if !ids.is_empty() {
+        checkpoint_before_destructive_change(&app, &conn)?;
+    }
     soft_delete_contacts(&mut conn, &ids, &now())
 }
 
@@ -2298,6 +2606,7 @@ fn save_group(app: AppHandle, group: Group) -> Result<i64, String> {
 #[tauri::command]
 fn delete_group(app: AppHandle, id: i64) -> Result<(), String> {
     let conn = open_db(&app)?;
+    checkpoint_before_destructive_change(&app, &conn)?;
     conn.execute(
         "UPDATE groups SET deleted_at = ?, updated_at = ? WHERE id = ?",
         params![now(), now(), id],
@@ -2743,6 +3052,8 @@ fn undo_last_import(app: AppHandle) -> Result<usize, String> {
         return Ok(0);
     };
 
+    checkpoint_before_destructive_change(&app, &conn)?;
+
     let deleted = conn
         .execute(
             "DELETE FROM contacts WHERE import_batch_id = ?",
@@ -2776,6 +3087,7 @@ fn undo_last_outlook_contact_import(app: AppHandle) -> Result<usize, String> {
     let Some(batch_id) = batch_id else {
         return Ok(0);
     };
+    checkpoint_before_destructive_change(&app, &conn)?;
     let deleted = conn
         .execute(
             "DELETE FROM contacts WHERE import_batch_id = ?",
@@ -2942,19 +3254,24 @@ fn create_recovery_checkpoint(app: AppHandle, backup: BackupData) -> Result<(), 
 #[tauri::command]
 fn get_recovery_archive_status(app: AppHandle) -> Result<RecoveryArchiveStatus, String> {
     let checkpoints = read_recovery_checkpoints(&app)?;
-    Ok(recovery_status_from_checkpoint(checkpoints.last()))
+    Ok(recovery_status_from_checkpoints(&checkpoints))
 }
 
 #[tauri::command]
 fn restore_recovery_checkpoint(
     app: AppHandle,
     current_backup: BackupData,
+    checkpoint_id: Option<String>,
 ) -> Result<RecoveryRestoreResult, String> {
     // Preserve the exact state that is about to be replaced, including the
     // browser-held calendar, before selecting a previous safe checkpoint.
     write_recovery_checkpoint(&app, current_backup.clone())?;
     let checkpoints = read_recovery_checkpoints(&app)?;
-    let checkpoint = recovery_checkpoint_for_restore(&checkpoints, &current_backup)
+    let checkpoint = recovery_checkpoint_for_restore(
+        &checkpoints,
+        &current_backup,
+        checkpoint_id.as_deref(),
+    )
         .ok_or_else(|| "Es ist noch kein Wiederherstellungspunkt vorhanden.".to_string())?;
 
     let passwords_restored = vault::validate_automatic_password_backup(&app)?;
@@ -3084,44 +3401,102 @@ fn restore_backup(app: AppHandle, backup: BackupData) -> Result<(), String> {
 
     let mut group_id_map: Vec<(i64, i64)> = Vec::new();
     for group in backup.groups {
-        let old_id = group.id.unwrap_or_default();
-        tx.execute(
-            "INSERT INTO groups (name, description, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?)",
-            params![group.name, group.description, group.created_at, group.updated_at, group.deleted_at],
-        )
-        .map_err(|err| err.to_string())?;
-        group_id_map.push((old_id, tx.last_insert_rowid()));
+        let requested_id = group.id.filter(|id| *id > 0);
+        let new_group_id = if let Some(id) = requested_id {
+            tx.execute(
+                "INSERT INTO groups (id, name, description, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?)",
+                params![
+                    id,
+                    &group.name,
+                    &group.description,
+                    &group.created_at,
+                    &group.updated_at,
+                    &group.deleted_at
+                ],
+            )
+            .map_err(|err| err.to_string())?;
+            id
+        } else {
+            tx.execute(
+                "INSERT INTO groups (name, description, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?)",
+                params![
+                    &group.name,
+                    &group.description,
+                    &group.created_at,
+                    &group.updated_at,
+                    &group.deleted_at
+                ],
+            )
+            .map_err(|err| err.to_string())?;
+            tx.last_insert_rowid()
+        };
+        if let Some(old_id) = requested_id {
+            group_id_map.push((old_id, new_group_id));
+        }
     }
 
     for contact in backup.contacts {
-        tx.execute(
-            "
-            INSERT INTO contacts (
-                first_name, last_name, display_name, email, phone, mobile_phone, street,
-                postal_code, city, country, short_info, notes, created_at, updated_at, deleted_at
+        let requested_id = contact.id.filter(|id| *id > 0);
+        let new_contact_id = if let Some(id) = requested_id {
+            tx.execute(
+                "
+                INSERT INTO contacts (
+                    id, first_name, last_name, display_name, email, phone, mobile_phone, street,
+                    postal_code, city, country, short_info, notes, created_at, updated_at, deleted_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ",
+                params![
+                    id,
+                    &contact.first_name,
+                    &contact.last_name,
+                    &contact.display_name,
+                    &contact.email,
+                    &contact.phone,
+                    &contact.mobile_phone,
+                    &contact.street,
+                    &contact.postal_code,
+                    &contact.city,
+                    &contact.country,
+                    &contact.short_info,
+                    &contact.notes,
+                    &contact.created_at,
+                    &contact.updated_at,
+                    &contact.deleted_at
+                ],
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ",
-            params![
-                contact.first_name,
-                contact.last_name,
-                contact.display_name,
-                contact.email,
-                contact.phone,
-                contact.mobile_phone,
-                contact.street,
-                contact.postal_code,
-                contact.city,
-                contact.country,
-                contact.short_info,
-                contact.notes,
-                contact.created_at,
-                contact.updated_at,
-                contact.deleted_at
-            ],
-        )
-        .map_err(|err| err.to_string())?;
-        let new_contact_id = tx.last_insert_rowid();
+            .map_err(|err| err.to_string())?;
+            id
+        } else {
+            tx.execute(
+                "
+                INSERT INTO contacts (
+                    first_name, last_name, display_name, email, phone, mobile_phone, street,
+                    postal_code, city, country, short_info, notes, created_at, updated_at, deleted_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ",
+                params![
+                    &contact.first_name,
+                    &contact.last_name,
+                    &contact.display_name,
+                    &contact.email,
+                    &contact.phone,
+                    &contact.mobile_phone,
+                    &contact.street,
+                    &contact.postal_code,
+                    &contact.city,
+                    &contact.country,
+                    &contact.short_info,
+                    &contact.notes,
+                    &contact.created_at,
+                    &contact.updated_at,
+                    &contact.deleted_at
+                ],
+            )
+            .map_err(|err| err.to_string())?;
+            tx.last_insert_rowid()
+        };
         for group in contact.groups {
             if let Some(old_group_id) = group.id {
                 if let Some((_, new_group_id)) =
@@ -3284,6 +3659,7 @@ fn restart_app(app: AppHandle) {
 #[tauri::command]
 fn delete_all_contacts(app: AppHandle) -> Result<usize, String> {
     let conn = open_db(&app)?;
+    checkpoint_before_destructive_change(&app, &conn)?;
     conn.execute(
         "UPDATE contacts SET deleted_at = ?, updated_at = ? WHERE deleted_at IS NULL",
         params![now(), now()],
@@ -3327,6 +3703,7 @@ fn move_contact_to_group(app: AppHandle, contact_id: i64, group_id: i64) -> Resu
         return Err("Gruppe wurde nicht gefunden oder ist gelöscht.".to_string());
     }
 
+    checkpoint_before_destructive_change(&app, &conn)?;
     let tx = conn.transaction().map_err(|err| err.to_string())?;
     tx.execute(
         "DELETE FROM contact_groups WHERE contact_id = ?",
@@ -3355,6 +3732,7 @@ fn clear_contact_groups(app: AppHandle, contact_id: i64) -> Result<(), String> {
         return Err("Kontakt wurde nicht gefunden oder ist gelöscht.".to_string());
     }
 
+    checkpoint_before_destructive_change(&app, &conn)?;
     conn.execute(
         "DELETE FROM contact_groups WHERE contact_id = ?",
         params![contact_id],
@@ -7637,6 +8015,172 @@ mod tests {
         assert_eq!(
             deleted_events[0].description,
             "Vorherige Beschreibung\nGelöschtes Element"
+        );
+    }
+
+    #[test]
+    fn recovery_checkpoint_retains_deleted_data_and_current_edits() {
+        let protected_group = Group {
+            id: Some(11),
+            name: "Kunden".to_string(),
+            description: String::new(),
+            created_at: "2026-08-18T10:00:00Z".to_string(),
+            updated_at: "2026-08-18T10:00:00Z".to_string(),
+            deleted_at: None,
+        };
+        let contact = |id: i64, name: &str, notes: &str, groups: Vec<Group>| Contact {
+            id: Some(id),
+            first_name: name.to_string(),
+            last_name: "Test".to_string(),
+            display_name: format!("{name} Test"),
+            email: format!("{}@example.org", name.to_lowercase()),
+            phone: String::new(),
+            mobile_phone: String::new(),
+            street: String::new(),
+            postal_code: String::new(),
+            city: String::new(),
+            country: String::new(),
+            short_info: String::new(),
+            notes: notes.to_string(),
+            groups,
+            created_at: "2026-08-18T10:00:00Z".to_string(),
+            updated_at: "2026-08-18T10:00:00Z".to_string(),
+            deleted_at: None,
+        };
+        let event = |id: &str, title: &str| CalendarEvent {
+            id: id.to_string(),
+            updated_at: "2026-08-18T10:00:00Z".to_string(),
+            title: title.to_string(),
+            starts_at: "2026-08-18T10:00:00".to_string(),
+            ends_at: "2026-08-18T11:00:00".to_string(),
+            location: String::new(),
+            description: String::new(),
+            color: "blue".to_string(),
+            category: String::new(),
+            source: "test".to_string(),
+            recurrence: None,
+            excluded_dates: Vec::new(),
+            deleted_at: None,
+            recurrence_master_id: None,
+            recurrence_id: None,
+        };
+
+        let previous_event = event("event-old", "Alter Termin");
+        let mut previous_storage = HashMap::new();
+        previous_storage.insert(
+            CALENDAR_ACTIVE_STORAGE_KEY.to_string(),
+            serde_json::to_string(&vec![previous_event]).unwrap(),
+        );
+        let previous = BackupData {
+            version: "2.0.0".to_string(),
+            exported_at: "2026-08-18T10:00:00Z".to_string(),
+            contacts: vec![
+                contact(7, "Erika", "Alt", vec![protected_group.clone()]),
+                contact(8, "Max", "Bleibt geschützt", Vec::new()),
+            ],
+            groups: vec![protected_group],
+            settings: Vec::new(),
+            browser_storage: previous_storage,
+        };
+
+        let mut deleted_contact = contact(9, "Gelöscht", "", Vec::new());
+        deleted_contact.deleted_at = Some("2026-08-18T10:01:00Z".to_string());
+        let mut current_storage = HashMap::new();
+        current_storage.insert(
+            CALENDAR_ACTIVE_STORAGE_KEY.to_string(),
+            serde_json::to_string(&vec![event("event-new", "Neuer Termin")]).unwrap(),
+        );
+        current_storage.insert(
+            CALENDAR_DELETED_STORAGE_KEY.to_string(),
+            serde_json::to_string(&vec![event("event-old", "Alter Termin")]).unwrap(),
+        );
+        let current = BackupData {
+            version: "2.0.0".to_string(),
+            exported_at: "2026-08-18T10:01:00Z".to_string(),
+            contacts: vec![
+                contact(7, "Erika", "Aktualisiert", Vec::new()),
+                contact(10, "Neu", "Neu hinzugefügt", Vec::new()),
+                deleted_contact,
+            ],
+            groups: Vec::new(),
+            settings: Vec::new(),
+            browser_storage: current_storage,
+        };
+
+        let merged = merge_recovery_backup(Some(&previous), current).unwrap();
+
+        assert_eq!(merged.contacts.len(), 3);
+        let erika = merged
+            .contacts
+            .iter()
+            .find(|contact| contact.id == Some(7))
+            .unwrap();
+        assert_eq!(erika.notes, "Aktualisiert");
+        assert_eq!(erika.groups.len(), 1);
+        assert!(merged.contacts.iter().any(|contact| contact.id == Some(8)));
+        assert!(merged.contacts.iter().any(|contact| contact.id == Some(10)));
+        assert!(!merged.contacts.iter().any(|contact| contact.id == Some(9)));
+        assert_eq!(merged.groups.len(), 1);
+
+        let active_events =
+            parse_calendar_events(&merged.browser_storage, CALENDAR_ACTIVE_STORAGE_KEY);
+        assert_eq!(active_events.len(), 2);
+        assert!(active_events.iter().any(|event| event.id == "event-old"));
+        assert!(active_events.iter().any(|event| event.id == "event-new"));
+        assert!(parse_calendar_events(
+            &merged.browser_storage,
+            CALENDAR_DELETED_STORAGE_KEY
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn recovery_fingerprint_ignores_export_time_and_map_order() {
+        let mut left_storage = HashMap::new();
+        left_storage.insert("second".to_string(), "2".to_string());
+        left_storage.insert("first".to_string(), "1".to_string());
+        let left = BackupData {
+            version: "2.0.0".to_string(),
+            exported_at: "2026-08-18T10:00:00Z".to_string(),
+            contacts: Vec::new(),
+            groups: Vec::new(),
+            settings: vec![
+                AppSetting {
+                    key: "second".to_string(),
+                    value: "2".to_string(),
+                },
+                AppSetting {
+                    key: "first".to_string(),
+                    value: "1".to_string(),
+                },
+            ],
+            browser_storage: left_storage,
+        };
+
+        let mut right_storage = HashMap::new();
+        right_storage.insert("first".to_string(), "1".to_string());
+        right_storage.insert("second".to_string(), "2".to_string());
+        let right = BackupData {
+            version: "2.0.0".to_string(),
+            exported_at: "2026-08-18T11:00:00Z".to_string(),
+            contacts: Vec::new(),
+            groups: Vec::new(),
+            settings: vec![
+                AppSetting {
+                    key: "first".to_string(),
+                    value: "1".to_string(),
+                },
+                AppSetting {
+                    key: "second".to_string(),
+                    value: "2".to_string(),
+                },
+            ],
+            browser_storage: right_storage,
+        };
+
+        assert_eq!(
+            recovery_fingerprint(&left).unwrap(),
+            recovery_fingerprint(&right).unwrap()
         );
     }
 

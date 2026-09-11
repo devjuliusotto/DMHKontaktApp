@@ -73,6 +73,7 @@ export default function App() {
   const [pendingEdvNavigation, setPendingEdvNavigation] = useState<{ page: Page; section?: SettingsSection } | null>(null);
   const automaticBackupPromise = useRef<Promise<void> | null>(null);
   const recoveryCheckpointPromise = useRef<Promise<void> | null>(null);
+  const recoveryCheckpointQueued = useRef(false);
   const documentSyncPromise = useRef<Promise<void> | null>(null);
   const calendarSyncPromise = useRef<Promise<void> | null>(null);
   const queuedCalendarSyncTrigger = useRef<"open" | "change" | "poll" | null>(null);
@@ -156,11 +157,16 @@ export default function App() {
 
   const runRecoveryCheckpoint = useCallback(async (): Promise<void> => {
     if (!("__TAURI_INTERNALS__" in window)) return;
-    if (recoveryCheckpointPromise.current) return recoveryCheckpointPromise.current;
+    if (recoveryCheckpointPromise.current) {
+      recoveryCheckpointQueued.current = true;
+      return recoveryCheckpointPromise.current;
+    }
     const promise = (async () => {
-      const backup = addBrowserDataToBackup(await getBackupData());
-      await createRecoveryCheckpoint(backup);
-      await createAutomaticPasswordBackup(true);
+      do {
+        recoveryCheckpointQueued.current = false;
+        const backup = addBrowserDataToBackup(await getBackupData());
+        await createRecoveryCheckpoint(backup);
+      } while (recoveryCheckpointQueued.current);
     })();
     recoveryCheckpointPromise.current = promise;
     try {
@@ -295,6 +301,18 @@ export default function App() {
       // A missing connection is expected while the device is offline.
     });
 
+    let recoveryDebounceTimer: number | undefined;
+    const queueRecoveryCheckpoint = () => {
+      if (recoveryDebounceTimer !== undefined) window.clearTimeout(recoveryDebounceTimer);
+      recoveryDebounceTimer = window.setTimeout(() => {
+        void runRecoveryCheckpoint().catch(() => {
+          // A failed point never replaces or removes an earlier checkpoint.
+        });
+      }, 1_500);
+    };
+    window.addEventListener(calendarChangedEventName, queueRecoveryCheckpoint);
+    window.addEventListener(dataSectionVisibilityChangedEventName, queueRecoveryCheckpoint);
+
     const appWindow = getCurrentWindow();
     const unlisten = appWindow.onCloseRequested(async (event) => {
       event.preventDefault();
@@ -319,6 +337,9 @@ export default function App() {
       window.clearInterval(interval);
       window.clearInterval(recoveryCheckpointInterval);
       window.clearInterval(documentSyncInterval);
+      window.removeEventListener(calendarChangedEventName, queueRecoveryCheckpoint);
+      window.removeEventListener(dataSectionVisibilityChangedEventName, queueRecoveryCheckpoint);
+      if (recoveryDebounceTimer !== undefined) window.clearTimeout(recoveryDebounceTimer);
       void unlisten.then((dispose) => dispose());
     };
   }, [runAutomaticBackup, runCalendarSync, runDocumentSync, runRecoveryCheckpoint]);
