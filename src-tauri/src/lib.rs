@@ -164,6 +164,13 @@ pub struct TrashPurgeResult {
     pub vault_entries: usize,
 }
 
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteAllContactsResult {
+    pub contacts: usize,
+    pub groups: usize,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupData {
@@ -222,6 +229,43 @@ where
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct CalendarMeetingOptions {
+    #[serde(default)]
+    pub required_attendees: Vec<String>,
+    #[serde(default)]
+    pub optional_attendees: Vec<String>,
+    #[serde(default = "default_calendar_show_as")]
+    pub show_as: String,
+    #[serde(default)]
+    pub reminder_minutes: Option<i64>,
+    #[serde(default)]
+    pub is_private: bool,
+    #[serde(default)]
+    pub is_online_meeting: bool,
+    #[serde(default)]
+    pub online_meeting_url: String,
+}
+
+fn default_calendar_show_as() -> String {
+    "busy".to_string()
+}
+
+impl Default for CalendarMeetingOptions {
+    fn default() -> Self {
+        Self {
+            required_attendees: Vec::new(),
+            optional_attendees: Vec::new(),
+            show_as: default_calendar_show_as(),
+            reminder_minutes: Some(15),
+            is_private: false,
+            is_online_meeting: false,
+            online_meeting_url: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct CalendarEvent {
     pub id: String,
     #[serde(default)]
@@ -246,6 +290,8 @@ pub struct CalendarEvent {
     pub recurrence_master_id: Option<String>,
     #[serde(default)]
     pub recurrence_id: Option<String>,
+    #[serde(default)]
+    pub meeting: CalendarMeetingOptions,
 }
 
 #[derive(Debug, Serialize)]
@@ -3656,15 +3702,58 @@ fn restart_app(app: AppHandle) {
     app.restart()
 }
 
+fn soft_delete_all_contacts_and_groups(
+    conn: &mut Connection,
+    timestamp: &str,
+) -> Result<DeleteAllContactsResult, String> {
+    let tx = conn.transaction().map_err(|err| err.to_string())?;
+    let collected_addresses_visible: bool = tx
+        .query_row(
+            "SELECT COALESCE(
+                (SELECT value FROM app_settings WHERE key = 'collected_addresses_hidden'),
+                'false'
+             ) != 'true'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|err| err.to_string())?;
+    let contacts = tx
+        .execute(
+            "UPDATE contacts SET deleted_at = ?1, updated_at = ?1 WHERE deleted_at IS NULL",
+            params![timestamp],
+        )
+        .map_err(|err| err.to_string())?;
+    let stored_groups = tx
+        .execute(
+            "UPDATE groups SET deleted_at = ?1, updated_at = ?1 WHERE deleted_at IS NULL",
+            params![timestamp],
+        )
+        .map_err(|err| err.to_string())?;
+    if collected_addresses_visible {
+        for (key, value) in [
+            ("collected_addresses_hidden", "true"),
+            ("collected_addresses_deleted_at", timestamp),
+        ] {
+            tx.execute(
+                "INSERT INTO app_settings (key, value, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                params![key, value, timestamp],
+            )
+            .map_err(|err| err.to_string())?;
+        }
+    }
+    tx.commit().map_err(|err| err.to_string())?;
+    Ok(DeleteAllContactsResult {
+        contacts,
+        groups: stored_groups + usize::from(collected_addresses_visible),
+    })
+}
+
 #[tauri::command]
-fn delete_all_contacts(app: AppHandle) -> Result<usize, String> {
-    let conn = open_db(&app)?;
+fn delete_all_contacts(app: AppHandle) -> Result<DeleteAllContactsResult, String> {
+    let mut conn = open_db(&app)?;
     checkpoint_before_destructive_change(&app, &conn)?;
-    conn.execute(
-        "UPDATE contacts SET deleted_at = ?, updated_at = ? WHERE deleted_at IS NULL",
-        params![now(), now()],
-    )
-    .map_err(|err| err.to_string())
+    soft_delete_all_contacts_and_groups(&mut conn, &now())
 }
 
 #[tauri::command]
@@ -3919,21 +4008,38 @@ function Read-Contact-Folder($folder, $storeId, $storeName) {
     }
   } catch { $script:skipped++ }
 }
-function Read-Folders($folder, $storeId, $storeName) {
+function Test-Hidden-Folder($folder) {
+  try {
+    return [bool]$folder.PropertyAccessor.GetProperty('http://schemas.microsoft.com/mapi/proptag/0x10F4000B')
+  } catch {
+    return $false
+  }
+}
+function Read-Folders($folder, $storeId, $storeName, $deletedFolderId) {
+  try {
+    $folderId = [string]$folder.EntryID
+    # Never restore Outlook's deleted contacts as active app contacts. Returning
+    # here also excludes every child folder below Deleted Items / Trash.
+    if (-not [string]::IsNullOrWhiteSpace($deletedFolderId) -and $folderId -eq $deletedFolderId) { return }
+    # Exchange exposes internal address-book caches as hidden contact folders.
+    if (Test-Hidden-Folder $folder) { return }
+  } catch { $script:skipped++ }
   try {
     if ([int]$folder.DefaultItemType -eq 2) { Read-Contact-Folder $folder $storeId $storeName }
   } catch { $script:skipped++ }
   try {
     $children = $folder.Folders
     for ($childIndex = 1; $childIndex -le $children.Count; $childIndex++) {
-      Read-Folders $children.Item($childIndex) $storeId $storeName
+      Read-Folders $children.Item($childIndex) $storeId $storeName $deletedFolderId
     }
   } catch { $script:skipped++ }
 }
 for ($storeIndex = 1; $storeIndex -le $namespace.Stores.Count; $storeIndex++) {
   try {
     $store = $namespace.Stores.Item($storeIndex)
-    Read-Folders $store.GetRootFolder() ([string]$store.StoreID) ([string]$store.DisplayName)
+    $deletedFolderId = ''
+    try { $deletedFolderId = [string]$store.GetDefaultFolder(3).EntryID } catch {}
+    Read-Folders $store.GetRootFolder() ([string]$store.StoreID) ([string]$store.DisplayName) $deletedFolderId
   } catch { $script:skipped++ }
 }
 [pscustomobject]@{ contacts = $contacts.ToArray(); skipped = $skipped } | ConvertTo-Json -Depth 6 -Compress
@@ -6709,6 +6815,7 @@ fn read_outlook_classic_appointments_for_import() -> Result<OutlookOneTimeCalend
             deleted_at: None,
             recurrence_master_id: None,
             recurrence_id: None,
+            meeting: CalendarMeetingOptions::default(),
         });
     }
 
@@ -7356,6 +7463,7 @@ mod tests {
                 deleted_at: None,
                 recurrence_master_id: None,
                 recurrence_id: None,
+                meeting: CalendarMeetingOptions::default(),
             })
             .collect();
         let result = merge_calendar_events_in_db(&mut conn, events).expect("large calendar merge");
@@ -7494,6 +7602,87 @@ mod tests {
             )
             .expect("deleted timestamp count");
         assert_eq!(deleted_with_timestamp, 2);
+    }
+
+    #[test]
+    fn deleting_all_contacts_also_moves_every_active_group_to_trash() {
+        let mut conn = Connection::open_in_memory().expect("in-memory database");
+        conn.execute_batch(
+            "
+            CREATE TABLE contacts (
+                id INTEGER PRIMARY KEY,
+                updated_at TEXT NOT NULL,
+                deleted_at TEXT
+            );
+            CREATE TABLE groups (
+                id INTEGER PRIMARY KEY,
+                updated_at TEXT NOT NULL,
+                deleted_at TEXT
+            );
+            CREATE TABLE app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO contacts VALUES
+                (1, 'before', NULL),
+                (2, 'before', NULL),
+                (3, 'old', '2026-01-01T00:00:00Z');
+            INSERT INTO groups VALUES
+                (1, 'before', NULL),
+                (2, 'before', NULL),
+                (3, 'old', '2026-01-01T00:00:00Z');
+            ",
+        )
+        .expect("test contacts, groups and settings");
+
+        let timestamp = "2026-09-13T12:00:00Z";
+        let result = soft_delete_all_contacts_and_groups(&mut conn, timestamp)
+            .expect("delete all contacts and groups");
+
+        assert_eq!(
+            result,
+            DeleteAllContactsResult {
+                contacts: 2,
+                groups: 3,
+            }
+        );
+        for table in ["contacts", "groups"] {
+            let active: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE deleted_at IS NULL"),
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("active count");
+            assert_eq!(active, 0, "{table} should have no active rows");
+        }
+        let hidden: String = conn
+            .query_row(
+                "SELECT value FROM app_settings WHERE key = 'collected_addresses_hidden'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("collected addresses hidden setting");
+        let deleted_at: String = conn
+            .query_row(
+                "SELECT value FROM app_settings WHERE key = 'collected_addresses_deleted_at'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("collected addresses deletion timestamp");
+        assert_eq!(hidden, "true");
+        assert_eq!(deleted_at, timestamp);
+
+        let repeated = soft_delete_all_contacts_and_groups(&mut conn, "2026-09-14T12:00:00Z")
+            .expect("repeat delete all");
+        assert_eq!(
+            repeated,
+            DeleteAllContactsResult {
+                contacts: 0,
+                groups: 0,
+            }
+        );
     }
 
     #[test]
@@ -7962,6 +8151,7 @@ mod tests {
             deleted_at: None,
             recurrence_master_id: None,
             recurrence_id: None,
+            meeting: CalendarMeetingOptions::default(),
         };
         let mut previous_storage = HashMap::new();
         previous_storage.insert(
@@ -8063,6 +8253,7 @@ mod tests {
             deleted_at: None,
             recurrence_master_id: None,
             recurrence_id: None,
+            meeting: CalendarMeetingOptions::default(),
         };
 
         let previous_event = event("event-old", "Alter Termin");
@@ -8221,6 +8412,7 @@ mod tests {
             deleted_at: None,
             recurrence_master_id: None,
             recurrence_id: None,
+            meeting: CalendarMeetingOptions::default(),
         };
         let mut browser_storage = HashMap::new();
         browser_storage.insert(

@@ -1,5 +1,5 @@
 import { CalendarDays, ChevronLeft, ChevronRight, Clock3, Download, Filter, ListChecks, MoreHorizontal, PanelLeftClose, Plus, RefreshCw, Rows3, Settings2, Trash2, Undo2, Upload, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { CalendarReconciliationDialog } from "../components/CalendarReconciliationDialog";
 import { CalendarEventForm } from "../components/CalendarEventForm";
 import { ActionResultDialog, type ActionResult } from "../components/ActionResultDialog";
@@ -145,7 +145,16 @@ function blankEvent(date = new Date()): CalendarEvent {
     description: "",
     color: defaultCalendarColor,
     category: "",
-    source: "DMH Backup"
+    source: "DMH Backup",
+    meeting: {
+      requiredAttendees: [],
+      optionalAttendees: [],
+      showAs: "busy",
+      reminderMinutes: 15,
+      isPrivate: false,
+      isOnlineMeeting: false,
+      onlineMeetingUrl: ""
+    }
   };
 }
 
@@ -161,6 +170,21 @@ interface CalendarTimeSelection {
   dayKey: string;
   anchorMinutes: number;
   currentMinutes: number;
+}
+
+interface CalendarEventPointerDrag {
+  eventId: string;
+  pointerId: number;
+  originX: number;
+  originY: number;
+  offsetMinutes: number;
+  dragging: boolean;
+}
+
+interface CalendarEventDropPreview {
+  event: CalendarEvent;
+  dayKey: string;
+  kind: "day" | "time";
 }
 
 function safeCalendarMinutes(value: number, fallback = 0): number {
@@ -189,6 +213,20 @@ function formatCalendarMinutes(minutes: number): string {
 function formatTimeSelection(selection: CalendarTimeSelection): string {
   const { startMinutes, endMinutes } = calendarTimeSelectionBounds(selection);
   return `${formatCalendarMinutes(startMinutes)}–${formatCalendarMinutes(endMinutes)}`;
+}
+
+function calendarEventDropPreviewStyle(event: CalendarEvent, hourHeight: number, minimumHeight: number): CSSProperties {
+  const starts = eventDate(event);
+  const ends = eventEndDate(event);
+  if (!starts || !ends) return {};
+  const dayStart = startOfDay(starts);
+  const startMinutes = (starts.getTime() - dayStart.getTime()) / 60_000;
+  const durationMinutes = Math.max(15, (ends.getTime() - starts.getTime()) / 60_000);
+  return {
+    ...calendarColorStyle(event.color),
+    top: `${(startMinutes / 60) * hourHeight + 1}px`,
+    height: `${Math.max(minimumHeight, (durationMinutes / 60) * hourHeight - 2)}px`
+  };
 }
 
 interface CalendarMonthSelection {
@@ -255,7 +293,16 @@ function normalizeEvent(event: CalendarEvent): CalendarEvent {
   return {
     ...event,
     color: calendarColorValue(event.color),
-    category: event.category ?? ""
+    category: event.category ?? "",
+    meeting: {
+      requiredAttendees: event.meeting?.requiredAttendees ?? [],
+      optionalAttendees: event.meeting?.optionalAttendees ?? [],
+      showAs: event.meeting?.showAs ?? "busy",
+      reminderMinutes: event.meeting?.reminderMinutes === undefined ? 15 : event.meeting.reminderMinutes,
+      isPrivate: event.meeting?.isPrivate ?? false,
+      isOnlineMeeting: event.meeting?.isOnlineMeeting ?? false,
+      onlineMeetingUrl: event.meeting?.onlineMeetingUrl ?? ""
+    }
   };
 }
 
@@ -297,10 +344,13 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
     () => readDuplicateCleanupBackup()
   );
   const [draggedEventId, setDraggedEventId] = useState<string | null>(null);
+  const [eventDropPreview, setEventDropPreview] = useState<CalendarEventDropPreview | null>(null);
   const [timeSelection, setTimeSelection] = useState<CalendarTimeSelection | null>(null);
   const [monthSelection, setMonthSelection] = useState<CalendarMonthSelection | null>(null);
   const timeSelectionRef = useRef<CalendarTimeSelection | null>(null);
   const draggedEventIdRef = useRef<string | null>(null);
+  const eventPointerDragRef = useRef<CalendarEventPointerDrag | null>(null);
+  const suppressEventClickRef = useRef<string | null>(null);
   const timeGridScrollRef = useRef<HTMLDivElement | null>(null);
   const eventsRef = useRef<CalendarEvent[]>([]);
 
@@ -523,12 +573,7 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
 
   const reviewExactDuplicates = () => {
     if (exactDuplicateCopies === 0) {
-      setActionResult({
-        title: "Duplikate geprüft",
-        summary: "Es wurden keine doppelten Termine gefunden.",
-        details: ["Verglichen wurden Titel, Datum und Beginn.", "Ihre Termine wurden nicht verändert."],
-        tone: "success"
-      });
+      setMessage("Keine doppelten Termine gefunden.");
       return;
     }
     setShowDuplicateDialog(true);
@@ -538,12 +583,7 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
     const result = removeExactCalendarDuplicates(events);
     if (result.removedEvents.length === 0) {
       setShowDuplicateDialog(false);
-      setActionResult({
-        title: "Duplikate geprüft",
-        summary: "Es wurden keine doppelten Termine gefunden.",
-        details: ["Ihre Termine wurden nicht verändert."],
-        tone: "success"
-      });
+      setMessage("Keine doppelten Termine gefunden.");
       return;
     }
 
@@ -573,11 +613,7 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
     const backup = readDuplicateCleanupBackup();
     if (!backup?.removedEvents.length) {
       setDuplicateCleanupBackup(null);
-      setActionResult({
-        title: "Keine Sicherung vorhanden",
-        summary: "Es gibt keine frühere Duplikatbereinigung, die wiederhergestellt werden kann.",
-        tone: "info"
-      });
+      setMessage("Keine frühere Duplikatbereinigung zum Wiederherstellen vorhanden.");
       return;
     }
     if (!window.confirm(`${backup.removedEvents.length} zuvor entfernte Kalenderkopien wiederherstellen? Bestehende oder inzwischen geänderte Termine werden nicht überschrieben.`)) return;
@@ -615,7 +651,7 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
     setNewCategoryName("");
     setNewCategoryColor(defaultCalendarColor);
     setShowCategoryDialog(false);
-    setActionResult({ title: "Kategorie erstellt", summary: `„${name}“ kann jetzt für Termine ausgewählt werden.`, tone: "success" });
+    setMessage(`Kategorie „${name}“ erstellt.`);
   };
 
   const openNewEvent = (date = new Date(), exactTime = false) => {
@@ -656,7 +692,8 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
 
   const minutesFromPointer = (element: HTMLElement, clientY: number) => {
     const rect = element.getBoundingClientRect();
-    const rawMinutes = ((clientY - rect.top) / compactCalendarHourHeight) * 60;
+    const hourHeight = advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight;
+    const rawMinutes = ((clientY - rect.top) / hourHeight) * 60;
     return Math.min(23 * 60 + 45, safeCalendarMinutes(rawMinutes));
   };
 
@@ -708,22 +745,11 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
     openNewEventRange(starts, ends);
   };
 
-  const beginEventDrag = (event: ReactDragEvent<HTMLElement>, id: string) => {
-    draggedEventIdRef.current = id;
-    setDraggedEventId(id);
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData("text/plain", id);
-    event.dataTransfer.setData("text/dmh-calendar-event", id);
-  };
-
   const finishEventDrag = () => {
     draggedEventIdRef.current = null;
     setDraggedEventId(null);
+    setEventDropPreview(null);
   };
-
-  const draggedIdFromEvent = (event: ReactDragEvent<HTMLElement>) => draggedEventIdRef.current
-    || event.dataTransfer.getData("text/dmh-calendar-event")
-    || event.dataTransfer.getData("text/plain");
 
   const persistMovedEvent = (id: string, nextStart: Date) => {
     const existing = events.find((entry) => entry.id === id);
@@ -739,44 +765,114 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
       endsAt: toLocalDateTime(nextEnd.toISOString()),
       updatedAt: new Date().toISOString()
     } : entry));
-    setActionResult({
-      title: "Termin verschoben",
-      summary: `„${existing.title}“ wurde verschoben.`,
-      items: [{ label: existing.title, detail: new Intl.DateTimeFormat("de-DE", { weekday: "long", day: "2-digit", month: "long", hour: "2-digit", minute: "2-digit" }).format(nextStart) }],
-      itemsLabel: "Neuen Terminzeitpunkt anzeigen",
-      tone: "success"
-    });
-    window.dispatchEvent(new Event(calendarChangedEventName));
   };
 
-  const allowEventDrop = (event: ReactDragEvent<HTMLElement>) => {
-    if (!draggedEventIdRef.current && !event.dataTransfer.types.includes("text/plain") && !event.dataTransfer.types.includes("text/dmh-calendar-event")) return;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "move";
+  const beginEventPointerDrag = (event: ReactPointerEvent<HTMLButtonElement>, eventId: string) => {
+    if (event.button !== 0) return;
+    event.stopPropagation();
+    suppressEventClickRef.current = null;
+    const existing = events.find((entry) => entry.id === eventId);
+    const starts = existing ? eventDate(existing) : null;
+    const ends = existing ? eventEndDate(existing) : null;
+    const durationMinutes = starts && ends ? Math.max(15, (ends.getTime() - starts.getTime()) / 60_000) : 15;
+    const eventRect = event.currentTarget.getBoundingClientRect();
+    const pointerRatio = Math.max(0, Math.min(1, (event.clientY - eventRect.top) / Math.max(1, eventRect.height)));
+    eventPointerDragRef.current = {
+      eventId,
+      pointerId: event.pointerId,
+      originX: event.clientX,
+      originY: event.clientY,
+      offsetMinutes: pointerRatio * durationMinutes,
+      dragging: false
+    };
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // The WebView can still deliver the pointer-up event without capture.
+    }
   };
 
-  const moveEventToPointer = (day: Date, event: ReactDragEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    const id = draggedIdFromEvent(event);
-    const nextStart = startOfDay(day);
-    nextStart.setMinutes(minutesFromPointer(event.currentTarget, event.clientY));
-    finishEventDrag();
-    persistMovedEvent(id, nextStart);
-  };
-
-  const moveEventToDay = (day: Date, event: ReactDragEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    const id = draggedIdFromEvent(event);
-    const existing = events.find((entry) => entry.id === id);
+  const dropPreviewFromPointer = (current: CalendarEventPointerDrag, clientX: number, clientY: number): CalendarEventDropPreview | null => {
+    const dropTarget = document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>("[data-calendar-drop-kind][data-calendar-day]");
+    const day = dropTarget?.dataset.calendarDay ? dateFromInput(dropTarget.dataset.calendarDay) : null;
+    const existing = events.find((entry) => entry.id === current.eventId);
     const oldStart = existing ? eventDate(existing) : null;
-    if (!oldStart) {
-      finishEventDrag();
+    const oldEnd = existing ? eventEndDate(existing) : null;
+    if (!dropTarget || !day || !existing || !oldStart || !oldEnd) return null;
+
+    const kind = dropTarget.dataset.calendarDropKind === "time" ? "time" : "day";
+    const nextStart = startOfDay(day);
+    if (kind === "time") {
+      const startMinutes = Math.min(23 * 60 + 45, safeCalendarMinutes(minutesFromPointer(dropTarget, clientY) - current.offsetMinutes));
+      nextStart.setMinutes(startMinutes);
+    } else {
+      nextStart.setHours(oldStart.getHours(), oldStart.getMinutes(), 0, 0);
+    }
+    const duration = Math.max(15 * 60_000, oldEnd.getTime() - oldStart.getTime());
+    const nextEnd = new Date(nextStart.getTime() + duration);
+    return {
+      event: {
+        ...existing,
+        startsAt: toLocalDateTime(nextStart.toISOString()),
+        endsAt: toLocalDateTime(nextEnd.toISOString())
+      },
+      dayKey: dateInputValue(day),
+      kind
+    };
+  };
+
+  const updateEventPointerDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const current = eventPointerDragRef.current;
+    if (!current || current.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+    if (!current.dragging && Math.hypot(event.clientX - current.originX, event.clientY - current.originY) < 6) return;
+    event.preventDefault();
+    if (!current.dragging) {
+      current.dragging = true;
+      draggedEventIdRef.current = current.eventId;
+      setDraggedEventId(current.eventId);
+    }
+    setEventDropPreview(dropPreviewFromPointer(current, event.clientX, event.clientY));
+  };
+
+  const finishEventPointerDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const current = eventPointerDragRef.current;
+    if (!current || current.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+    eventPointerDragRef.current = null;
+
+    if (current.dragging) {
+      event.preventDefault();
+      suppressEventClickRef.current = current.eventId;
+      const preview = dropPreviewFromPointer(current, event.clientX, event.clientY);
+      const nextStart = preview ? eventDate(preview.event) : null;
+      if (nextStart) persistMovedEvent(current.eventId, nextStart);
+    }
+
+    finishEventDrag();
+    try {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture may already have ended.
+    }
+  };
+
+  const cancelEventPointerDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const current = eventPointerDragRef.current;
+    if (!current || current.pointerId !== event.pointerId) return;
+    if (current.dragging) suppressEventClickRef.current = current.eventId;
+    eventPointerDragRef.current = null;
+    finishEventDrag();
+  };
+
+  const openEventFromClick = (event: ReactMouseEvent<HTMLButtonElement>, calendarEvent: CalendarEvent) => {
+    event.stopPropagation();
+    if (suppressEventClickRef.current === calendarEvent.id) {
+      suppressEventClickRef.current = null;
+      event.preventDefault();
       return;
     }
-    const nextStart = startOfDay(day);
-    nextStart.setHours(oldStart.getHours(), oldStart.getMinutes(), 0, 0);
-    finishEventDrag();
-    persistMovedEvent(id, nextStart);
+    openEvent(calendarEvent);
   };
 
   const finishMonthSelection = (endIndex: number) => {
@@ -805,13 +901,6 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
     const date = eventDate(editingEvent);
     if (date) setCursor(startOfDay(date));
     setEditingEvent(null);
-    setActionResult({
-      title: editingIsNew ? "Termin erstellt" : "Termin aktualisiert",
-      summary: `„${editingEvent.title || "Ohne Titel"}“ wurde gespeichert.`,
-      items: [{ label: editingEvent.title || "Ohne Titel", detail: date ? formatCalendarDate(editingEvent.startsAt) : undefined }],
-      itemsLabel: "Termin anzeigen",
-      tone: "success"
-    });
     window.dispatchEvent(new Event(calendarChangedEventName));
   };
 
@@ -962,12 +1051,13 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
       )}
 
       {editingEvent && (
-        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={editingIsNew ? "Neuer Termin" : "Termin bearbeiten"}>
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={editingIsNew ? "Neue Besprechung" : "Besprechung bearbeiten"}>
           <div className="modal-card calendar-event-dialog">
             <CalendarEventForm
               value={editingEvent}
               isNew={editingIsNew}
               categories={categories}
+              events={events}
               onChange={setEditingEvent}
               onSave={saveEvent}
               onDelete={() => deleteEvent()}
@@ -1067,12 +1157,15 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
               day.getMonth() !== cursor.getMonth() ? "outside" : "",
               sameDay(day, new Date()) ? "today" : "",
               dayIndex >= monthRangeStart && dayIndex <= monthRangeEnd ? "range-selected" : "",
+              eventDropPreview?.kind === "day" && eventDropPreview.dayKey === dateInputValue(day) ? "drop-preview-active" : "",
               draggedEventId ? "drag-ready" : ""
             ].filter(Boolean).join(" ");
             return (
               <div
                 className={classes}
                 key={day.toISOString()}
+                data-calendar-day={dateInputValue(day)}
+                data-calendar-drop-kind="day"
                 onPointerDown={(event) => {
                   if (event.button !== 0 || (event.target as HTMLElement).closest(".calendar-event-chip")) return;
                   event.preventDefault();
@@ -1082,23 +1175,27 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
                   if (monthSelection && event.buttons === 1) setMonthSelection((current) => current ? { ...current, currentIndex: dayIndex } : null);
                 }}
                 onPointerUp={() => finishMonthSelection(dayIndex)}
-                onDragOver={allowEventDrop}
-                onDrop={(event) => moveEventToDay(day, event)}
               >
                 <span className="calendar-day-number">{day.getDate()}</span>
                 <div className="calendar-day-events">
+                  {eventDropPreview?.kind === "day" && eventDropPreview.dayKey === dateInputValue(day) && (
+                    <span className="calendar-event-chip calendar-event-drop-preview-chip" style={calendarColorStyle(eventDropPreview.event.color)} aria-hidden="true">
+                      <time>{eventTime(eventDropPreview.event)}</time> {eventDropPreview.event.title || "Ohne Titel"}
+                    </span>
+                  )}
                   {dayEvents.slice(0, 3).map((event) => {
                     const canDrag = !event.recurrenceMasterId && !event.recurrence;
                     return <button
-                      className={draggedEventId === event.id ? "calendar-event-chip dragging" : "calendar-event-chip"}
+                      className={["calendar-event-chip", canDrag ? "movable" : "", draggedEventId === event.id ? "dragging" : ""].filter(Boolean).join(" ")}
                       style={calendarColorStyle(event.color)}
                       type="button"
                       title={`${event.title} - ${event.location}${canDrag ? "\nZum Verschieben ziehen" : ""}`}
                       key={event.id}
-                      draggable={canDrag}
-                      onClick={(click) => { click.stopPropagation(); openEvent(event); }}
-                      onDragStart={(dragEvent) => canDrag && beginEventDrag(dragEvent, event.id)}
-                      onDragEnd={finishEventDrag}
+                      onClick={(click) => openEventFromClick(click, event)}
+                      onPointerDown={(pointerEvent) => canDrag && beginEventPointerDrag(pointerEvent, event.id)}
+                      onPointerMove={(pointerEvent) => canDrag && updateEventPointerDrag(pointerEvent)}
+                      onPointerUp={(pointerEvent) => canDrag && finishEventPointerDrag(pointerEvent)}
+                      onPointerCancel={(pointerEvent) => canDrag && cancelEventPointerDrag(pointerEvent)}
                     ><time>{eventTime(event)}</time> {event.title}</button>;
                   })}
                   {dayEvents.length > 3 && <small>+ {dayEvents.length - 3} weitere</small>}
@@ -1134,23 +1231,29 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
                   const nowMinutes = now.getHours() * 60 + now.getMinutes();
                   return (
                     <div
-                      className={sameDay(day, now) ? "calendar-week-day-track today" : "calendar-week-day-track"}
+                      className={["calendar-week-day-track", sameDay(day, now) ? "today" : "", eventDropPreview?.kind === "time" && eventDropPreview.dayKey === dateInputValue(day) ? "drop-preview-active" : ""].filter(Boolean).join(" ")}
                       key={day.toISOString()}
                       role="gridcell"
                       aria-label={`${new Intl.DateTimeFormat("de-DE", { weekday: "long", day: "numeric", month: "long" }).format(day)}. Freien Zeitraum markieren, um einen Termin zu erstellen.`}
+                      data-calendar-day={dateInputValue(day)}
+                      data-calendar-drop-kind="time"
                       onPointerDown={(event) => beginTimeSelection(day, event)}
                       onPointerMove={(event) => updateTimeSelection(day, event)}
                       onPointerUp={(event) => finishTimeSelection(day, event)}
                       onPointerCancel={() => setActiveTimeSelection(null)}
                       onLostPointerCapture={() => { if (timeSelectionRef.current) setActiveTimeSelection(null); }}
-                      onDragOver={allowEventDrop}
-                      onDrop={(event) => moveEventToPointer(day, event)}
                     >
                       {sameDay(day, now) && <span className="calendar-current-time-line" style={{ top: `${(nowMinutes / 60) * (advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight)}px` }}><i /></span>}
                       {timeSelection?.dayKey === dateInputValue(day) && (() => {
                         const bounds = calendarTimeSelectionBounds(timeSelection);
                         return <span className="calendar-time-selection" style={{ top: `${(bounds.startMinutes / 60) * (advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight)}px`, height: `${((bounds.endMinutes - bounds.startMinutes) / 60) * (advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight)}px` }}><strong>{formatTimeSelection(timeSelection)}</strong></span>;
                       })()}
+                      {eventDropPreview?.kind === "time" && eventDropPreview.dayKey === dateInputValue(day) && (
+                        <span className="calendar-event-drop-preview" style={calendarEventDropPreviewStyle(eventDropPreview.event, advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight, 28)} aria-hidden="true">
+                          <strong>{eventDropPreview.event.title || "Ohne Titel"}</strong>
+                          <time>{eventTimeRange(eventDropPreview.event)}</time>
+                        </span>
+                      )}
                       {weekLayouts[dayIndex].map((layout) => {
                         const durationHeight = ((layout.endMinutes - layout.startMinutes) / 60) * (advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight);
                         const eventStyle = {
@@ -1163,15 +1266,16 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
                         const canDrag = !layout.event.recurrenceMasterId && !layout.event.recurrence;
                         return (
                           <button
-                            className={draggedEventId === layout.event.id ? "calendar-week-timed-event dragging" : "calendar-week-timed-event"}
+                            className={["calendar-week-timed-event", canDrag ? "movable" : "", draggedEventId === layout.event.id ? "dragging" : ""].filter(Boolean).join(" ")}
                             style={eventStyle}
                             type="button"
                             key={layout.event.id}
-                            draggable={canDrag}
                             title={`${layout.event.title}\n${eventTimeRange(layout.event)}${layout.event.location ? `\n${layout.event.location}` : ""}${canDrag ? "\nZum Verschieben ziehen" : ""}`}
-                            onClick={(event) => { event.stopPropagation(); openEvent(layout.event); }}
-                            onDragStart={(event) => canDrag && beginEventDrag(event, layout.event.id)}
-                            onDragEnd={finishEventDrag}
+                            onClick={(event) => openEventFromClick(event, layout.event)}
+                            onPointerDown={(event) => canDrag && beginEventPointerDrag(event, layout.event.id)}
+                            onPointerMove={(event) => canDrag && updateEventPointerDrag(event)}
+                            onPointerUp={(event) => canDrag && finishEventPointerDrag(event)}
+                            onPointerCancel={(event) => canDrag && cancelEventPointerDrag(event)}
                           >
                             <strong>{layout.event.title || "Ohne Titel"}</strong>
                             <time>{eventTimeRange(layout.event)}</time>
@@ -1208,16 +1312,16 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
                 {calendarHours.map((hour) => <time key={hour} style={{ top: `${hour * (advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight)}px` }}>{String(hour).padStart(2, "0")}:00</time>)}
               </div>
               <div
-                className={sameDay(cursor, new Date()) ? "calendar-week-day-track calendar-day-track today" : "calendar-week-day-track calendar-day-track"}
+                className={["calendar-week-day-track", "calendar-day-track", sameDay(cursor, new Date()) ? "today" : "", eventDropPreview?.kind === "time" && eventDropPreview.dayKey === dateInputValue(cursor) ? "drop-preview-active" : ""].filter(Boolean).join(" ")}
                 role="gridcell"
                 aria-label={`${new Intl.DateTimeFormat("de-DE", { weekday: "long", day: "numeric", month: "long" }).format(cursor)}. Freien Zeitraum markieren, um einen Termin zu erstellen.`}
+                data-calendar-day={dateInputValue(cursor)}
+                data-calendar-drop-kind="time"
                 onPointerDown={(event) => beginTimeSelection(cursor, event)}
                 onPointerMove={(event) => updateTimeSelection(cursor, event)}
                 onPointerUp={(event) => finishTimeSelection(cursor, event)}
                 onPointerCancel={() => setActiveTimeSelection(null)}
                 onLostPointerCapture={() => { if (timeSelectionRef.current) setActiveTimeSelection(null); }}
-                onDragOver={allowEventDrop}
-                onDrop={(event) => moveEventToPointer(cursor, event)}
               >
                 {sameDay(cursor, new Date()) && (() => {
                   const now = new Date();
@@ -1228,6 +1332,12 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
                   const bounds = calendarTimeSelectionBounds(timeSelection);
                   return <span className="calendar-time-selection" style={{ top: `${(bounds.startMinutes / 60) * (advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight)}px`, height: `${((bounds.endMinutes - bounds.startMinutes) / 60) * (advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight)}px` }}><strong>{formatTimeSelection(timeSelection)}</strong></span>;
                 })()}
+                {eventDropPreview?.kind === "time" && eventDropPreview.dayKey === dateInputValue(cursor) && (
+                  <span className="calendar-event-drop-preview" style={calendarEventDropPreviewStyle(eventDropPreview.event, advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight, 32)} aria-hidden="true">
+                    <strong>{eventDropPreview.event.title || "Ohne Titel"}</strong>
+                    <time>{eventTimeRange(eventDropPreview.event)}</time>
+                  </span>
+                )}
                 {dayLayouts.map((layout) => {
                   const durationHeight = ((layout.endMinutes - layout.startMinutes) / 60) * (advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight);
                   const eventStyle = {
@@ -1240,15 +1350,16 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
                   const canDrag = !layout.event.recurrenceMasterId && !layout.event.recurrence;
                   return (
                     <button
-                      className={draggedEventId === layout.event.id ? "calendar-week-timed-event calendar-day-timed-event dragging" : "calendar-week-timed-event calendar-day-timed-event"}
+                      className={["calendar-week-timed-event", "calendar-day-timed-event", canDrag ? "movable" : "", draggedEventId === layout.event.id ? "dragging" : ""].filter(Boolean).join(" ")}
                       style={eventStyle}
                       type="button"
                       key={layout.event.id}
-                      draggable={canDrag}
                       title={`${layout.event.title}\n${eventTimeRange(layout.event)}${layout.event.location ? `\n${layout.event.location}` : ""}${canDrag ? "\nZum Verschieben ziehen" : ""}`}
-                      onClick={(event) => { event.stopPropagation(); openEvent(layout.event); }}
-                      onDragStart={(event) => canDrag && beginEventDrag(event, layout.event.id)}
-                      onDragEnd={finishEventDrag}
+                      onClick={(event) => openEventFromClick(event, layout.event)}
+                      onPointerDown={(event) => canDrag && beginEventPointerDrag(event, layout.event.id)}
+                      onPointerMove={(event) => canDrag && updateEventPointerDrag(event)}
+                      onPointerUp={(event) => canDrag && finishEventPointerDrag(event)}
+                      onPointerCancel={(event) => canDrag && cancelEventPointerDrag(event)}
                     >
                       <strong>{layout.event.title || "Ohne Titel"}</strong>
                       <time>{eventTimeRange(layout.event)}</time>

@@ -435,19 +435,29 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
   const deleteAllContactsNow = async () => {
     try {
       const affectedContacts = await listContacts("");
-      const count = await deleteAllContacts();
+      const affectedGroups = [
+        ...(!ungroupedGroupHidden ? [{ label: ungroupedGroupName, detail: "Gruppe" }] : []),
+        ...groups.map((group) => ({ label: group.name, detail: "Gruppe" }))
+      ];
+      const result = await deleteAllContacts();
       setTestMenuOpen(false);
+      setUngroupedGroupHidden(true);
+      setGroupSelection("ungrouped");
+      setTab("all");
       setActionResult({
-        title: "Kontakte in den Papierkorb verschoben",
-        summary: `${count} ${count === 1 ? "Kontakt wurde" : "Kontakte wurden"} nicht endgültig gelöscht und können wiederhergestellt werden.`,
-        items: affectedContacts.map((contact) => ({ label: displayName(contact), detail: contact.email || contact.phone || undefined })),
-        itemsLabel: `${count} verschobene Kontakte anzeigen`,
+        title: "Kontakte und Gruppen in den Papierkorb verschoben",
+        summary: `${result.contacts} ${result.contacts === 1 ? "Kontakt" : "Kontakte"} und ${result.groups} ${result.groups === 1 ? "Gruppe wurden" : "Gruppen wurden"} nicht endgültig gelöscht und können wiederhergestellt werden.`,
+        items: [
+          ...affectedContacts.map((contact) => ({ label: displayName(contact), detail: contact.email || contact.phone || undefined })),
+          ...affectedGroups
+        ],
+        itemsLabel: `${result.contacts} Kontakte und ${result.groups} Gruppen anzeigen`,
         tone: "success"
       });
       await refresh();
       notifyLocalM365Change();
     } catch (error) {
-      setActionResult({ title: "Kontakte nicht gelöscht", summary: `Die Kontakte bleiben unverändert: ${error}`, tone: "error" });
+      setActionResult({ title: "Kontakte und Gruppen nicht gelöscht", summary: `Kontakte und Gruppen bleiben unverändert: ${error}`, tone: "error" });
     }
   };
 
@@ -1116,7 +1126,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
           : deleteRequest?.kind === "ungrouped-group"
             ? `Möchten Sie die Gruppe „${ungroupedGroupName}“ wirklich in den Papierkorb verschieben? Die Kontakte bleiben erhalten.`
           : deleteRequest?.kind === "all-contacts"
-            ? "Alle Kontakte werden in den Papierkorb verschoben. Möchten Sie fortfahren?"
+            ? "Alle Kontakte und alle vorhandenen Gruppen werden in den Papierkorb verschoben. Möchten Sie fortfahren?"
             : deleteRequest?.kind === "selected-contacts"
               ? `${deleteRequest.contactIds.length} ausgewählte Kontakte werden in den Papierkorb verschoben. Möchten Sie fortfahren?`
               : deleteRequest?.kind === "contact"

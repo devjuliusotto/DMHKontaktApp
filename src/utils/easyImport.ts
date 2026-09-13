@@ -3,6 +3,7 @@ import {
   importSelectedOutlookClassicContacts,
   importThunderbirdCalendarsToCalendar,
   importThunderbirdContactsOnce,
+  listContacts,
   mergeCalendarEvents,
   previewOutlookClassicContacts
 } from "../services/db";
@@ -28,17 +29,19 @@ export async function easyImportContacts(platform: EasyImportPlatform): Promise<
       createSourceGroups: true,
       cleanImportedNames: true
     });
+    const totalContacts = (await listContacts()).length;
     return {
       imported: result.imported,
-      detail: `${result.imported} neu importiert · ${result.mergedDuplicates} Duplikate zusammengeführt · ${result.skippedExactDuplicates} bereits vorhanden`
+      detail: `${result.imported} neu importiert · ${result.mergedDuplicates} Duplikate zusammengeführt · ${totalContacts} Kontakte insgesamt`
     };
   }
 
   const result = await importThunderbirdContactsOnce(true, true);
   const imported = result.imported;
+  const totalContacts = (await listContacts()).length;
   return {
     imported,
-    detail: `${imported} neu importiert · ${result.mergedDuplicates} zusammengeführt · ${result.skippedExactDuplicates} bereits vorhanden`
+    detail: `${imported} neu importiert · ${result.mergedDuplicates} zusammengeführt · ${totalContacts} Kontakte insgesamt`
   };
 }
 

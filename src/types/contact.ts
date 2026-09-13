@@ -192,6 +192,11 @@ export interface RecoveryArchiveStatus {
   checkpoints: RecoveryCheckpointSummary[];
 }
 
+export interface DeleteAllContactsResult {
+  contacts: number;
+  groups: number;
+}
+
 export interface RecoveryCheckpointSummary {
   id: string;
   createdAt: string;

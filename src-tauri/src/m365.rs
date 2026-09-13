@@ -1407,6 +1407,31 @@ fn remote_event_description(value: &Value) -> String {
     }
 }
 
+fn remote_event_attendees(value: &Value, attendee_type: &str) -> Vec<String> {
+    value
+        .get("attendees")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|attendee| value_text(attendee, "type").eq_ignore_ascii_case(attendee_type))
+        .filter_map(|attendee| {
+            let email = attendee
+                .get("emailAddress")
+                .and_then(|address| address.get("address"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
+            let name = attendee
+                .get("emailAddress")
+                .and_then(|address| address.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
+            (!email.is_empty() || !name.is_empty()).then(|| if email.is_empty() { name } else { email }.to_string())
+        })
+        .collect()
+}
+
 fn deleted_calendar_events(backup: &crate::BackupData) -> Vec<crate::CalendarEvent> {
     backup
         .browser_storage
@@ -1630,6 +1655,29 @@ fn remote_event_to_local(
         deleted_at: None,
         recurrence_master_id: existing.and_then(|event| event.recurrence_master_id.clone()),
         recurrence_id: existing.and_then(|event| event.recurrence_id.clone()),
+        meeting: crate::CalendarMeetingOptions {
+            required_attendees: remote_event_attendees(value, "required"),
+            optional_attendees: remote_event_attendees(value, "optional"),
+            show_as: {
+                let show_as = value_text(value, "showAs");
+                if show_as.is_empty() { "busy".to_string() } else { show_as.to_string() }
+            },
+            reminder_minutes: if value.get("isReminderOn").and_then(Value::as_bool) == Some(false) {
+                None
+            } else {
+                value.get("reminderMinutesBeforeStart").and_then(Value::as_i64)
+            },
+            is_private: value_text(value, "sensitivity").eq_ignore_ascii_case("private"),
+            is_online_meeting: value.get("isOnlineMeeting").and_then(Value::as_bool).unwrap_or(false)
+                || value.get("onlineMeeting").and_then(|meeting| meeting.get("joinUrl")).and_then(Value::as_str).is_some(),
+            online_meeting_url: value
+                .get("onlineMeeting")
+                .and_then(|meeting| meeting.get("joinUrl"))
+                .and_then(Value::as_str)
+                .or_else(|| value.get("onlineMeetingUrl").and_then(Value::as_str))
+                .unwrap_or("")
+                .to_string(),
+        },
     }
 }
 
@@ -1676,6 +1724,12 @@ fn event_equivalent(
         && local.description.trim() == remote_local.description.trim()
         && local.category.trim() == remote_local.category.trim()
         && local.color.trim() == remote_local.color.trim()
+        && local.meeting.required_attendees == remote_local.meeting.required_attendees
+        && local.meeting.optional_attendees == remote_local.meeting.optional_attendees
+        && local.meeting.show_as == remote_local.meeting.show_as
+        && local.meeting.reminder_minutes == remote_local.meeting.reminder_minutes
+        && local.meeting.is_private == remote_local.meeting.is_private
+        && local.meeting.is_online_meeting == remote_local.meeting.is_online_meeting
 }
 
 fn merge_event(
@@ -1714,6 +1768,7 @@ fn merge_event(
             remote_local.description.trim()
         );
     }
+    merged.meeting = remote_local.meeting;
     merged
 }
 
@@ -1723,14 +1778,29 @@ fn graph_event_payload(event: &crate::CalendarEvent) -> Value {
     } else {
         vec![event.category.trim().to_string()]
     };
-    json!({
+    let attendees = event.meeting.required_attendees.iter().map(|address| json!({
+        "emailAddress": {"address": address, "name": address}, "type": "required"
+    })).chain(event.meeting.optional_attendees.iter().map(|address| json!({
+        "emailAddress": {"address": address, "name": address}, "type": "optional"
+    }))).collect::<Vec<_>>();
+    let mut payload = json!({
         "subject": event.title,
         "start": {"dateTime": event.starts_at, "timeZone": "W. Europe Standard Time"},
         "end": {"dateTime": event.ends_at, "timeZone": "W. Europe Standard Time"},
         "location": {"displayName": event.location},
         "body": {"contentType": "text", "content": html_to_plain_text(&event.description)},
-        "categories": categories
-    })
+        "categories": categories,
+        "attendees": attendees,
+        "showAs": event.meeting.show_as,
+        "isReminderOn": event.meeting.reminder_minutes.is_some(),
+        "reminderMinutesBeforeStart": event.meeting.reminder_minutes.unwrap_or(15),
+        "sensitivity": if event.meeting.is_private { "private" } else { "normal" }
+    });
+    if event.meeting.is_online_meeting {
+        payload["isOnlineMeeting"] = Value::Bool(true);
+        payload["onlineMeetingProvider"] = Value::String("teamsForBusiness".to_string());
+    }
+    payload
 }
 
 fn operation_id(kind: &str, source_id: &str, local_id: &str, remote_id: &str) -> String {
@@ -2472,7 +2542,7 @@ async fn build_m365_sync_plan(
             .filter(|source| calendar_source_is_enabled(request, &selected_calendars, source))
         {
             let direction = source_direction(request, &source.id);
-            let url = format!("{}/events?$select=id,subject,start,end,lastModifiedDateTime,location,body,categories,attendees,onlineMeeting,recurrence&$top=100", source.resource_path);
+            let url = format!("{}/events?$select=id,subject,start,end,lastModifiedDateTime,location,body,categories,attendees,showAs,isReminderOn,reminderMinutesBeforeStart,sensitivity,isOnlineMeeting,onlineMeeting,onlineMeetingUrl,recurrence&$top=100", source.resource_path);
             let mut values = graph_collection(access_token, &url).await?;
             for value in &mut values {
                 apply_m365_category_color(value, &master_category_colors);
@@ -2843,7 +2913,7 @@ async fn find_matching_exchange_event_for_outbox(
     let start = encode_graph_path_segment(event.starts_at.trim());
     let end = encode_graph_path_segment(event.ends_at.trim());
     let url = format!(
-        "{}/calendarView?startDateTime={start}&endDateTime={end}&$select=id,subject,start,end,lastModifiedDateTime,location,body,categories&$top=50",
+        "{}/calendarView?startDateTime={start}&endDateTime={end}&$select=id,subject,start,end,lastModifiedDateTime,location,body,categories,attendees,showAs,isReminderOn,reminderMinutesBeforeStart,sensitivity,isOnlineMeeting,onlineMeeting,onlineMeetingUrl&$top=50",
         source.resource_path
     );
     let values = graph_collection(access_token, &url).await?;
@@ -4024,6 +4094,7 @@ mod tests {
             deleted_at: None,
             recurrence_master_id: None,
             recurrence_id: None,
+            meeting: crate::CalendarMeetingOptions::default(),
         }
     }
 
@@ -4214,6 +4285,46 @@ mod tests {
             graph_event_payload(&local)["body"]["content"],
             "Lokaler Text"
         );
+    }
+
+    #[test]
+    fn preserves_teams_meeting_options_in_calendar_sync() {
+        let source = calendar_source("calendar-a");
+        let imported = remote_event_to_local(
+            &json!({
+                "id": "teams-event",
+                "subject": "Planung",
+                "start": { "dateTime": "2026-09-01T09:00:00" },
+                "end": { "dateTime": "2026-09-01T10:00:00" },
+                "attendees": [
+                    { "emailAddress": { "address": "required@example.org" }, "type": "required" },
+                    { "emailAddress": { "address": "optional@example.org" }, "type": "optional" }
+                ],
+                "showAs": "tentative",
+                "isReminderOn": true,
+                "reminderMinutesBeforeStart": 30,
+                "sensitivity": "private",
+                "isOnlineMeeting": true,
+                "onlineMeeting": { "joinUrl": "https://teams.microsoft.com/l/meetup-join/test" }
+            }),
+            &source,
+            None,
+        );
+
+        assert_eq!(imported.meeting.required_attendees, ["required@example.org"]);
+        assert_eq!(imported.meeting.optional_attendees, ["optional@example.org"]);
+        assert_eq!(imported.meeting.show_as, "tentative");
+        assert_eq!(imported.meeting.reminder_minutes, Some(30));
+        assert!(imported.meeting.is_private);
+        assert!(imported.meeting.is_online_meeting);
+        assert!(imported.meeting.online_meeting_url.contains("teams.microsoft.com"));
+
+        let payload = graph_event_payload(&imported);
+        assert_eq!(payload["attendees"].as_array().map(Vec::len), Some(2));
+        assert_eq!(payload["showAs"], "tentative");
+        assert_eq!(payload["reminderMinutesBeforeStart"], 30);
+        assert_eq!(payload["sensitivity"], "private");
+        assert_eq!(payload["onlineMeetingProvider"], "teamsForBusiness");
     }
 
     #[test]

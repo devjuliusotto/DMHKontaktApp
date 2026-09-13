@@ -354,6 +354,7 @@ mod tests {
             deleted_at: deleted_at.map(str::to_string),
             recurrence_master_id: None,
             recurrence_id: None,
+            meeting: crate::CalendarMeetingOptions::default(),
         };
         let active = active_events(vec![
             event("active", "2026-09-01T10:00:00", None),

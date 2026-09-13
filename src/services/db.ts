@@ -5,6 +5,7 @@ import type {
   AutomaticBackupRestoreResult,
   Contact,
   ContactInput,
+  DeleteAllContactsResult,
   Group,
   ImportResult,
   OutlookContactImportPreview,
@@ -242,7 +243,7 @@ export function pushProjectAppointmentsToOutlook(events: CalendarEvent[], target
   return invoke("push_project_appointments_to_outlook", { events, targetEmail: targetEmail || null });
 }
 
-export function deleteAllContacts(): Promise<number> {
+export function deleteAllContacts(): Promise<DeleteAllContactsResult> {
   return invoke("delete_all_contacts");
 }
 

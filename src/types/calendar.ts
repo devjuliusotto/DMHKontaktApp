@@ -11,6 +11,18 @@ export interface CalendarRecurrence {
   count?: number;
 }
 
+export type CalendarAvailability = "free" | "tentative" | "busy" | "oof" | "workingElsewhere";
+
+export interface CalendarMeetingOptions {
+  requiredAttendees: string[];
+  optionalAttendees: string[];
+  showAs: CalendarAvailability;
+  reminderMinutes: number | null;
+  isPrivate: boolean;
+  isOnlineMeeting: boolean;
+  onlineMeetingUrl?: string;
+}
+
 export interface CalendarEvent {
   id: string;
   updatedAt?: string;
@@ -27,6 +39,7 @@ export interface CalendarEvent {
   excludedDates?: string[];
   recurrenceMasterId?: string;
   recurrenceId?: string;
+  meeting?: CalendarMeetingOptions;
 }
 
 export interface CalendarEventMergeResult {

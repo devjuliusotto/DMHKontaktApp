@@ -13,6 +13,7 @@ import {
   getBackupData,
   importSelectedOutlookClassicContacts,
   importThunderbirdContactsOnce,
+  listContacts,
   previewOutlookClassicContacts,
   previewThunderbirdContactReconciliation,
   restoreBackup
@@ -136,10 +137,12 @@ export function ContactReconciliationDialog({ open, onClose, onChanged }: Contac
           createSourceGroups: true,
           cleanImportedNames: true
         });
-        setResultMessage(`${result.imported} neu · ${result.mergedDuplicates} zusammengeführt · ${result.skippedExactDuplicates} bereits vorhanden`);
+        const totalContacts = (await listContacts()).length;
+        setResultMessage(`${result.imported} neu · ${result.mergedDuplicates} zusammengeführt · ${totalContacts} Kontakte insgesamt`);
       } else {
         const result = await importThunderbirdContactsOnce(true, true);
-        setResultMessage(`${result.imported} neu · ${result.mergedDuplicates} zusammengeführt · ${result.skippedExactDuplicates} bereits vorhanden`);
+        const totalContacts = (await listContacts()).length;
+        setResultMessage(`${result.imported} neu · ${result.mergedDuplicates} zusammengeführt · ${totalContacts} Kontakte insgesamt`);
       }
       setStage("done");
       try {
