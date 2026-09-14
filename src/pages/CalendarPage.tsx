@@ -1380,6 +1380,10 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
         kind="calendar"
         open={easyImportOpen}
         onClose={() => setEasyImportOpen(false)}
+        onManageSync={() => {
+          setEasyImportOpen(false);
+          onNavigate("synchronizations");
+        }}
         onImported={async () => {
           const storedEvents = "__TAURI_INTERNALS__" in window
             ? await listCalendarEvents()

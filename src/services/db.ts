@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CalendarDirectImportResult, CalendarEvent, CalendarEventMergeResult, OutlookCalendarExportResult, OutlookCalendarPreview, OutlookOneTimeCalendarImportResult, ThunderbirdCalendarImportResult } from "../types/calendar";
+import type { CalendarDirectImportResult, CalendarEvent, CalendarEventMergeResult, DetectedCalendarSourcesResult, OutlookCalendarExportResult, OutlookCalendarPreview, OutlookOneTimeCalendarImportResult, ThunderbirdCalendarImportResult } from "../types/calendar";
 import type {
   BackupData,
   AutomaticBackupRestoreResult,
@@ -93,6 +93,10 @@ export function importOutlookClassicAppointmentsToCalendar(): Promise<CalendarDi
 
 export function importThunderbirdCalendarsToCalendar(): Promise<CalendarDirectImportResult> {
   return invoke("import_thunderbird_calendars_to_calendar");
+}
+
+export function detectConnectedCalendarSources(): Promise<DetectedCalendarSourcesResult> {
+  return invoke("detect_connected_calendar_sources");
 }
 
 export function saveCalendarEvents(events: CalendarEvent[]): Promise<void> {
@@ -362,6 +366,17 @@ export function flushMicrosoft365CalendarOutbox(request: {
   sharedMailboxAddresses: string[];
 }): Promise<CalendarOutboxSyncResult> {
   return invoke("flush_m365_calendar_outbox", { request });
+}
+
+export function flushMicrosoft365ContactOutbox(request: {
+  direction: string;
+  contactGroups: boolean;
+  selectedContactSourceIds: string[];
+  sourceDirections: Record<string, string>;
+  sharedMailboxes: boolean;
+  sharedMailboxAddresses: string[];
+}): Promise<import("../types/m365").ContactOutboxSyncResult> {
+  return invoke("flush_m365_contact_outbox", { request });
 }
 
 export function listDocumentSources(scope: "all" | "onedrive" | "sharepoint" = "all"): Promise<DocumentSource[]> {

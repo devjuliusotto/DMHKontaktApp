@@ -9,6 +9,7 @@ type TransferView = "overview" | "import" | "file-import" | "export";
 interface DataTransferPageProps {
   initialView?: TransferView;
   initialFileImportMode?: "contacts" | "calendar";
+  onManageSync?: () => void;
 }
 
 const viewTitles: Record<Exclude<TransferView, "overview">, string> = {
@@ -17,7 +18,7 @@ const viewTitles: Record<Exclude<TransferView, "overview">, string> = {
   export: "Daten exportieren"
 };
 
-export function DataTransferPage({ initialView = "overview", initialFileImportMode }: DataTransferPageProps) {
+export function DataTransferPage({ initialView = "overview", initialFileImportMode, onManageSync }: DataTransferPageProps) {
   const [view, setView] = useState<TransferView>(initialView);
 
   return (
@@ -59,7 +60,7 @@ export function DataTransferPage({ initialView = "overview", initialFileImportMo
             <span>{view === "file-import" ? "Importieren" : "Import & Export"}</span>
             <strong id="data-transfer-view-title">{viewTitles[view]}</strong>
           </div>
-          {view === "import" && <SimpleImportPage embedded onOpenFileImport={() => setView("file-import")} />}
+          {view === "import" && <SimpleImportPage embedded onOpenFileImport={() => setView("file-import")} onManageSync={onManageSync} />}
           {view === "file-import" && <ImportPage embedded initialMode={initialFileImportMode} />}
           {view === "export" && <ExportPage embedded />}
         </section>

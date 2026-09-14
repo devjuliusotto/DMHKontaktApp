@@ -99,6 +99,16 @@ export interface CalendarOutboxSyncResult {
   errorMessages: string[];
 }
 
+export interface ContactOutboxSyncResult {
+  processed: number;
+  created: number;
+  updated: number;
+  deleted: number;
+  pending: number;
+  errors: number;
+  errorMessages: string[];
+}
+
 export interface Microsoft365SyncHistoryEntry extends Omit<Microsoft365SyncResult, "calendarUpserts" | "calendarDeletes" | "deleted"> {
   id: string;
   deleted?: number;

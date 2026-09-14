@@ -1,5 +1,6 @@
-import { AlertTriangle, ArrowLeft, ArrowRight, Bird, CalendarDays, CalendarRange, Download, FileUp, LoaderCircle, Settings2, Undo2, UsersRound } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowRight, Bird, CalendarDays, CalendarRange, CloudCog, Download, FileUp, LoaderCircle, Settings2, Undo2, UsersRound } from "lucide-react";
 import { useState } from "react";
+import { EasyImportDialog } from "../components/EasyImportDialog";
 import { OutlookContactImportDialog } from "../components/OutlookContactImportDialog";
 import { StatusMessage } from "../components/StatusMessage";
 import { importOutlookClassicAppointmentsToCalendar, importThunderbirdCalendarsToCalendar, importThunderbirdContactsOnce, previewOutlookClassicAppointments, undoLastOutlookContactImport } from "../services/db";
@@ -18,9 +19,10 @@ type ImportSource = "outlook" | "thunderbird";
 interface SimpleImportPageProps {
   embedded?: boolean;
   onOpenFileImport?: () => void;
+  onManageSync?: () => void;
 }
 
-export function SimpleImportPage({ embedded = false, onOpenFileImport }: SimpleImportPageProps) {
+export function SimpleImportPage({ embedded = false, onOpenFileImport, onManageSync }: SimpleImportPageProps) {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState<"success" | "error" | "info">("info");
@@ -29,6 +31,7 @@ export function SimpleImportPage({ embedded = false, onOpenFileImport }: SimpleI
   const [cleanImportedNames, setCleanImportedNames] = useState(true);
   const [includeThunderbirdAutocomplete, setIncludeThunderbirdAutocomplete] = useState(true);
   const [activeSource, setActiveSource] = useState<ImportSource | null>(null);
+  const [connectedCalendarDialogOpen, setConnectedCalendarDialogOpen] = useState(false);
 
   const contactsImported = (result: OutlookContactImportResult, source: "classic" | "csv") => {
     setMessageType("success");
@@ -208,6 +211,11 @@ export function SimpleImportPage({ embedded = false, onOpenFileImport }: SimpleI
             <span><strong>Datei auswählen</strong><small>CSV, Excel, ICS, EML, PST oder OST</small></span>
             <ArrowRight size={20} aria-hidden="true" />
           </button>
+          <button type="button" onClick={() => setConnectedCalendarDialogOpen(true)}>
+            <span className="simple-import-picker-icon"><CloudCog size={26} aria-hidden="true" /></span>
+            <span><strong>Verbundene Kalender</strong><small>Google, Apple, Exchange, ChurchTools und iCal erkennen</small></span>
+            <ArrowRight size={20} aria-hidden="true" />
+          </button>
         </section>
       )}
 
@@ -376,6 +384,17 @@ export function SimpleImportPage({ embedded = false, onOpenFileImport }: SimpleI
         cleanImportedNames={cleanImportedNames}
         onClose={() => setContactImportDialogOpen(false)}
         onImported={contactsImported}
+      />
+      <EasyImportDialog
+        kind="calendar"
+        open={connectedCalendarDialogOpen}
+        initialConnectedMode
+        onClose={() => setConnectedCalendarDialogOpen(false)}
+        onManageSync={onManageSync}
+        onImported={(importResult) => {
+          setMessageType("success");
+          setMessage(importResult.detail);
+        }}
       />
     </div>
   );

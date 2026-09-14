@@ -312,6 +312,14 @@ pub struct CalendarSyncOutboxEntry {
     pub action: String,
 }
 
+/// A local contact mutation waiting for Microsoft Graph.  The row remains in
+/// SQLite until every applicable Exchange contact folder confirms the write.
+#[derive(Debug, Clone)]
+pub struct ContactSyncOutboxEntry {
+    pub contact: Contact,
+    pub action: String,
+}
+
 fn default_calendar_color() -> String {
     "blue".to_string()
 }
@@ -490,6 +498,52 @@ struct OutlookCalendarReadData {
     events: Vec<OutlookAppointmentRecord>,
     #[serde(default)]
     skipped: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectedCalendarSource {
+    pub id: String,
+    pub client: String,
+    pub provider: String,
+    pub provider_label: String,
+    pub name: String,
+    pub account: String,
+    pub location: String,
+    pub connection_mode: String,
+    pub can_import_now: bool,
+    pub requires_reconnect: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DetectedCalendarSourcesResult {
+    sources: Vec<DetectedCalendarSource>,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OutlookDetectedCalendar {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    store_name: String,
+    #[serde(default)]
+    folder_path: String,
+    #[serde(default)]
+    account: String,
+    #[serde(default)]
+    account_type: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OutlookDetectedCalendarData {
+    #[serde(default, deserialize_with = "deserialize_vec_flexible")]
+    calendars: Vec<OutlookDetectedCalendar>,
 }
 
 #[derive(Debug, Serialize)]
@@ -778,6 +832,14 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
             UNIQUE (source_id, remote_id),
             FOREIGN KEY (local_contact_id) REFERENCES contacts(id) ON DELETE CASCADE
         );
+        CREATE TABLE IF NOT EXISTS contact_sync_outbox (
+            local_contact_id INTEGER PRIMARY KEY,
+            action TEXT NOT NULL,
+            queued_at TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            FOREIGN KEY (local_contact_id) REFERENCES contacts(id) ON DELETE CASCADE
+        );
         CREATE TABLE IF NOT EXISTS import_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             batch_id TEXT NOT NULL UNIQUE,
@@ -884,6 +946,8 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
             ON contact_groups(group_id, contact_id);
         CREATE INDEX IF NOT EXISTS idx_m365_contact_links_remote
             ON m365_contact_links(source_id, remote_id);
+        CREATE INDEX IF NOT EXISTS idx_contact_sync_outbox_queued
+            ON contact_sync_outbox(queued_at DESC);
         CREATE INDEX IF NOT EXISTS idx_calendar_events_active_start
             ON calendar_events(deleted_at, starts_at);
         CREATE INDEX IF NOT EXISTS idx_calendar_events_active_duplicate
@@ -940,30 +1004,31 @@ fn normalized_calendar_duplicate_key(event: &CalendarEvent) -> String {
         .join(" ")
         .to_lowercase();
     let starts_at = event.starts_at.trim().replace(' ', "T");
-    let starts_at = if starts_at.len() >= 16 { &starts_at[..16] } else { starts_at.as_str() };
+    let starts_at = if starts_at.len() >= 16 {
+        &starts_at[..16]
+    } else {
+        starts_at.as_str()
+    };
     format!("{title}\n{starts_at}")
 }
 
 fn read_calendar_events(conn: &Connection, deleted: bool) -> Result<Vec<CalendarEvent>, String> {
     let mut statement = conn
-        .prepare(
-            if deleted {
-                "SELECT event_json FROM calendar_events WHERE deleted_at IS NOT NULL ORDER BY starts_at"
-            } else {
-                "SELECT event_json FROM calendar_events WHERE deleted_at IS NULL ORDER BY starts_at"
-            },
-        )
+        .prepare(if deleted {
+            "SELECT event_json FROM calendar_events WHERE deleted_at IS NOT NULL ORDER BY starts_at"
+        } else {
+            "SELECT event_json FROM calendar_events WHERE deleted_at IS NULL ORDER BY starts_at"
+        })
         .map_err(|error| error.to_string())?;
     let rows = statement
         .query_map([], |row| row.get::<_, String>(0))
         .map_err(|error| error.to_string())?;
-    rows
-        .map(|row| {
-            let json = row.map_err(|error| error.to_string())?;
-            serde_json::from_str::<CalendarEvent>(&json)
-                .map_err(|error| format!("Gespeicherter Kalendertermin ist beschädigt: {error}"))
-        })
-        .collect()
+    rows.map(|row| {
+        let json = row.map_err(|error| error.to_string())?;
+        serde_json::from_str::<CalendarEvent>(&json)
+            .map_err(|error| format!("Gespeicherter Kalendertermin ist beschädigt: {error}"))
+    })
+    .collect()
 }
 
 fn write_calendar_events(
@@ -971,7 +1036,9 @@ fn write_calendar_events(
     events: &[CalendarEvent],
     queue_for_exchange: bool,
 ) -> Result<(), String> {
-    let transaction = conn.unchecked_transaction().map_err(|error| error.to_string())?;
+    let transaction = conn
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
     {
         let mut statement = transaction
             .prepare(
@@ -1004,7 +1071,10 @@ fn write_calendar_events(
         };
         for event in events {
             if event.id.trim().is_empty() {
-                return Err("Ein Kalendertermin ohne technische ID kann nicht gespeichert werden.".to_string());
+                return Err(
+                    "Ein Kalendertermin ohne technische ID kann nicht gespeichert werden."
+                        .to_string(),
+                );
             }
             let mut stored = event.clone();
             if stored.updated_at.trim().is_empty() {
@@ -1025,7 +1095,11 @@ fn write_calendar_events(
                 outbox
                     .execute(params![
                         stored.id,
-                        if stored.deleted_at.is_some() { "delete" } else { "upsert" },
+                        if stored.deleted_at.is_some() {
+                            "delete"
+                        } else {
+                            "upsert"
+                        },
                         now(),
                     ])
                     .map_err(|error| error.to_string())?;
@@ -1065,7 +1139,9 @@ fn merge_calendar_events_in_db(
             .prepare("SELECT id, duplicate_key FROM calendar_events WHERE deleted_at IS NULL")
             .map_err(|error| error.to_string())?;
         let rows = statement
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
             .map_err(|error| error.to_string())?;
         for row in rows {
             let (id, duplicate_key) = row.map_err(|error| error.to_string())?;
@@ -1128,7 +1204,11 @@ fn merge_calendar_events_in_db(
                     &event.starts_at,
                     duplicate_key.clone(),
                     json,
-                    if event.updated_at.trim().is_empty() { now() } else { event.updated_at.clone() },
+                    if event.updated_at.trim().is_empty() {
+                        now()
+                    } else {
+                        event.updated_at.clone()
+                    },
                     &event.deleted_at,
                 ])
                 .map_err(|error| error.to_string())?;
@@ -1155,7 +1235,10 @@ fn save_calendar_events(app: AppHandle, events: Vec<CalendarEvent>) -> Result<()
 }
 
 #[tauri::command]
-fn save_calendar_events_from_m365(app: AppHandle, events: Vec<CalendarEvent>) -> Result<(), String> {
+fn save_calendar_events_from_m365(
+    app: AppHandle,
+    events: Vec<CalendarEvent>,
+) -> Result<(), String> {
     write_calendar_events(&open_db(&app)?, &events, false)
 }
 
@@ -1171,7 +1254,9 @@ fn move_calendar_events_to_trash_internal(
     checkpoint_before_destructive_change(&app, &conn)?;
     let mut changed = 0usize;
     let timestamp = now();
-    let transaction = conn.unchecked_transaction().map_err(|error| error.to_string())?;
+    let transaction = conn
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
     for id in ids {
         let json: Option<String> = transaction
             .query_row(
@@ -1231,7 +1316,9 @@ fn restore_calendar_events(app: AppHandle, ids: Vec<String>) -> Result<usize, St
     let conn = open_db(&app)?;
     let mut restored = 0usize;
     let timestamp = now();
-    let transaction = conn.unchecked_transaction().map_err(|error| error.to_string())?;
+    let transaction = conn
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
     for id in ids {
         let json: Option<String> = transaction
             .query_row(
@@ -1274,7 +1361,9 @@ fn purge_deleted_calendar_events(app: AppHandle, ids: Vec<String>) -> Result<usi
         return Ok(0);
     }
     let conn = open_db(&app)?;
-    let transaction = conn.unchecked_transaction().map_err(|error| error.to_string())?;
+    let transaction = conn
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
     let mut deleted = 0usize;
     for id in ids {
         transaction
@@ -1342,7 +1431,9 @@ pub fn complete_calendar_sync_outbox_entry(app: &AppHandle, event_id: &str) -> R
 
 pub fn calendar_sync_outbox_count(app: &AppHandle) -> Result<usize, String> {
     open_db(app)?
-        .query_row("SELECT COUNT(*) FROM calendar_sync_outbox", [], |row| row.get::<_, usize>(0))
+        .query_row("SELECT COUNT(*) FROM calendar_sync_outbox", [], |row| {
+            row.get::<_, usize>(0)
+        })
         .map_err(|error| error.to_string())
 }
 
@@ -1369,7 +1460,9 @@ pub fn enqueue_unlinked_calendar_events_for_exchange(
     if ids.is_empty() {
         return Ok(0);
     }
-    let transaction = conn.unchecked_transaction().map_err(|error| error.to_string())?;
+    let transaction = conn
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
     let mut insert = transaction
         .prepare(
             "INSERT OR IGNORE INTO calendar_sync_outbox (event_id, action, queued_at, attempts, last_error)
@@ -1391,7 +1484,11 @@ pub fn record_calendar_sync_outbox_error(
     event_id: &str,
     error: &str,
 ) -> Result<(), String> {
-    let safe_error = error.chars().filter(|character| !character.is_control()).take(500).collect::<String>();
+    let safe_error = error
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(500)
+        .collect::<String>();
     open_db(app)?
         .execute(
             "UPDATE calendar_sync_outbox
@@ -1409,7 +1506,9 @@ pub fn link_calendar_event_after_exchange_create(
     event: &CalendarEvent,
 ) -> Result<(), String> {
     let conn = open_db(app)?;
-    let transaction = conn.unchecked_transaction().map_err(|error| error.to_string())?;
+    let transaction = conn
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
     let json = serde_json::to_string(event).map_err(|error| error.to_string())?;
     transaction
         .execute(
@@ -1433,7 +1532,10 @@ pub fn link_calendar_event_after_exchange_create(
         .map_err(|error| error.to_string())?;
     if event.id != previous_id {
         transaction
-            .execute("DELETE FROM calendar_events WHERE id = ?1", params![previous_id])
+            .execute(
+                "DELETE FROM calendar_events WHERE id = ?1",
+                params![previous_id],
+            )
             .map_err(|error| error.to_string())?;
     }
     transaction
@@ -1443,6 +1545,160 @@ pub fn link_calendar_event_after_exchange_create(
         )
         .map_err(|error| error.to_string())?;
     transaction.commit().map_err(|error| error.to_string())
+}
+
+pub fn read_contact_sync_outbox(
+    app: &AppHandle,
+    limit: usize,
+) -> Result<Vec<ContactSyncOutboxEntry>, String> {
+    let conn = open_db(app)?;
+    conn.execute(
+        "DELETE FROM contact_sync_outbox WHERE local_contact_id NOT IN (SELECT id FROM contacts)",
+        [],
+    )
+    .map_err(|error| error.to_string())?;
+    let mut statement = conn
+        .prepare(
+            "SELECT contacts.id, contacts.first_name, contacts.last_name, contacts.display_name,
+                    contacts.email, contacts.phone, contacts.mobile_phone, contacts.street,
+                    contacts.postal_code, contacts.city, contacts.country, contacts.short_info,
+                    contacts.notes, contacts.created_at, contacts.updated_at, contacts.deleted_at,
+                    contact_sync_outbox.action
+             FROM contact_sync_outbox
+             INNER JOIN contacts ON contacts.id = contact_sync_outbox.local_contact_id
+             ORDER BY contact_sync_outbox.queued_at DESC
+             LIMIT ?1",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params![limit as i64], |row| {
+            Ok((
+                Contact {
+                    id: Some(row.get(0)?),
+                    first_name: row.get(1)?,
+                    last_name: row.get(2)?,
+                    display_name: row.get(3)?,
+                    email: row.get(4)?,
+                    phone: row.get(5)?,
+                    mobile_phone: row.get(6)?,
+                    street: row.get(7)?,
+                    postal_code: row.get(8)?,
+                    city: row.get(9)?,
+                    country: row.get(10)?,
+                    short_info: row.get(11)?,
+                    notes: row.get(12)?,
+                    groups: Vec::new(),
+                    created_at: row.get(13)?,
+                    updated_at: row.get(14)?,
+                    deleted_at: row.get(15)?,
+                },
+                row.get::<_, String>(16)?,
+            ))
+        })
+        .map_err(|error| error.to_string())?;
+    let mut entries = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|(contact, action)| ContactSyncOutboxEntry { contact, action })
+        .collect::<Vec<_>>();
+    drop(statement);
+    for entry in &mut entries {
+        if let Some(id) = entry.contact.id {
+            entry.contact.groups = read_groups_for_contact(&conn, id)?;
+        }
+    }
+    Ok(entries)
+}
+
+pub fn complete_contact_sync_outbox_entry(app: &AppHandle, contact_id: i64) -> Result<(), String> {
+    open_db(app)?
+        .execute(
+            "DELETE FROM contact_sync_outbox WHERE local_contact_id = ?1",
+            params![contact_id],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+pub fn contact_sync_outbox_count(app: &AppHandle) -> Result<usize, String> {
+    open_db(app)?
+        .query_row("SELECT COUNT(*) FROM contact_sync_outbox", [], |row| {
+            row.get::<_, usize>(0)
+        })
+        .map_err(|error| error.to_string())
+}
+
+pub fn pending_contact_sync_ids(app: &AppHandle) -> Result<HashSet<i64>, String> {
+    let conn = open_db(app)?;
+    let mut statement = conn
+        .prepare("SELECT local_contact_id FROM contact_sync_outbox")
+        .map_err(|error| error.to_string())?;
+    let ids = statement
+        .query_map([], |row| row.get::<_, i64>(0))
+        .map_err(|error| error.to_string())?
+        .collect::<Result<HashSet<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    Ok(ids)
+}
+
+pub fn enqueue_contacts_for_exchange(app: &AppHandle, limit: usize) -> Result<usize, String> {
+    let conn = open_db(app)?;
+    let mut statement = conn
+        .prepare(
+            "SELECT contacts.id,
+                    CASE WHEN contacts.deleted_at IS NULL THEN 'upsert' ELSE 'delete' END
+             FROM contacts
+             WHERE contacts.deleted_at IS NULL
+               AND contacts.id NOT IN (SELECT local_contact_id FROM contact_sync_outbox)
+               AND NOT EXISTS (
+                    SELECT 1 FROM m365_contact_links
+                    WHERE m365_contact_links.local_contact_id = contacts.id
+               )
+             ORDER BY contacts.updated_at DESC
+             LIMIT ?1",
+        )
+        .map_err(|error| error.to_string())?;
+    let pending = statement
+        .query_map(params![limit as i64], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    drop(statement);
+    if pending.is_empty() {
+        return Ok(0);
+    }
+    let transaction = conn
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    for (contact_id, action) in &pending {
+        queue_contact_sync_in_transaction(&transaction, *contact_id, action)?;
+    }
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(pending.len())
+}
+
+pub fn record_contact_sync_outbox_error(
+    app: &AppHandle,
+    contact_id: i64,
+    error: &str,
+) -> Result<(), String> {
+    let safe_error = error
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(500)
+        .collect::<String>();
+    open_db(app)?
+        .execute(
+            "UPDATE contact_sync_outbox
+             SET attempts = attempts + 1, last_error = ?1
+             WHERE local_contact_id = ?2",
+            params![safe_error, contact_id],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 const AUTOMATIC_BACKUP_FOLDER: &str = "DMH Kontakte und Kalender\\Automatische Sicherung";
@@ -2367,6 +2623,37 @@ fn set_contact_groups(conn: &Connection, contact_id: i64, group_ids: &[i64]) -> 
     Ok(())
 }
 
+fn queue_contact_sync_in_transaction(
+    conn: &Connection,
+    contact_id: i64,
+    action: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO contact_sync_outbox (local_contact_id, action, queued_at, attempts, last_error)
+         VALUES (?1, ?2, ?3, 0, NULL)
+         ON CONFLICT(local_contact_id) DO UPDATE SET
+           action = excluded.action, queued_at = excluded.queued_at, attempts = 0, last_error = NULL",
+        params![contact_id, action, now()],
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+fn queue_contacts_in_group(conn: &Connection, group_id: i64) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO contact_sync_outbox (local_contact_id, action, queued_at, attempts, last_error)
+         SELECT contacts.id, 'upsert', ?2, 0, NULL
+         FROM contacts
+         INNER JOIN contact_groups ON contact_groups.contact_id = contacts.id
+         WHERE contact_groups.group_id = ?1 AND contacts.deleted_at IS NULL
+         ON CONFLICT(local_contact_id) DO UPDATE SET
+           action = 'upsert', queued_at = excluded.queued_at, attempts = 0, last_error = NULL",
+        params![group_id, now()],
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 fn list_contacts(
     app: AppHandle,
@@ -2429,8 +2716,11 @@ fn list_contacts(
     Ok(contacts)
 }
 
-#[tauri::command]
-fn save_contact(app: AppHandle, contact: ContactInput) -> Result<i64, String> {
+fn save_contact_internal(
+    app: AppHandle,
+    contact: ContactInput,
+    queue_for_exchange: bool,
+) -> Result<i64, String> {
     let conn = open_db(&app)?;
     let timestamp = now();
     let display_name = if contact.display_name.trim().is_empty() {
@@ -2441,78 +2731,148 @@ fn save_contact(app: AppHandle, contact: ContactInput) -> Result<i64, String> {
         contact.display_name.trim().to_string()
     };
 
+    let transaction = conn
+        .unchecked_transaction()
+        .map_err(|err| err.to_string())?;
     let id = if let Some(id) = contact.id {
-        conn.execute(
-            "
+        transaction
+            .execute(
+                "
             UPDATE contacts
             SET first_name = ?, last_name = ?, display_name = ?, email = ?, phone = ?,
                 mobile_phone = ?, street = ?, postal_code = ?, city = ?, country = ?,
                 short_info = ?, notes = ?, updated_at = ?
             WHERE id = ?
             ",
-            params![
-                contact.first_name,
-                contact.last_name,
-                display_name,
-                contact.email,
-                contact.phone,
-                contact.mobile_phone,
-                contact.street,
-                contact.postal_code,
-                contact.city,
-                contact.country,
-                contact.short_info,
-                contact.notes,
-                timestamp,
-                id
-            ],
-        )
-        .map_err(|err| err.to_string())?;
+                params![
+                    contact.first_name,
+                    contact.last_name,
+                    display_name,
+                    contact.email,
+                    contact.phone,
+                    contact.mobile_phone,
+                    contact.street,
+                    contact.postal_code,
+                    contact.city,
+                    contact.country,
+                    contact.short_info,
+                    contact.notes,
+                    &timestamp,
+                    id
+                ],
+            )
+            .map_err(|err| err.to_string())?;
         id
     } else {
-        conn.execute(
-            "
+        transaction
+            .execute(
+                "
             INSERT INTO contacts (
                 first_name, last_name, display_name, email, phone, mobile_phone, street,
                 postal_code, city, country, short_info, notes, created_at, updated_at
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ",
-            params![
-                contact.first_name,
-                contact.last_name,
-                display_name,
-                contact.email,
-                contact.phone,
-                contact.mobile_phone,
-                contact.street,
-                contact.postal_code,
-                contact.city,
-                contact.country,
-                contact.short_info,
-                contact.notes,
-                timestamp,
-                timestamp
-            ],
-        )
-        .map_err(|err| err.to_string())?;
-        conn.last_insert_rowid()
+                params![
+                    contact.first_name,
+                    contact.last_name,
+                    display_name,
+                    contact.email,
+                    contact.phone,
+                    contact.mobile_phone,
+                    contact.street,
+                    contact.postal_code,
+                    contact.city,
+                    contact.country,
+                    contact.short_info,
+                    contact.notes,
+                    &timestamp,
+                    &timestamp
+                ],
+            )
+            .map_err(|err| err.to_string())?;
+        transaction.last_insert_rowid()
     };
 
-    set_contact_groups(&conn, id, &contact.group_ids)?;
+    set_contact_groups(&transaction, id, &contact.group_ids)?;
+    if queue_for_exchange {
+        transaction
+            .execute(
+                "INSERT INTO contact_sync_outbox (local_contact_id, action, queued_at, attempts, last_error)
+                 VALUES (?1, 'upsert', ?2, 0, NULL)
+                 ON CONFLICT(local_contact_id) DO UPDATE SET
+                   action = 'upsert', queued_at = excluded.queued_at, attempts = 0, last_error = NULL",
+                params![id, &timestamp],
+            )
+            .map_err(|err| err.to_string())?;
+    } else {
+        // An accepted Exchange version supersedes an older pending local write.
+        transaction
+            .execute(
+                "DELETE FROM contact_sync_outbox WHERE local_contact_id = ?1",
+                params![id],
+            )
+            .map_err(|err| err.to_string())?;
+    }
+    transaction.commit().map_err(|err| err.to_string())?;
     Ok(id)
 }
 
 #[tauri::command]
-fn delete_contact(app: AppHandle, id: i64) -> Result<(), String> {
+fn save_contact(app: AppHandle, contact: ContactInput) -> Result<i64, String> {
+    save_contact_internal(app, contact, true)
+}
+
+fn save_contact_from_m365(app: AppHandle, contact: ContactInput) -> Result<i64, String> {
+    save_contact_internal(app, contact, false)
+}
+
+fn delete_contact_internal(
+    app: AppHandle,
+    id: i64,
+    queue_for_exchange: bool,
+) -> Result<(), String> {
     let conn = open_db(&app)?;
     checkpoint_before_destructive_change(&app, &conn)?;
-    conn.execute(
-        "UPDATE contacts SET deleted_at = ?, updated_at = ? WHERE id = ?",
-        params![now(), now(), id],
-    )
-    .map_err(|err| err.to_string())?;
+    let transaction = conn
+        .unchecked_transaction()
+        .map_err(|err| err.to_string())?;
+    let timestamp = now();
+    let changed = transaction
+        .execute(
+            "UPDATE contacts SET deleted_at = ?, updated_at = ? WHERE id = ?",
+            params![&timestamp, &timestamp, id],
+        )
+        .map_err(|err| err.to_string())?;
+    if changed > 0 {
+        if queue_for_exchange {
+            transaction.execute(
+                "INSERT INTO contact_sync_outbox (local_contact_id, action, queued_at, attempts, last_error)
+                 VALUES (?1, 'delete', ?2, 0, NULL)
+                 ON CONFLICT(local_contact_id) DO UPDATE SET
+                   action = 'delete', queued_at = excluded.queued_at, attempts = 0, last_error = NULL",
+                params![id, &timestamp],
+            ).map_err(|err| err.to_string())?;
+        } else {
+            transaction
+                .execute(
+                    "DELETE FROM contact_sync_outbox WHERE local_contact_id = ?1",
+                    params![id],
+                )
+                .map_err(|err| err.to_string())?;
+        }
+    }
+    transaction.commit().map_err(|err| err.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+fn delete_contact(app: AppHandle, id: i64) -> Result<(), String> {
+    delete_contact_internal(app, id, true)
+}
+
+fn delete_contact_from_m365(app: AppHandle, id: i64) -> Result<(), String> {
+    delete_contact_internal(app, id, false)
 }
 
 fn soft_delete_contacts(
@@ -2547,21 +2907,57 @@ fn soft_delete_contacts(
 
 #[tauri::command]
 fn delete_contacts(app: AppHandle, ids: Vec<i64>) -> Result<usize, String> {
-    let mut conn = open_db(&app)?;
-    if !ids.is_empty() {
-        checkpoint_before_destructive_change(&app, &conn)?;
+    if ids.is_empty() {
+        return Ok(0);
     }
-    soft_delete_contacts(&mut conn, &ids, &now())
+    let conn = open_db(&app)?;
+    checkpoint_before_destructive_change(&app, &conn)?;
+    let timestamp = now();
+    let transaction = conn
+        .unchecked_transaction()
+        .map_err(|err| err.to_string())?;
+    let mut deleted = 0usize;
+    for id in ids {
+        let changed = transaction
+            .execute(
+                "UPDATE contacts
+                 SET deleted_at = ?1, updated_at = ?1
+                 WHERE id = ?2 AND deleted_at IS NULL",
+                params![&timestamp, id],
+            )
+            .map_err(|err| err.to_string())?;
+        if changed > 0 {
+            queue_contact_sync_in_transaction(&transaction, id, "delete")?;
+            deleted += changed;
+        }
+    }
+    transaction.commit().map_err(|err| err.to_string())?;
+    Ok(deleted)
 }
 
 #[tauri::command]
 fn restore_contact(app: AppHandle, id: i64) -> Result<(), String> {
     let conn = open_db(&app)?;
-    conn.execute(
-        "UPDATE contacts SET deleted_at = NULL, updated_at = ? WHERE id = ?",
-        params![now(), id],
-    )
-    .map_err(|err| err.to_string())?;
+    let transaction = conn
+        .unchecked_transaction()
+        .map_err(|err| err.to_string())?;
+    let timestamp = now();
+    let changed = transaction
+        .execute(
+            "UPDATE contacts SET deleted_at = NULL, updated_at = ? WHERE id = ?",
+            params![&timestamp, id],
+        )
+        .map_err(|err| err.to_string())?;
+    if changed > 0 {
+        transaction.execute(
+            "INSERT INTO contact_sync_outbox (local_contact_id, action, queued_at, attempts, last_error)
+             VALUES (?1, 'upsert', ?2, 0, NULL)
+             ON CONFLICT(local_contact_id) DO UPDATE SET
+               action = 'upsert', queued_at = excluded.queued_at, attempts = 0, last_error = NULL",
+            params![id, &timestamp],
+        ).map_err(|err| err.to_string())?;
+    }
+    transaction.commit().map_err(|err| err.to_string())?;
     Ok(())
 }
 
@@ -2633,11 +3029,17 @@ fn save_group(app: AppHandle, group: Group) -> Result<i64, String> {
     let conn = open_db(&app)?;
     let timestamp = now();
     if let Some(id) = group.id {
-        conn.execute(
-            "UPDATE groups SET name = ?, description = ?, updated_at = ? WHERE id = ?",
-            params![group.name, group.description, timestamp, id],
-        )
-        .map_err(|err| err.to_string())?;
+        let transaction = conn
+            .unchecked_transaction()
+            .map_err(|err| err.to_string())?;
+        transaction
+            .execute(
+                "UPDATE groups SET name = ?, description = ?, updated_at = ? WHERE id = ?",
+                params![group.name, group.description, &timestamp, id],
+            )
+            .map_err(|err| err.to_string())?;
+        queue_contacts_in_group(&transaction, id)?;
+        transaction.commit().map_err(|err| err.to_string())?;
         Ok(id)
     } else {
         conn.execute(
@@ -2653,23 +3055,33 @@ fn save_group(app: AppHandle, group: Group) -> Result<i64, String> {
 fn delete_group(app: AppHandle, id: i64) -> Result<(), String> {
     let conn = open_db(&app)?;
     checkpoint_before_destructive_change(&app, &conn)?;
-    conn.execute(
-        "UPDATE groups SET deleted_at = ?, updated_at = ? WHERE id = ?",
-        params![now(), now(), id],
-    )
-    .map_err(|err| err.to_string())?;
-    Ok(())
+    let transaction = conn
+        .unchecked_transaction()
+        .map_err(|err| err.to_string())?;
+    queue_contacts_in_group(&transaction, id)?;
+    transaction
+        .execute(
+            "UPDATE groups SET deleted_at = ?, updated_at = ? WHERE id = ?",
+            params![now(), now(), id],
+        )
+        .map_err(|err| err.to_string())?;
+    transaction.commit().map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 fn restore_group(app: AppHandle, id: i64) -> Result<(), String> {
     let conn = open_db(&app)?;
-    conn.execute(
-        "UPDATE groups SET deleted_at = NULL, updated_at = ? WHERE id = ?",
-        params![now(), id],
-    )
-    .map_err(|err| err.to_string())?;
-    Ok(())
+    let transaction = conn
+        .unchecked_transaction()
+        .map_err(|err| err.to_string())?;
+    transaction
+        .execute(
+            "UPDATE groups SET deleted_at = NULL, updated_at = ? WHERE id = ?",
+            params![now(), id],
+        )
+        .map_err(|err| err.to_string())?;
+    queue_contacts_in_group(&transaction, id)?;
+    transaction.commit().map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -3585,7 +3997,11 @@ fn restore_backup(app: AppHandle, backup: BackupData) -> Result<(), String> {
                     event.starts_at,
                     normalized_calendar_duplicate_key(&event),
                     json,
-                    if event.updated_at.trim().is_empty() { now() } else { event.updated_at },
+                    if event.updated_at.trim().is_empty() {
+                        now()
+                    } else {
+                        event.updated_at
+                    },
                     event.deleted_at,
                 ])
                 .map_err(|err| err.to_string())?;
@@ -3634,7 +4050,9 @@ fn clear_local_database(conn: &mut Connection) -> Result<(), String> {
     if has_calendar_events {
         transaction
             .execute("DELETE FROM calendar_events", [])
-            .map_err(|error| format!("Lokale Kalenderdaten konnten nicht geleert werden: {error}"))?;
+            .map_err(|error| {
+                format!("Lokale Kalenderdaten konnten nicht geleert werden: {error}")
+            })?;
     }
     transaction
         .commit()
@@ -3723,6 +4141,14 @@ fn soft_delete_all_contacts_and_groups(
             params![timestamp],
         )
         .map_err(|err| err.to_string())?;
+    tx.execute(
+        "INSERT INTO contact_sync_outbox (local_contact_id, action, queued_at, attempts, last_error)
+         SELECT id, 'delete', ?1, 0, NULL FROM contacts WHERE deleted_at = ?1
+         ON CONFLICT(local_contact_id) DO UPDATE SET
+           action = 'delete', queued_at = excluded.queued_at, attempts = 0, last_error = NULL",
+        params![timestamp],
+    )
+    .map_err(|err| err.to_string())?;
     let stored_groups = tx
         .execute(
             "UPDATE groups SET deleted_at = ?1, updated_at = ?1 WHERE deleted_at IS NULL",
@@ -3759,12 +4185,17 @@ fn delete_all_contacts(app: AppHandle) -> Result<DeleteAllContactsResult, String
 #[tauri::command]
 fn add_contact_to_group(app: AppHandle, contact_id: i64, group_id: i64) -> Result<(), String> {
     let conn = open_db(&app)?;
-    conn.execute(
-        "INSERT OR IGNORE INTO contact_groups (contact_id, group_id) VALUES (?, ?)",
-        params![contact_id, group_id],
-    )
-    .map_err(|err| err.to_string())?;
-    Ok(())
+    let transaction = conn
+        .unchecked_transaction()
+        .map_err(|err| err.to_string())?;
+    transaction
+        .execute(
+            "INSERT OR IGNORE INTO contact_groups (contact_id, group_id) VALUES (?, ?)",
+            params![contact_id, group_id],
+        )
+        .map_err(|err| err.to_string())?;
+    queue_contact_sync_in_transaction(&transaction, contact_id, "upsert")?;
+    transaction.commit().map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -3804,6 +4235,7 @@ fn move_contact_to_group(app: AppHandle, contact_id: i64, group_id: i64) -> Resu
         params![contact_id, group_id],
     )
     .map_err(|err| err.to_string())?;
+    queue_contact_sync_in_transaction(&tx, contact_id, "upsert")?;
     tx.commit().map_err(|err| err.to_string())
 }
 
@@ -3822,12 +4254,17 @@ fn clear_contact_groups(app: AppHandle, contact_id: i64) -> Result<(), String> {
     }
 
     checkpoint_before_destructive_change(&app, &conn)?;
-    conn.execute(
-        "DELETE FROM contact_groups WHERE contact_id = ?",
-        params![contact_id],
-    )
-    .map_err(|err| err.to_string())?;
-    Ok(())
+    let transaction = conn
+        .unchecked_transaction()
+        .map_err(|err| err.to_string())?;
+    transaction
+        .execute(
+            "DELETE FROM contact_groups WHERE contact_id = ?",
+            params![contact_id],
+        )
+        .map_err(|err| err.to_string())?;
+    queue_contact_sync_in_transaction(&transaction, contact_id, "upsert")?;
+    transaction.commit().map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -6365,6 +6802,204 @@ $folders | ConvertTo-Json -Depth 5 -Compress
         })
 }
 
+fn safe_calendar_location(uri: &str) -> String {
+    let trimmed = uri.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if let Ok(parsed) = url::Url::parse(trimmed) {
+        return parsed
+            .host_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| parsed.scheme().to_string());
+    }
+    trimmed
+        .split(['/', '\\'])
+        .next()
+        .unwrap_or("")
+        .chars()
+        .take(80)
+        .collect()
+}
+
+fn calendar_provider(
+    kind: &str,
+    uri: &str,
+    account: &str,
+    name: &str,
+) -> (&'static str, &'static str) {
+    let searchable = format!("{kind} {uri} {account} {name}").to_lowercase();
+    if searchable.contains("church.tools") || searchable.contains("churchtools") {
+        ("churchtools", "ChurchTools")
+    } else if searchable.contains("google.com")
+        || searchable.contains("googleusercontent.com")
+        || searchable.contains("gmail.com")
+    {
+        ("google", "Google Kalender")
+    } else if searchable.contains("icloud.com") || searchable.contains("apple.com") {
+        ("apple", "Apple iCloud")
+    } else if searchable.contains("exchange")
+        || searchable.contains("office365")
+        || searchable.contains("outlook.com")
+        || searchable.contains("onmicrosoft.com")
+        || kind.trim() == "0"
+    {
+        ("microsoft365", "Microsoft 365 / Exchange")
+    } else if searchable.contains("caldav") {
+        ("caldav", "CalDAV")
+    } else if searchable.contains("webcal") || searchable.contains("ics") {
+        ("ical", "iCal-Abonnement")
+    } else if searchable.contains("storage") || uri.trim().is_empty() {
+        ("local", "Lokaler Kalender")
+    } else {
+        ("other", "Anderer Kalenderdienst")
+    }
+}
+
+pub(crate) fn detected_calendar_source(
+    client: &str,
+    source_id: &str,
+    name: &str,
+    account: &str,
+    kind: &str,
+    uri: &str,
+) -> DetectedCalendarSource {
+    let (provider, provider_label) = calendar_provider(kind, uri, account, name);
+    let uri_lower = uri.trim().to_lowercase();
+    let connection_mode = if provider == "local" {
+        "local"
+    } else if provider == "ical"
+        || kind.eq_ignore_ascii_case("ics")
+        || uri_lower.starts_with("webcal:")
+    {
+        "readOnly"
+    } else {
+        "bidirectional"
+    };
+    let stable_id = format!("{client}\n{source_id}\n{name}\n{account}");
+    DetectedCalendarSource {
+        id: format!("{:x}", Sha256::digest(stable_id.as_bytes())),
+        client: client.to_string(),
+        provider: provider.to_string(),
+        provider_label: provider_label.to_string(),
+        name: if name.trim().is_empty() {
+            "Unbenannter Kalender".to_string()
+        } else {
+            name.trim().to_string()
+        },
+        account: account.trim().to_string(),
+        location: safe_calendar_location(uri),
+        connection_mode: connection_mode.to_string(),
+        can_import_now: true,
+        requires_reconnect: provider != "local",
+    }
+}
+
+fn detect_outlook_calendar_sources() -> Result<Vec<DetectedCalendarSource>, String> {
+    let script = r#"
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$outlook = New-Object -ComObject Outlook.Application
+$namespace = $outlook.Session
+$calendars = New-Object System.Collections.Generic.List[object]
+$accounts = @{}
+
+foreach ($account in @($namespace.Accounts)) {
+  try {
+    $storeId = [string]$account.DeliveryStore.StoreID
+    $accounts[$storeId] = [pscustomobject]@{
+      email = [string]$account.SmtpAddress
+      type = [int]$account.AccountType
+    }
+  } catch {}
+}
+
+function Read-Calendar-Folders($folder, $storeId, $storeName) {
+  try {
+    if ([int]$folder.DefaultItemType -eq 1) {
+      $account = $accounts[$storeId]
+      $calendars.Add([pscustomobject]@{
+        id = "$storeId|$([string]$folder.FolderPath)"
+        name = [string]$folder.Name
+        storeName = $storeName
+        folderPath = [string]$folder.FolderPath
+        account = if ($account) { [string]$account.email } else { '' }
+        accountType = if ($account) { [int]$account.type } else { -1 }
+      }) | Out-Null
+    }
+  } catch {}
+  try {
+    foreach ($child in @($folder.Folders)) { Read-Calendar-Folders $child $storeId $storeName }
+  } catch {}
+}
+
+foreach ($store in @($namespace.Stores)) {
+  try {
+    $storeId = [string]$store.StoreID
+    Read-Calendar-Folders $store.GetRootFolder() $storeId ([string]$store.DisplayName)
+  } catch {}
+}
+[pscustomobject]@{ calendars = $calendars.ToArray() } | ConvertTo-Json -Depth 5 -Compress
+"#;
+    let output = hidden_command("powershell")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ])
+        .output()
+        .map_err(|error| format!("Outlook Classic konnte nicht geprüft werden: {error}"))?;
+    if !output.status.success() {
+        return Err(
+            "Outlook Classic ist nicht erreichbar oder noch nicht eingerichtet.".to_string(),
+        );
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let data =
+        serde_json::from_str::<OutlookDetectedCalendarData>(stdout.trim()).map_err(|error| {
+            format!("Outlook-Kalenderquellen konnten nicht ausgewertet werden: {error}")
+        })?;
+    Ok(data
+        .calendars
+        .into_iter()
+        .map(|source| {
+            let name = outlook_calendar_name(&source.store_name, &source.folder_path, &source.name);
+            detected_calendar_source(
+                "outlook",
+                &source.id,
+                &name,
+                &source.account,
+                &source.account_type.to_string(),
+                &source.store_name,
+            )
+        })
+        .collect())
+}
+
+#[tauri::command]
+fn detect_connected_calendar_sources() -> DetectedCalendarSourcesResult {
+    let mut sources = Vec::new();
+    let mut warnings = Vec::new();
+    match detect_outlook_calendar_sources() {
+        Ok(found) => sources.extend(found),
+        Err(error) => warnings.push(error),
+    }
+    match thunderbird::detected_calendar_sources() {
+        Ok(found) => sources.extend(found),
+        Err(error) => warnings.push(error),
+    }
+    sources.sort_by(|left, right| {
+        left.provider_label
+            .to_lowercase()
+            .cmp(&right.provider_label.to_lowercase())
+            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+    });
+    sources.dedup_by(|left, right| left.id == right.id);
+    DetectedCalendarSourcesResult { sources, warnings }
+}
+
 fn read_outlook_classic_appointments() -> Result<OutlookCalendarReadData, String> {
     let script = r#"
 $ErrorActionPreference = 'Stop'
@@ -6763,7 +7398,8 @@ fn import_outlook_classic_appointments_once() -> Result<OutlookOneTimeCalendarIm
     read_outlook_classic_appointments_for_import()
 }
 
-fn read_outlook_classic_appointments_for_import() -> Result<OutlookOneTimeCalendarImportResult, String> {
+fn read_outlook_classic_appointments_for_import(
+) -> Result<OutlookOneTimeCalendarImportResult, String> {
     let read_result = read_outlook_classic_appointments()?;
     let found = read_result.events.len();
     let mut skipped_invalid = read_result.skipped;
@@ -6853,7 +7489,9 @@ fn import_thunderbird_calendars_to_calendar(
     let events = serde_json::from_value::<Vec<CalendarEvent>>(
         serde_json::to_value(result.events).map_err(|error| error.to_string())?,
     )
-    .map_err(|error| format!("Thunderbird-Kalenderdaten konnten nicht übernommen werden: {error}"))?;
+    .map_err(|error| {
+        format!("Thunderbird-Kalenderdaten konnten nicht übernommen werden: {error}")
+    })?;
     let merged = merge_calendar_events_in_db(&mut open_db(&app)?, events)?;
     Ok(CalendarDirectImportResult {
         found,
@@ -7134,6 +7772,7 @@ pub fn run() {
             m365::list_m365_sync_sources,
             m365::preview_m365_sync,
             m365::apply_m365_sync,
+            m365::flush_m365_contact_outbox,
             m365::flush_m365_calendar_outbox,
             documents::list_document_sources,
             documents::list_document_items,
@@ -7167,6 +7806,7 @@ pub fn run() {
             import_outlook_store,
             preview_outlook_classic_contacts,
             import_selected_outlook_classic_contacts,
+            detect_connected_calendar_sources,
             preview_outlook_classic_appointments,
             import_outlook_classic_appointments_once,
             import_outlook_classic_appointments_to_calendar,
@@ -7468,9 +8108,18 @@ mod tests {
             .collect();
         let result = merge_calendar_events_in_db(&mut conn, events).expect("large calendar merge");
         assert_eq!(result.imported, 50_000);
-        assert_eq!(read_calendar_events(&conn, false).expect("read merged calendar").len(), 50_000);
+        assert_eq!(
+            read_calendar_events(&conn, false)
+                .expect("read merged calendar")
+                .len(),
+            50_000
+        );
         let queued: i64 = conn
-            .query_row("SELECT COUNT(*) FROM calendar_sync_outbox WHERE action = 'upsert'", [], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM calendar_sync_outbox WHERE action = 'upsert'",
+                [],
+                |row| row.get(0),
+            )
             .expect("queued calendar writes");
         assert_eq!(queued, 50_000);
     }
@@ -8534,5 +9183,41 @@ mod tests {
                 .to_string_lossy()
                 .ends_with(".tmp")));
         fs::remove_dir_all(directory).expect("remove backup test directory");
+    }
+
+    #[test]
+    fn connected_calendar_detection_recognizes_common_providers() {
+        assert_eq!(
+            calendar_provider(
+                "caldav",
+                "https://apidata.googleusercontent.com/caldav/v2/user/events",
+                "",
+                ""
+            ),
+            ("google", "Google Kalender")
+        );
+        assert_eq!(
+            calendar_provider(
+                "ics",
+                "https://demo.church.tools/?q=churchcal/ical",
+                "",
+                "Gemeinde"
+            ),
+            ("churchtools", "ChurchTools")
+        );
+        assert_eq!(
+            calendar_provider("0", "", "person@other-company.de", "Kalender"),
+            ("microsoft365", "Microsoft 365 / Exchange")
+        );
+    }
+
+    #[test]
+    fn connected_calendar_detection_never_exposes_secret_url_parts() {
+        assert_eq!(
+            safe_calendar_location(
+                "https://user:secret@example.org/private/calendar.ics?token=hidden"
+            ),
+            "example.org"
+        );
     }
 }

@@ -407,6 +407,7 @@ export default function App() {
               <DataTransferPage
                 initialView={page === "export" ? "export" : page === "import" || page === "contact-import" || page === "calendar-import" ? "file-import" : "overview"}
                 initialFileImportMode={page === "contact-import" ? "contacts" : page === "calendar-import" ? "calendar" : undefined}
+                onManageSync={() => navigate("synchronizations")}
               />
             </Suspense>
           )}

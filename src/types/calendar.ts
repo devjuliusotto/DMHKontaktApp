@@ -102,3 +102,24 @@ export interface ThunderbirdCalendarImportResult {
   calendars: number;
   events: CalendarEvent[];
 }
+
+export type DetectedCalendarProvider = "microsoft365" | "google" | "apple" | "churchtools" | "caldav" | "ical" | "local" | "other";
+export type DetectedCalendarConnectionMode = "bidirectional" | "readOnly" | "local";
+
+export interface DetectedCalendarSource {
+  id: string;
+  client: "outlook" | "thunderbird";
+  provider: DetectedCalendarProvider;
+  providerLabel: string;
+  name: string;
+  account: string;
+  location: string;
+  connectionMode: DetectedCalendarConnectionMode;
+  canImportNow: boolean;
+  requiresReconnect: boolean;
+}
+
+export interface DetectedCalendarSourcesResult {
+  sources: DetectedCalendarSource[];
+  warnings: string[];
+}

@@ -95,6 +95,9 @@ pub struct ThunderbirdCalendarRecurrence {
 struct ThunderbirdCalendarSettings {
     name: String,
     color: String,
+    kind: String,
+    uri: String,
+    username: String,
 }
 
 #[derive(Debug)]
@@ -1059,10 +1062,31 @@ fn calendar_settings(profile: &Path) -> HashMap<String, ThunderbirdCalendarSetti
         match property_name {
             "name" => settings.name = value.trim().to_string(),
             "color" => settings.color = value.trim().to_string(),
+            "type" => settings.kind = value.trim().to_string(),
+            "uri" => settings.uri = value.trim().to_string(),
+            "username" => settings.username = value.trim().to_string(),
             _ => {}
         }
     }
     calendars
+}
+
+pub fn detected_calendar_sources() -> Result<Vec<super::DetectedCalendarSource>, String> {
+    let profile = thunderbird_profile_path()?;
+    let settings = calendar_settings(&profile);
+    Ok(settings
+        .into_iter()
+        .map(|(calendar_id, settings)| {
+            super::detected_calendar_source(
+                "thunderbird",
+                &calendar_id,
+                &settings.name,
+                &settings.username,
+                &settings.kind,
+                &settings.uri,
+            )
+        })
+        .collect())
 }
 
 fn normalized_category_key(value: &str) -> String {

@@ -237,6 +237,34 @@ pub struct CalendarOutboxSyncResult {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContactOutboxSyncRequest {
+    pub direction: String,
+    #[serde(default)]
+    pub contact_groups: bool,
+    #[serde(default)]
+    pub selected_contact_source_ids: Vec<String>,
+    #[serde(default)]
+    pub source_directions: HashMap<String, String>,
+    #[serde(default)]
+    pub shared_mailboxes: bool,
+    #[serde(default)]
+    pub shared_mailbox_addresses: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContactOutboxSyncResult {
+    pub processed: usize,
+    pub created: usize,
+    pub updated: usize,
+    pub deleted: usize,
+    pub pending: usize,
+    pub errors: usize,
+    pub error_messages: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct DeviceCodeResponse {
     device_code: String,
     user_code: String,
@@ -1718,8 +1746,10 @@ fn event_equivalent(
 ) -> bool {
     let remote_local = remote_event_to_local(remote, source, Some(local));
     local.title.trim() == remote_local.title.trim()
-        && normalized_calendar_start(&local.starts_at) == normalized_calendar_start(&remote_local.starts_at)
-        && normalized_calendar_start(&local.ends_at) == normalized_calendar_start(&remote_local.ends_at)
+        && normalized_calendar_start(&local.starts_at)
+            == normalized_calendar_start(&remote_local.starts_at)
+        && normalized_calendar_start(&local.ends_at)
+            == normalized_calendar_start(&remote_local.ends_at)
         && local.location.trim() == remote_local.location.trim()
         && local.description.trim() == remote_local.description.trim()
         && local.category.trim() == remote_local.category.trim()
@@ -2150,6 +2180,7 @@ async fn build_m365_sync_plan(
         .filter(|contact| contact.deleted_at.is_none())
         .cloned()
         .collect();
+    let pending_contact_ids = crate::pending_contact_sync_ids(app)?;
     let local_contacts_by_key: HashMap<String, &crate::Contact> = local_contacts
         .iter()
         .map(|contact| (local_contact_key(contact), contact))
@@ -2207,6 +2238,12 @@ async fn build_m365_sync_plan(
 
             for local in &source_contacts {
                 let local_id = local.id.unwrap_or_default();
+                // A failed or not-yet-confirmed local write owns this contact
+                // until the durable outbox succeeds.  An inbound pass must not
+                // overwrite it and silently discard the pending change.
+                if direction == "import" && pending_contact_ids.contains(&local_id) {
+                    continue;
+                }
                 let linked_remote_id = links_by_local.get(&local_id);
                 let linked_remote = links_by_local
                     .get(&local_id)
@@ -2235,7 +2272,9 @@ async fn build_m365_sync_plan(
                         match direction.as_str() {
                             "export" => "updateRemote",
                             "import" => "updateLocal",
-                            _ if local_changed_after_remote(&local.updated_at, remote) => "updateRemote",
+                            _ if local_changed_after_remote(&local.updated_at, remote) => {
+                                "updateRemote"
+                            }
                             _ => "updateLocal",
                         }
                     };
@@ -2635,7 +2674,9 @@ async fn build_m365_sync_plan(
                         match direction.as_str() {
                             "export" => "updateRemote",
                             "import" => "updateLocal",
-                            _ if local_changed_after_remote(&local.updated_at, remote) => "updateRemote",
+                            _ if local_changed_after_remote(&local.updated_at, remote) => {
+                                "updateRemote"
+                            }
                             _ => "updateLocal",
                         }
                     };
@@ -2883,7 +2924,285 @@ async fn graph_write(
         .map_err(|_| "Microsoft Graph hat eine ungültige Antwort geliefert.".to_string())
 }
 
+const CONTACT_OUTBOX_BATCH_SIZE: usize = 250;
 const CALENDAR_OUTBOX_BATCH_SIZE: usize = 24;
+
+fn contact_outbox_source_direction(request: &ContactOutboxSyncRequest, source_id: &str) -> String {
+    request
+        .source_directions
+        .get(source_id)
+        .cloned()
+        .unwrap_or_else(|| request.direction.clone())
+}
+
+fn contact_outbox_source_is_available(
+    request: &ContactOutboxSyncRequest,
+    source: &Microsoft365SyncSource,
+    active_group_names: &HashSet<String>,
+) -> bool {
+    (request
+        .selected_contact_source_ids
+        .iter()
+        .any(|id| id == &source.id)
+        || (request.contact_groups
+            && active_group_names.contains(&source.name.trim().to_lowercase())))
+        && source.editable
+        && (!source.shared || request.shared_mailboxes)
+        && contact_outbox_source_direction(request, &source.id) != "import"
+}
+
+fn contact_belongs_to_outbox_source(
+    contact: &crate::Contact,
+    request: &ContactOutboxSyncRequest,
+    source: &Microsoft365SyncSource,
+) -> bool {
+    if !request.contact_groups || source.shared {
+        return true;
+    }
+    if source.id == "me:default-contacts" {
+        return contact.groups.is_empty();
+    }
+    contact.groups.iter().any(|group| {
+        group.deleted_at.is_none() && group.name.trim().eq_ignore_ascii_case(source.name.trim())
+    })
+}
+
+fn contact_identity_matches(local: &crate::Contact, remote: &Value) -> bool {
+    let local_email = local.email.trim();
+    let remote_email = first_graph_email(remote).trim();
+    if !local_email.is_empty() && !remote_email.is_empty() {
+        return local_email.eq_ignore_ascii_case(remote_email);
+    }
+    let local_name = if local.display_name.trim().is_empty() {
+        format!("{} {}", local.first_name, local.last_name)
+    } else {
+        local.display_name.clone()
+    };
+    let remote_name = value_text(remote, "displayName");
+    if local_name.trim().is_empty() || !local_name.trim().eq_ignore_ascii_case(remote_name.trim()) {
+        return false;
+    }
+    let mut remote_phones = remote
+        .get("businessPhones")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(crate::normalize_phone_for_match)
+        .filter(|phone| !phone.is_empty())
+        .collect::<Vec<_>>();
+    let remote_mobile = crate::normalize_phone_for_match(value_text(remote, "mobilePhone"));
+    if !remote_mobile.is_empty() && !remote_phones.contains(&remote_mobile) {
+        remote_phones.push(remote_mobile);
+    }
+    let local_phones = [&local.phone, &local.mobile_phone]
+        .into_iter()
+        .map(|phone| crate::normalize_phone_for_match(phone))
+        .filter(|phone| !phone.is_empty())
+        .collect::<Vec<_>>();
+    local_phones.is_empty()
+        || remote_phones.is_empty()
+        || local_phones
+            .iter()
+            .any(|phone| remote_phones.contains(phone))
+}
+
+#[tauri::command]
+pub async fn flush_m365_contact_outbox(
+    app: AppHandle,
+    request: ContactOutboxSyncRequest,
+) -> Result<ContactOutboxSyncResult, String> {
+    let state = app.state::<crate::AppState>();
+    let _sync_guard = state.m365.sync_gate.lock().await;
+    let access_token = refreshed_access_token(&app).await?;
+    let backup = crate::get_sync_backup_data(app.clone())?;
+    if request.contact_groups {
+        ensure_contact_group_folders(&access_token, &backup).await?;
+    }
+    let active_group_names = backup
+        .groups
+        .iter()
+        .filter(|group| group.deleted_at.is_none())
+        .map(|group| group.name.trim().to_lowercase())
+        .collect::<HashSet<_>>();
+    let sources =
+        list_m365_sync_sources(app.clone(), Some(request.shared_mailbox_addresses.clone())).await?;
+    let export_sources = sources
+        .contacts
+        .iter()
+        .filter(|source| contact_outbox_source_is_available(&request, source, &active_group_names))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if !export_sources.is_empty() && crate::contact_sync_outbox_count(&app)? == 0 {
+        crate::enqueue_contacts_for_exchange(&app, CONTACT_OUTBOX_BATCH_SIZE)?;
+    }
+    let entries = crate::read_contact_sync_outbox(&app, CONTACT_OUTBOX_BATCH_SIZE)?;
+    let mut result = ContactOutboxSyncResult {
+        processed: 0,
+        created: 0,
+        updated: 0,
+        deleted: 0,
+        pending: entries.len(),
+        errors: 0,
+        error_messages: Vec::new(),
+    };
+
+    if export_sources.is_empty() {
+        result.pending = crate::contact_sync_outbox_count(&app)?;
+        return Ok(result);
+    }
+
+    let mut remote_contacts = HashMap::<String, Vec<Value>>::new();
+    let mut links = HashMap::<String, HashMap<i64, String>>::new();
+    for source in &export_sources {
+        let url = format!(
+            "{}?$select=id,givenName,surname,displayName,emailAddresses,businessPhones,mobilePhone,businessAddress,personalNotes,lastModifiedDateTime&$top=100",
+            source.resource_path
+        );
+        remote_contacts.insert(
+            source.id.clone(),
+            graph_collection(&access_token, &url).await?,
+        );
+        links.insert(source.id.clone(), load_contact_links(&app, &source.id)?.0);
+    }
+
+    for entry in entries {
+        let contact = entry.contact;
+        let contact_id = contact
+            .id
+            .ok_or_else(|| "Ausstehender Kontakt hat keine lokale ID.".to_string())?;
+        let mut error_message = None;
+        let mut merged_local: Option<crate::Contact> = None;
+
+        for source in &export_sources {
+            let linked_remote_id = links
+                .get(&source.id)
+                .and_then(|source_links| source_links.get(&contact_id))
+                .cloned();
+            let should_exist = entry.action != "delete"
+                && contact.deleted_at.is_none()
+                && contact_belongs_to_outbox_source(&contact, &request, source);
+
+            let operation = if let Some(remote_id) = linked_remote_id {
+                let url = format!(
+                    "{}/{}",
+                    source.resource_path,
+                    encode_graph_path_segment(&remote_id)
+                );
+                if should_exist {
+                    graph_write(
+                        &access_token,
+                        reqwest::Method::PATCH,
+                        &url,
+                        &graph_contact_payload(&contact),
+                    )
+                    .await
+                    .map(|_| {
+                        let _ = save_contact_link(&app, contact_id, &source.id, &remote_id);
+                        result.updated += 1;
+                    })
+                } else {
+                    graph_write(&access_token, reqwest::Method::DELETE, &url, &Value::Null)
+                        .await
+                        .and_then(|_| delete_contact_link(&app, contact_id, &source.id))
+                        .map(|_| result.deleted += 1)
+                }
+            } else if should_exist {
+                let matching_remote = remote_contacts
+                    .get(&source.id)
+                    .and_then(|values| {
+                        values
+                            .iter()
+                            .find(|remote| contact_identity_matches(&contact, remote))
+                    })
+                    .cloned();
+                if let Some(remote) = matching_remote {
+                    let remote_id = value_text(&remote, "id").to_string();
+                    let merged = merge_contact(&contact, &remote);
+                    let write = if contact_equivalent(&merged, &remote) {
+                        Ok(Value::Null)
+                    } else {
+                        let url = format!(
+                            "{}/{}",
+                            source.resource_path,
+                            encode_graph_path_segment(&remote_id)
+                        );
+                        graph_write(
+                            &access_token,
+                            reqwest::Method::PATCH,
+                            &url,
+                            &graph_contact_payload(&merged),
+                        )
+                        .await
+                    };
+                    write.and_then(|_| {
+                        save_contact_link(&app, contact_id, &source.id, &remote_id)?;
+                        if !contact_equivalent(&contact, &remote) {
+                            result.updated += 1;
+                            merged_local = Some(merged);
+                        }
+                        Ok(())
+                    })
+                } else {
+                    match graph_write(
+                        &access_token,
+                        reqwest::Method::POST,
+                        &source.resource_path,
+                        &graph_contact_payload(&contact),
+                    )
+                    .await
+                    {
+                        Ok(remote) => {
+                            let remote_id = value_text(&remote, "id");
+                            if remote_id.is_empty() {
+                                Err("Microsoft 365 hat keine Kontakt-ID zurückgegeben.".to_string())
+                            } else {
+                                save_contact_link(&app, contact_id, &source.id, remote_id)?;
+                                links
+                                    .entry(source.id.clone())
+                                    .or_default()
+                                    .insert(contact_id, remote_id.to_string());
+                                remote_contacts
+                                    .entry(source.id.clone())
+                                    .or_default()
+                                    .push(remote);
+                                result.created += 1;
+                                Ok(())
+                            }
+                        }
+                        Err(error) => Err(error),
+                    }
+                }
+            } else {
+                Ok(())
+            };
+
+            if let Err(error) = operation {
+                error_message = Some(error);
+                break;
+            }
+        }
+
+        if let Some(error) = error_message {
+            crate::record_contact_sync_outbox_error(&app, contact_id, &error)?;
+            result.errors += 1;
+            result
+                .error_messages
+                .push(format!("{}: {error}", contact.display_name));
+        } else {
+            if let Some(merged) = merged_local {
+                crate::save_contact_from_m365(app.clone(), contact_input_from_contact(&merged))?;
+            } else {
+                crate::complete_contact_sync_outbox_entry(&app, contact_id)?;
+            }
+            result.processed += 1;
+        }
+    }
+
+    result.pending = crate::contact_sync_outbox_count(&app)?;
+    Ok(result)
+}
 
 fn outbox_source_direction(request: &CalendarOutboxSyncRequest, source_id: &str) -> String {
     request
@@ -2934,7 +3253,8 @@ pub async fn flush_m365_calendar_outbox(
     let state = app.state::<crate::AppState>();
     let _sync_guard = state.m365.sync_gate.lock().await;
     let access_token = refreshed_access_token(&app).await?;
-    let sources = list_m365_sync_sources(app.clone(), Some(request.shared_mailbox_addresses.clone())).await?;
+    let sources =
+        list_m365_sync_sources(app.clone(), Some(request.shared_mailbox_addresses.clone())).await?;
     let has_export_target = sources.calendars.iter().any(|source| {
         outbox_source_is_available(&request, source)
             && outbox_source_direction(&request, &source.id) != "import"
@@ -2963,7 +3283,9 @@ pub async fn flush_m365_calendar_outbox(
         });
         let outcome = if entry.action == "delete" {
             match linked_source {
-                Some((source, remote_id)) if outbox_source_direction(&request, &source.id) != "import" => {
+                Some((source, remote_id))
+                    if outbox_source_direction(&request, &source.id) != "import" =>
+                {
                     let url = format!(
                         "{}/events/{}",
                         source.resource_path,
@@ -2978,7 +3300,9 @@ pub async fn flush_m365_calendar_outbox(
             }
         } else {
             match linked_source {
-                Some((source, remote_id)) if outbox_source_direction(&request, &source.id) != "import" => {
+                Some((source, remote_id))
+                    if outbox_source_direction(&request, &source.id) != "import" =>
+                {
                     let url = format!(
                         "{}/events/{}",
                         source.resource_path,
@@ -3000,7 +3324,9 @@ pub async fn flush_m365_calendar_outbox(
                             && outbox_source_direction(&request, &source.id) != "import"
                     });
                     if let Some(target) = target {
-                        match find_matching_exchange_event_for_outbox(&access_token, target, &event).await {
+                        match find_matching_exchange_event_for_outbox(&access_token, target, &event)
+                            .await
+                        {
                             Ok(Some(remote)) => {
                                 let remote_id = value_text(&remote, "id");
                                 let url = format!(
@@ -3020,7 +3346,9 @@ pub async fn flush_m365_calendar_outbox(
                                         let mut linked = event.clone();
                                         linked.id = format!("m365:{}:{remote_id}", target.id);
                                         linked.source = target.name.clone();
-                                        crate::link_calendar_event_after_exchange_create(&app, &event.id, &linked)?;
+                                        crate::link_calendar_event_after_exchange_create(
+                                            &app, &event.id, &linked,
+                                        )?;
                                         Ok("updated")
                                     }
                                     Err(error) => Err(error),
@@ -3036,12 +3364,16 @@ pub async fn flush_m365_calendar_outbox(
                                 )
                                 .await
                                 {
-                                    Ok(remote) if value_text(&remote, "id").is_empty() => Err(
-                                        "Microsoft 365 hat keine Termin-ID zurückgegeben.".to_string(),
-                                    ),
+                                    Ok(remote) if value_text(&remote, "id").is_empty() => {
+                                        Err("Microsoft 365 hat keine Termin-ID zurückgegeben."
+                                            .to_string())
+                                    }
                                     Ok(remote) => {
-                                        let linked = remote_event_to_local(&remote, target, Some(&event));
-                                        crate::link_calendar_event_after_exchange_create(&app, &event.id, &linked)?;
+                                        let linked =
+                                            remote_event_to_local(&remote, target, Some(&event));
+                                        crate::link_calendar_event_after_exchange_create(
+                                            &app, &event.id, &linked,
+                                        )?;
                                         Ok("created")
                                     }
                                     Err(error) => Err(error),
@@ -3079,7 +3411,9 @@ pub async fn flush_m365_calendar_outbox(
                 let _ = crate::record_calendar_sync_outbox_error(&app, &event.id, &error);
                 result.errors += 1;
                 if result.error_messages.len() < 5 {
-                    result.error_messages.push(format!("{}: {error}", event.title));
+                    result
+                        .error_messages
+                        .push(format!("{}: {error}", event.title));
                 }
             }
         }
@@ -3221,7 +3555,7 @@ pub async fn apply_m365_sync(
                     &preview_request.backup,
                     &operation.source,
                 );
-                crate::save_contact(app.clone(), input).and_then(|local_id| {
+                crate::save_contact_from_m365(app.clone(), input).and_then(|local_id| {
                     save_contact_link(
                         &app,
                         local_id,
@@ -3288,7 +3622,7 @@ pub async fn apply_m365_sync(
                     remote: Some(remote),
                 },
                 "updateLocal" | "keepM365",
-            ) => crate::save_contact(
+            ) => crate::save_contact_from_m365(
                 app.clone(),
                 remote_contact_input_for_source(
                     remote,
@@ -3328,10 +3662,13 @@ pub async fn apply_m365_sync(
                 )
                 .await
                 {
-                    Ok(_) => crate::save_contact(app.clone(), contact_input_from_contact(&merged))
-                        .map(|_| {
-                            result.updated += 2;
-                        }),
+                    Ok(_) => crate::save_contact_from_m365(
+                        app.clone(),
+                        contact_input_from_contact(&merged),
+                    )
+                    .map(|_| {
+                        result.updated += 2;
+                    }),
                     Err(error) => Err(error),
                 }
             }
@@ -3371,7 +3708,7 @@ pub async fn apply_m365_sync(
                 {
                     remove_contact_from_group(&app, local_id, group_id)?;
                 } else {
-                    crate::delete_contact(app.clone(), local_id)?;
+                    crate::delete_contact_from_m365(app.clone(), local_id)?;
                 }
                 delete_contact_link(&app, local_id, &operation.source.id)?;
                 result.deleted += 1;
@@ -4028,6 +4365,74 @@ fn unprotect_secret(_protected_secret: &[u8]) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn contact_for_identity(name: &str, email: &str, phone: &str) -> crate::Contact {
+        crate::Contact {
+            id: Some(1),
+            first_name: String::new(),
+            last_name: String::new(),
+            display_name: name.to_string(),
+            email: email.to_string(),
+            phone: phone.to_string(),
+            mobile_phone: String::new(),
+            street: String::new(),
+            postal_code: String::new(),
+            city: String::new(),
+            country: String::new(),
+            short_info: String::new(),
+            notes: String::new(),
+            groups: Vec::new(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            deleted_at: None,
+        }
+    }
+
+    #[test]
+    fn contact_identity_accepts_complementary_email_and_phone() {
+        let local = contact_for_identity("Erika Muster", "", "+49 711 12345");
+        let remote = serde_json::json!({
+            "displayName": "Erika Muster",
+            "emailAddresses": [{ "address": "erika@example.org" }],
+            "businessPhones": []
+        });
+        assert!(contact_identity_matches(&local, &remote));
+    }
+
+    #[test]
+    fn contact_identity_rejects_same_name_with_different_emails() {
+        let local = contact_for_identity("Erika Muster", "erika.one@example.org", "");
+        let remote = serde_json::json!({
+            "displayName": "Erika Muster",
+            "emailAddresses": [{ "address": "erika.two@example.org" }],
+            "businessPhones": []
+        });
+        assert!(!contact_identity_matches(&local, &remote));
+    }
+
+    #[test]
+    fn contact_identity_rejects_conflicting_phone_numbers_without_email() {
+        let local = contact_for_identity("Erika Muster", "", "+49 711 11111");
+        let remote = serde_json::json!({
+            "displayName": "Erika Muster",
+            "emailAddresses": [],
+            "businessPhones": ["+49 711 22222"]
+        });
+        assert!(!contact_identity_matches(&local, &remote));
+    }
+
+    #[test]
+    fn contact_identity_matches_mobile_phone_with_different_formatting() {
+        let mut local = contact_for_identity("Erika Muster", "", "");
+        local.mobile_phone = "+49 171 123 45 67".to_string();
+        let remote = serde_json::json!({
+            "displayName": "Erika Muster",
+            "emailAddresses": [],
+            "businessPhones": [],
+            "mobilePhone": "0171/1234567"
+        });
+        assert!(contact_identity_matches(&local, &remote));
+    }
 
     #[test]
     fn matches_calendar_times_independent_of_graph_seconds() {
