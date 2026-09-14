@@ -1455,7 +1455,8 @@ fn remote_event_attendees(value: &Value, attendee_type: &str) -> Vec<String> {
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .trim();
-            (!email.is_empty() || !name.is_empty()).then(|| if email.is_empty() { name } else { email }.to_string())
+            (!email.is_empty() || !name.is_empty())
+                .then(|| if email.is_empty() { name } else { email }.to_string())
         })
         .collect()
 }
@@ -1688,16 +1689,29 @@ fn remote_event_to_local(
             optional_attendees: remote_event_attendees(value, "optional"),
             show_as: {
                 let show_as = value_text(value, "showAs");
-                if show_as.is_empty() { "busy".to_string() } else { show_as.to_string() }
+                if show_as.is_empty() {
+                    "busy".to_string()
+                } else {
+                    show_as.to_string()
+                }
             },
             reminder_minutes: if value.get("isReminderOn").and_then(Value::as_bool) == Some(false) {
                 None
             } else {
-                value.get("reminderMinutesBeforeStart").and_then(Value::as_i64)
+                value
+                    .get("reminderMinutesBeforeStart")
+                    .and_then(Value::as_i64)
             },
             is_private: value_text(value, "sensitivity").eq_ignore_ascii_case("private"),
-            is_online_meeting: value.get("isOnlineMeeting").and_then(Value::as_bool).unwrap_or(false)
-                || value.get("onlineMeeting").and_then(|meeting| meeting.get("joinUrl")).and_then(Value::as_str).is_some(),
+            is_online_meeting: value
+                .get("isOnlineMeeting")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                || value
+                    .get("onlineMeeting")
+                    .and_then(|meeting| meeting.get("joinUrl"))
+                    .and_then(Value::as_str)
+                    .is_some(),
             online_meeting_url: value
                 .get("onlineMeeting")
                 .and_then(|meeting| meeting.get("joinUrl"))
@@ -1808,11 +1822,21 @@ fn graph_event_payload(event: &crate::CalendarEvent) -> Value {
     } else {
         vec![event.category.trim().to_string()]
     };
-    let attendees = event.meeting.required_attendees.iter().map(|address| json!({
-        "emailAddress": {"address": address, "name": address}, "type": "required"
-    })).chain(event.meeting.optional_attendees.iter().map(|address| json!({
-        "emailAddress": {"address": address, "name": address}, "type": "optional"
-    }))).collect::<Vec<_>>();
+    let attendees = event
+        .meeting
+        .required_attendees
+        .iter()
+        .map(|address| {
+            json!({
+                "emailAddress": {"address": address, "name": address}, "type": "required"
+            })
+        })
+        .chain(event.meeting.optional_attendees.iter().map(|address| {
+            json!({
+                "emailAddress": {"address": address, "name": address}, "type": "optional"
+            })
+        }))
+        .collect::<Vec<_>>();
     let mut payload = json!({
         "subject": event.title,
         "start": {"dateTime": event.starts_at, "timeZone": "W. Europe Standard Time"},
@@ -1843,6 +1867,14 @@ fn source_direction(request: &Microsoft365SyncPreviewRequest, source_id: &str) -
         .get(source_id)
         .cloned()
         .unwrap_or_else(|| request.direction.clone())
+}
+
+fn should_defer_inbound_contact(
+    direction: &str,
+    has_export_target: bool,
+    has_pending_local_write: bool,
+) -> bool {
+    direction == "import" && has_export_target && has_pending_local_write
 }
 
 fn calendar_source_is_enabled(
@@ -2173,6 +2205,13 @@ async fn build_m365_sync_plan(
         .iter()
         .map(String::as_str)
         .collect();
+    let has_contact_export_target = request.contacts
+        && sources.contacts.iter().any(|source| {
+            contact_source_selected(request, &selected_contacts, source)
+                && source.editable
+                && (!source.shared || request.shared_mailboxes)
+                && source_direction(request, &source.id) != "import"
+        });
     let local_contacts: Vec<crate::Contact> = request
         .backup
         .contacts
@@ -2241,7 +2280,11 @@ async fn build_m365_sync_plan(
                 // A failed or not-yet-confirmed local write owns this contact
                 // until the durable outbox succeeds.  An inbound pass must not
                 // overwrite it and silently discard the pending change.
-                if direction == "import" && pending_contact_ids.contains(&local_id) {
+                if should_defer_inbound_contact(
+                    &direction,
+                    has_contact_export_target,
+                    pending_contact_ids.contains(&local_id),
+                ) {
                     continue;
                 }
                 let linked_remote_id = links_by_local.get(&local_id);
@@ -4435,6 +4478,17 @@ mod tests {
     }
 
     #[test]
+    fn import_only_contacts_are_not_blocked_by_an_old_local_queue() {
+        assert!(!should_defer_inbound_contact("import", false, true));
+    }
+
+    #[test]
+    fn pending_local_contact_is_protected_while_an_export_target_exists() {
+        assert!(should_defer_inbound_contact("import", true, true));
+        assert!(!should_defer_inbound_contact("import", true, false));
+    }
+
+    #[test]
     fn matches_calendar_times_independent_of_graph_seconds() {
         assert_eq!(
             normalized_calendar_start("2026-09-10T14:30"),
@@ -4716,13 +4770,22 @@ mod tests {
             None,
         );
 
-        assert_eq!(imported.meeting.required_attendees, ["required@example.org"]);
-        assert_eq!(imported.meeting.optional_attendees, ["optional@example.org"]);
+        assert_eq!(
+            imported.meeting.required_attendees,
+            ["required@example.org"]
+        );
+        assert_eq!(
+            imported.meeting.optional_attendees,
+            ["optional@example.org"]
+        );
         assert_eq!(imported.meeting.show_as, "tentative");
         assert_eq!(imported.meeting.reminder_minutes, Some(30));
         assert!(imported.meeting.is_private);
         assert!(imported.meeting.is_online_meeting);
-        assert!(imported.meeting.online_meeting_url.contains("teams.microsoft.com"));
+        assert!(imported
+            .meeting
+            .online_meeting_url
+            .contains("teams.microsoft.com"));
 
         let payload = graph_event_payload(&imported);
         assert_eq!(payload["attendees"].as_array().map(Vec::len), Some(2));

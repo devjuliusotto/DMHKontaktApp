@@ -5803,6 +5803,17 @@ table {
   gap: 0.35rem;
 }
 
+.contact-duplicate-actions {
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.contact-duplicate-actions .danger-button {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.45rem;
+}
+
 @media (max-width: 700px) {
   .contact-duplicate-group > header {
     grid-template-columns: 1fr;

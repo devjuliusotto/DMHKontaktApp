@@ -1317,12 +1317,16 @@ mod tests {
 
         assert_eq!(clear_migration_capture_state(&conn).unwrap(), 2);
         assert_eq!(clear_migration_capture_state(&conn).unwrap(), 0);
-        assert!(get_migration_setting(&conn, MIGRATION_CAPTURE_COMPLETED_KEY)
-            .unwrap()
-            .is_none());
-        assert!(get_migration_setting(&conn, MIGRATION_CAPTURE_SUBMISSION_KEY)
-            .unwrap()
-            .is_none());
+        assert!(
+            get_migration_setting(&conn, MIGRATION_CAPTURE_COMPLETED_KEY)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            get_migration_setting(&conn, MIGRATION_CAPTURE_SUBMISSION_KEY)
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             get_migration_setting(&conn, "unrelated").unwrap(),
             Some("keep".to_string())

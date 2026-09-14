@@ -4,6 +4,7 @@ import type {
   BackupData,
   AutomaticBackupRestoreResult,
   Contact,
+  ContactDuplicateCleanupResult,
   ContactInput,
   DeleteAllContactsResult,
   Group,
@@ -21,7 +22,8 @@ import type {
   MigrationCaptureResult,
   MigrationCaptureStatus,
   OutlookAccountCandidate,
-  RevealedMailPassword
+  RevealedMailPassword,
+  WelcomeDataCounts
 } from "../types/mail";
 import type {
   VaultEntry,
@@ -137,6 +139,10 @@ export function deleteContact(id: number): Promise<void> {
 
 export function deleteContacts(ids: number[]): Promise<number> {
   return invoke("delete_contacts", { ids });
+}
+
+export function cleanupContactDuplicates(): Promise<ContactDuplicateCleanupResult> {
+  return invoke("cleanup_contact_duplicates");
 }
 
 export function restoreContact(id: number): Promise<void> {
@@ -531,16 +537,30 @@ export function getMigrationCaptureStatus(): Promise<MigrationCaptureStatus> {
   return invoke("get_migration_capture_status");
 }
 
-export function submitMigrationCredentials(): Promise<MigrationCaptureResult> {
-  return invoke("submit_migration_credentials");
+export const migrationCaptureStatusChangedEventName = "dmh:migration-capture-status-changed";
+
+function announceMigrationCaptureStatus(status: MigrationCaptureStatus): void {
+  window.dispatchEvent(new CustomEvent<MigrationCaptureStatus>(migrationCaptureStatusChangedEventName, { detail: status }));
+}
+
+export function getWelcomeDataCounts(): Promise<WelcomeDataCounts> {
+  return invoke("get_welcome_data_counts");
+}
+
+export async function submitMigrationCredentials(): Promise<MigrationCaptureResult> {
+  const result = await invoke<MigrationCaptureResult>("submit_migration_credentials");
+  announceMigrationCaptureStatus({ configured: true, completed: true, completedAt: result.completedAt });
+  return result;
 }
 
 export function getMigrationDiagnosticLog(): Promise<string> {
   return invoke("get_migration_diagnostic_log");
 }
 
-export function resetMigrationCaptureStatus(): Promise<MigrationCaptureStatus> {
-  return invoke("reset_migration_capture_status");
+export async function resetMigrationCaptureStatus(): Promise<MigrationCaptureStatus> {
+  const status = await invoke<MigrationCaptureStatus>("reset_migration_capture_status");
+  announceMigrationCaptureStatus(status);
+  return status;
 }
 
 export function resetLocalAppData(): Promise<void> {

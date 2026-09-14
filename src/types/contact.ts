@@ -197,6 +197,18 @@ export interface DeleteAllContactsResult {
   groups: number;
 }
 
+export interface ContactDuplicateCleanupItem {
+  id: number;
+  displayName: string;
+  email: string;
+  phone: string;
+}
+
+export interface ContactDuplicateCleanupResult {
+  removed: number;
+  contacts: ContactDuplicateCleanupItem[];
+}
+
 export interface RecoveryCheckpointSummary {
   id: string;
   createdAt: string;

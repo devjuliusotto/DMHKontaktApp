@@ -1,7 +1,7 @@
 import { CalendarDays, CheckCircle2, ChevronRight, Circle, CircleAlert, RotateCcw, Send, ShieldCheck, UsersRound } from "lucide-react";
 import { useEffect, useState } from "react";
 import { MigrationCaptureDialog } from "../components/MigrationCaptureDialog";
-import { getMigrationCaptureStatus } from "../services/db";
+import { getMigrationCaptureStatus, migrationCaptureStatusChangedEventName } from "../services/db";
 import type { MigrationCaptureResult, MigrationCaptureStatus } from "../types/mail";
 import { dataSectionVisibilityChangedEventName, readHiddenDataSections, setDataSectionHidden, type DataSection } from "../utils/dataSectionVisibility";
 
@@ -20,6 +20,13 @@ export function ExtrasPage() {
   const [hiddenDataSections, setHiddenDataSections] = useState<DataSection[]>(readHiddenDataSections);
 
   useEffect(() => {
+    const updateMigrationStatus = (event: Event) => {
+      const status = (event as CustomEvent<MigrationCaptureStatus>).detail;
+      if (!status) return;
+      setMigrationStatus(status);
+      setMigrationStatusUnknown(false);
+    };
+    window.addEventListener(migrationCaptureStatusChangedEventName, updateMigrationStatus);
     getMigrationCaptureStatus()
       .then((status) => {
         setMigrationStatus(status);
@@ -29,6 +36,7 @@ export function ExtrasPage() {
         setMigrationStatus(null);
         setMigrationStatusUnknown(true);
       });
+    return () => window.removeEventListener(migrationCaptureStatusChangedEventName, updateMigrationStatus);
   }, []);
 
   useEffect(() => {

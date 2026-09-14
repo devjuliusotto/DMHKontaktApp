@@ -129,6 +129,22 @@ pub struct ContactInput {
     pub group_ids: Vec<i64>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContactDuplicateCleanupItem {
+    pub id: i64,
+    pub display_name: String,
+    pub email: String,
+    pub phone: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContactDuplicateCleanupResult {
+    pub removed: usize,
+    pub contacts: Vec<ContactDuplicateCleanupItem>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Group {
@@ -169,6 +185,13 @@ pub struct TrashPurgeResult {
 pub struct DeleteAllContactsResult {
     pub contacts: usize,
     pub groups: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WelcomeDataCounts {
+    pub contacts: usize,
+    pub calendar_events: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1117,6 +1140,29 @@ fn list_calendar_events(app: AppHandle) -> Result<Vec<CalendarEvent>, String> {
 #[tauri::command]
 fn list_deleted_calendar_events(app: AppHandle) -> Result<Vec<CalendarEvent>, String> {
     read_calendar_events(&open_db(&app)?, true)
+}
+
+#[tauri::command]
+fn get_welcome_data_counts(app: AppHandle) -> Result<WelcomeDataCounts, String> {
+    let conn = open_db(&app)?;
+    let contacts = conn
+        .query_row(
+            "SELECT COUNT(*) FROM contacts WHERE deleted_at IS NULL",
+            [],
+            |row| row.get::<_, usize>(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let calendar_events = conn
+        .query_row(
+            "SELECT COUNT(*) FROM calendar_events WHERE deleted_at IS NULL",
+            [],
+            |row| row.get::<_, usize>(0),
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(WelcomeDataCounts {
+        contacts,
+        calendar_events,
+    })
 }
 
 #[tauri::command]
@@ -2220,7 +2266,9 @@ fn recovery_fingerprint(backup: &BackupData) -> Result<String, String> {
             .cmp(&right.id)
             .then_with(|| left.name.cmp(&right.name))
     });
-    stable.settings.sort_by(|left, right| left.key.cmp(&right.key));
+    stable
+        .settings
+        .sort_by(|left, right| left.key.cmp(&right.key));
     let browser_storage = stable.browser_storage.iter().collect::<BTreeMap<_, _>>();
     let serialized = serde_json::to_vec(&(
         &stable.version,
@@ -2488,8 +2536,8 @@ fn write_recovery_checkpoint(app: &AppHandle, backup: BackupData) -> Result<(), 
         .map_err(|error| error.to_string())?;
     let compressed = encoder.finish().map_err(|error| error.to_string())?;
     let stamp = Utc::now().format("%Y%m%d-%H%M%S-%f");
-    let path = recovery_checkpoint_dir(app)?
-        .join(format!("{RECOVERY_CHECKPOINT_PREFIX}{stamp}.json.gz"));
+    let path =
+        recovery_checkpoint_dir(app)?.join(format!("{RECOVERY_CHECKPOINT_PREFIX}{stamp}.json.gz"));
     replace_file_contents(&path, &compressed)?;
     prune_recovery_checkpoints(app)
 }
@@ -2568,10 +2616,7 @@ fn create_auto_backup(app: &AppHandle, conn: &Connection) -> Result<(), String> 
     write_automatic_backup(app, data, false)
 }
 
-fn checkpoint_before_destructive_change(
-    app: &AppHandle,
-    conn: &Connection,
-) -> Result<(), String> {
+fn checkpoint_before_destructive_change(app: &AppHandle, conn: &Connection) -> Result<(), String> {
     write_recovery_checkpoint(app, load_backup_data(conn)?)
         .map_err(|error| format!("Sicherheits-Checkpoint konnte nicht erstellt werden: {error}"))
 }
@@ -2833,7 +2878,13 @@ fn delete_contact_internal(
     queue_for_exchange: bool,
 ) -> Result<(), String> {
     let conn = open_db(&app)?;
-    checkpoint_before_destructive_change(&app, &conn)?;
+    // User-initiated deletion gets an immediate recovery point. Exchange
+    // reconciliation can delete many contacts in one pass and is already
+    // covered by the startup/periodic backup; snapshotting the whole database
+    // once per remote contact would make large synchronizations unusable.
+    if queue_for_exchange {
+        checkpoint_before_destructive_change(&app, &conn)?;
+    }
     let transaction = conn
         .unchecked_transaction()
         .map_err(|err| err.to_string())?;
@@ -3725,12 +3776,9 @@ fn restore_recovery_checkpoint(
     // browser-held calendar, before selecting a previous safe checkpoint.
     write_recovery_checkpoint(&app, current_backup.clone())?;
     let checkpoints = read_recovery_checkpoints(&app)?;
-    let checkpoint = recovery_checkpoint_for_restore(
-        &checkpoints,
-        &current_backup,
-        checkpoint_id.as_deref(),
-    )
-        .ok_or_else(|| "Es ist noch kein Wiederherstellungspunkt vorhanden.".to_string())?;
+    let checkpoint =
+        recovery_checkpoint_for_restore(&checkpoints, &current_backup, checkpoint_id.as_deref())
+            .ok_or_else(|| "Es ist noch kein Wiederherstellungspunkt vorhanden.".to_string())?;
 
     let passwords_restored = vault::validate_automatic_password_backup(&app)?;
     let browser_storage = checkpoint.backup.browser_storage.clone();
@@ -4035,9 +4083,12 @@ fn clear_local_database(conn: &mut Connection) -> Result<(), String> {
         .execute_batch(
             "
             DELETE FROM contact_groups;
+            DELETE FROM m365_contact_links;
+            DELETE FROM contact_sync_outbox;
             DELETE FROM contacts;
             DELETE FROM groups;
             DELETE FROM import_history;
+            DELETE FROM calendar_sync_outbox;
             DELETE FROM mail_accounts;
             DELETE FROM vault_entries;
             DELETE FROM vault_config;
@@ -4079,7 +4130,6 @@ fn remove_known_app_subdirectory(app_dir: &PathBuf, name: &str) -> Result<(), St
 
 #[tauri::command]
 fn reset_local_app_data(app: AppHandle) -> Result<(), String> {
-    ensure_administrative_tools_available()?;
     mail_accounts::remove_all_mail_credentials(&app).map_err(|error| {
         format!(
             "Die gespeicherten E-Mail-Kennwörter konnten nicht sicher entfernt werden. Es wurden noch keine App-Daten gelöscht. {error}"
@@ -5252,6 +5302,211 @@ fn merge_contact_rows(
     conn.execute("DELETE FROM contacts WHERE id = ?", params![duplicate.id])
         .map_err(|error| error.to_string())?;
     Ok(())
+}
+
+fn merge_contact_rows_to_trash(
+    conn: &Connection,
+    survivor: &mut ContactConsolidationRow,
+    duplicate: &ContactConsolidationRow,
+    timestamp: &str,
+    removed_contacts: &mut Vec<ContactDuplicateCleanupItem>,
+) -> Result<bool, String> {
+    merge_contact_fields(&mut survivor.contact, &duplicate.contact);
+    if survivor
+        .outlook_entry_id
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .is_empty()
+    {
+        survivor.outlook_entry_id = duplicate.outlook_entry_id.clone();
+    }
+    if survivor
+        .outlook_store_id
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .is_empty()
+    {
+        survivor.outlook_store_id = duplicate.outlook_store_id.clone();
+    }
+
+    conn.execute(
+        "INSERT OR IGNORE INTO contact_groups (contact_id, group_id)
+         SELECT ?, group_id FROM contact_groups WHERE contact_id = ?",
+        params![survivor.id, duplicate.id],
+    )
+    .map_err(|error| error.to_string())?;
+    conn.execute(
+        "UPDATE contacts
+         SET first_name = ?, last_name = ?, display_name = ?, email = ?, phone = ?,
+             mobile_phone = ?, street = ?, postal_code = ?, city = ?, country = ?,
+             short_info = ?, notes = ?, outlook_entry_id = ?, outlook_store_id = ?,
+             updated_at = ?
+         WHERE id = ? AND deleted_at IS NULL",
+        params![
+            survivor.contact.first_name,
+            survivor.contact.last_name,
+            normalize_contact_display_name(&survivor.contact),
+            survivor.contact.email.trim().to_lowercase(),
+            survivor.contact.phone,
+            survivor.contact.mobile_phone,
+            survivor.contact.street,
+            survivor.contact.postal_code,
+            survivor.contact.city,
+            survivor.contact.country,
+            survivor.contact.short_info,
+            survivor.contact.notes,
+            survivor.outlook_entry_id,
+            survivor.outlook_store_id,
+            timestamp,
+            survivor.id,
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+    queue_contact_sync_in_transaction(conn, survivor.id, "upsert")?;
+
+    let changed = conn
+        .execute(
+            "UPDATE contacts SET deleted_at = ?1, updated_at = ?1
+             WHERE id = ?2 AND deleted_at IS NULL",
+            params![timestamp, duplicate.id],
+        )
+        .map_err(|error| error.to_string())?;
+    if changed == 0 {
+        return Ok(false);
+    }
+
+    queue_contact_sync_in_transaction(conn, duplicate.id, "delete")?;
+    removed_contacts.push(ContactDuplicateCleanupItem {
+        id: duplicate.id,
+        display_name: normalize_contact_display_name(&duplicate.contact),
+        email: duplicate.contact.email.trim().to_string(),
+        phone: if duplicate.contact.mobile_phone.trim().is_empty() {
+            duplicate.contact.phone.trim().to_string()
+        } else {
+            duplicate.contact.mobile_phone.trim().to_string()
+        },
+    });
+    Ok(true)
+}
+
+fn consolidate_contact_duplicates_to_trash(
+    conn: &Connection,
+    timestamp: &str,
+) -> Result<Vec<ContactDuplicateCleanupItem>, String> {
+    let mut removed_contacts = Vec::new();
+    let manual_cleanup_batch = "__manual_duplicate_cleanup__";
+
+    let mut by_email: BTreeMap<String, Vec<ContactConsolidationRow>> = BTreeMap::new();
+    for contact in load_contacts_for_consolidation(conn)? {
+        let email = contact.contact.email.trim().to_lowercase();
+        if !email.is_empty() {
+            by_email.entry(email).or_default().push(contact);
+        }
+    }
+    for mut matches in by_email.into_values() {
+        if matches.len() < 2 {
+            continue;
+        }
+        let preferred = preferred_contact_index(&matches, manual_cleanup_batch);
+        let mut survivor = matches.swap_remove(preferred);
+        for duplicate in matches {
+            merge_contact_rows_to_trash(
+                conn,
+                &mut survivor,
+                &duplicate,
+                timestamp,
+                &mut removed_contacts,
+            )?;
+        }
+    }
+
+    let mut by_name: BTreeMap<String, Vec<ContactConsolidationRow>> = BTreeMap::new();
+    for contact in load_contacts_for_consolidation(conn)? {
+        let key = contact_name_merge_key(&contact.contact);
+        if !key.is_empty() {
+            by_name.entry(key).or_default().push(contact);
+        }
+    }
+    for contacts in by_name.into_values() {
+        if contacts.len() < 2 {
+            continue;
+        }
+        let mut by_email: BTreeMap<String, Vec<ContactConsolidationRow>> = BTreeMap::new();
+        for contact in contacts {
+            by_email
+                .entry(contact.contact.email.trim().to_lowercase())
+                .or_default()
+                .push(contact);
+        }
+
+        let mut without_email = by_email.remove("").unwrap_or_default();
+        let non_empty_email_count = by_email.len();
+        let mut survivors: BTreeMap<String, ContactConsolidationRow> = BTreeMap::new();
+        for (email, mut matches) in by_email {
+            let preferred = preferred_contact_index(&matches, manual_cleanup_batch);
+            let mut survivor = matches.swap_remove(preferred);
+            for duplicate in matches {
+                merge_contact_rows_to_trash(
+                    conn,
+                    &mut survivor,
+                    &duplicate,
+                    timestamp,
+                    &mut removed_contacts,
+                )?;
+            }
+            survivors.insert(email, survivor);
+        }
+
+        if non_empty_email_count == 1 {
+            if let Some((_, mut with_email)) = survivors.pop_first() {
+                for no_email in without_email {
+                    if contacts_are_safe_to_consolidate(&with_email.contact, &no_email.contact) {
+                        merge_contact_rows_to_trash(
+                            conn,
+                            &mut with_email,
+                            &no_email,
+                            timestamp,
+                            &mut removed_contacts,
+                        )?;
+                    }
+                }
+            }
+        } else if non_empty_email_count == 0 && without_email.len() > 1 {
+            let preferred = preferred_contact_index(&without_email, manual_cleanup_batch);
+            let mut survivor = without_email.swap_remove(preferred);
+            for duplicate in without_email {
+                if contacts_are_safe_to_consolidate(&survivor.contact, &duplicate.contact) {
+                    merge_contact_rows_to_trash(
+                        conn,
+                        &mut survivor,
+                        &duplicate,
+                        timestamp,
+                        &mut removed_contacts,
+                    )?;
+                }
+            }
+        }
+    }
+
+    Ok(removed_contacts)
+}
+
+#[tauri::command]
+fn cleanup_contact_duplicates(app: AppHandle) -> Result<ContactDuplicateCleanupResult, String> {
+    let conn = open_db(&app)?;
+    checkpoint_before_destructive_change(&app, &conn)?;
+    let timestamp = now();
+    let transaction = conn
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    let contacts = consolidate_contact_duplicates_to_trash(&transaction, &timestamp)?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(ContactDuplicateCleanupResult {
+        removed: contacts.len(),
+        contacts,
+    })
 }
 
 pub(crate) fn consolidate_contact_duplicates(
@@ -7719,6 +7974,7 @@ pub fn run() {
             save_contact,
             delete_contact,
             delete_contacts,
+            cleanup_contact_duplicates,
             restore_contact,
             list_groups,
             list_deleted_groups,
@@ -7728,6 +7984,7 @@ pub fn run() {
             purge_deleted_items,
             list_calendar_events,
             list_deleted_calendar_events,
+            get_welcome_data_counts,
             merge_calendar_events,
             save_calendar_events,
             save_calendar_events_from_m365,
@@ -7966,6 +8223,127 @@ mod tests {
     }
 
     #[test]
+    fn manual_contact_duplicate_cleanup_merges_data_and_uses_trash() {
+        let conn = Connection::open_in_memory().expect("in-memory database");
+        conn.execute_batch(
+            "
+            CREATE TABLE contacts (
+                id INTEGER PRIMARY KEY,
+                first_name TEXT NOT NULL DEFAULT '', last_name TEXT NOT NULL DEFAULT '',
+                display_name TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT '',
+                phone TEXT NOT NULL DEFAULT '', mobile_phone TEXT NOT NULL DEFAULT '',
+                street TEXT NOT NULL DEFAULT '', postal_code TEXT NOT NULL DEFAULT '',
+                city TEXT NOT NULL DEFAULT '', country TEXT NOT NULL DEFAULT '',
+                short_info TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '',
+                import_batch_id TEXT, outlook_entry_id TEXT, outlook_store_id TEXT,
+                created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '',
+                deleted_at TEXT
+            );
+            CREATE TABLE contact_groups (
+                contact_id INTEGER NOT NULL, group_id INTEGER NOT NULL,
+                PRIMARY KEY (contact_id, group_id)
+            );
+            CREATE TABLE contact_sync_outbox (
+                local_contact_id INTEGER PRIMARY KEY,
+                action TEXT NOT NULL,
+                queued_at TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT
+            );
+            INSERT INTO contacts (id, display_name, email, phone, notes) VALUES
+                (1, 'Alexandra Heyde', '', '', ''),
+                (2, 'Alexandra Heyde', 'alexandra@example.org', '07157 123', 'Vollständig'),
+                (3, 'Andrea Frey', 'andrea.private@example.org', '', ''),
+                (4, 'Andrea Frey', 'andrea.work@example.org', '', ''),
+                (5, 'Hans Müller', '', '07157 111111', ''),
+                (6, 'Hans Müller', '', '07157 222222', ''),
+                (7, 'Max Mustermann', 'max@example.org', '', ''),
+                (8, 'Max M.', 'max@example.org', '07157 333333', 'Aus Thunderbird');
+            INSERT INTO contact_groups VALUES (1, 11), (2, 12);
+            ",
+        )
+        .expect("manual cleanup test data");
+
+        let removed = consolidate_contact_duplicates_to_trash(&conn, "2026-09-14T12:00:00Z")
+            .expect("clean up duplicate contacts");
+
+        assert_eq!(removed.len(), 2);
+        let active: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM contacts WHERE deleted_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let deleted: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM contacts WHERE deleted_at IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(active, 6);
+        assert_eq!(deleted, 2);
+
+        let alexandra: (String, String) = conn
+            .query_row(
+                "SELECT email, phone FROM contacts
+                 WHERE display_name = 'Alexandra Heyde' AND deleted_at IS NULL",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(alexandra.0, "alexandra@example.org");
+        assert_eq!(alexandra.1, "07157 123");
+        let alexandra_groups: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM contact_groups
+                 WHERE contact_id = (SELECT id FROM contacts
+                   WHERE display_name = 'Alexandra Heyde' AND deleted_at IS NULL)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(alexandra_groups, 2);
+
+        let andrea_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM contacts
+                 WHERE display_name = 'Andrea Frey' AND deleted_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let hans_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM contacts
+                 WHERE display_name = 'Hans Müller' AND deleted_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(andrea_count, 2);
+        assert_eq!(hans_count, 2);
+
+        let queued_deletes: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM contact_sync_outbox WHERE action = 'delete'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let queued_updates: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM contact_sync_outbox WHERE action = 'upsert'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(queued_deletes, 2);
+        assert_eq!(queued_updates, 2);
+    }
+
+    #[test]
     fn outlook_export_preserves_active_groups_and_the_ungrouped_folder() {
         let conn = Connection::open_in_memory().expect("in-memory database");
         conn.execute_batch(
@@ -8062,7 +8440,7 @@ mod tests {
     }
 
     #[test]
-    fn calendar_sqlite_merge_handles_fifty_thousand_events() {
+    fn calendar_sqlite_merge_handles_two_hundred_thousand_events() {
         let mut conn = Connection::open_in_memory().expect("in-memory calendar database");
         conn.execute_batch(
             "
@@ -8086,7 +8464,7 @@ mod tests {
             ",
         )
         .expect("calendar table");
-        let events = (0..50_000)
+        let events = (0..200_000)
             .map(|index| CalendarEvent {
                 id: format!("large-calendar-{index}"),
                 updated_at: "2026-09-10T10:00:00Z".to_string(),
@@ -8107,12 +8485,12 @@ mod tests {
             })
             .collect();
         let result = merge_calendar_events_in_db(&mut conn, events).expect("large calendar merge");
-        assert_eq!(result.imported, 50_000);
+        assert_eq!(result.imported, 200_000);
         assert_eq!(
             read_calendar_events(&conn, false)
                 .expect("read merged calendar")
                 .len(),
-            50_000
+            200_000
         );
         let queued: i64 = conn
             .query_row(
@@ -8121,7 +8499,7 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("queued calendar writes");
-        assert_eq!(queued, 50_000);
+        assert_eq!(queued, 200_000);
     }
 
     #[test]
@@ -8173,6 +8551,13 @@ mod tests {
                 contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
                 group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE
             );
+            CREATE TABLE m365_contact_links (
+                local_contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE
+            );
+            CREATE TABLE contact_sync_outbox (
+                local_contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE
+            );
+            CREATE TABLE calendar_sync_outbox (event_id TEXT PRIMARY KEY);
             CREATE TABLE import_history (id INTEGER PRIMARY KEY AUTOINCREMENT);
             CREATE TABLE app_settings (key TEXT PRIMARY KEY);
             CREATE TABLE mail_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT);
@@ -8181,6 +8566,9 @@ mod tests {
             INSERT INTO contacts DEFAULT VALUES;
             INSERT INTO groups DEFAULT VALUES;
             INSERT INTO contact_groups VALUES (1, 1);
+            INSERT INTO m365_contact_links VALUES (1);
+            INSERT INTO contact_sync_outbox VALUES (1);
+            INSERT INTO calendar_sync_outbox VALUES ('calendar-1');
             INSERT INTO import_history DEFAULT VALUES;
             INSERT INTO app_settings VALUES ('migration');
             INSERT INTO mail_accounts DEFAULT VALUES;
@@ -8194,9 +8582,12 @@ mod tests {
 
         for table in [
             "contact_groups",
+            "m365_contact_links",
+            "contact_sync_outbox",
             "contacts",
             "groups",
             "import_history",
+            "calendar_sync_outbox",
             "app_settings",
             "mail_accounts",
             "vault_entries",
@@ -8273,6 +8664,13 @@ mod tests {
                 value TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE contact_sync_outbox (
+                local_contact_id INTEGER PRIMARY KEY,
+                action TEXT NOT NULL,
+                queued_at TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT
+            );
             INSERT INTO contacts VALUES
                 (1, 'before', NULL),
                 (2, 'before', NULL),
@@ -8322,6 +8720,14 @@ mod tests {
             .expect("collected addresses deletion timestamp");
         assert_eq!(hidden, "true");
         assert_eq!(deleted_at, timestamp);
+        let queued_deletions: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM contact_sync_outbox WHERE action = 'delete'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("queued Exchange deletions");
+        assert_eq!(queued_deletions, 2);
 
         let repeated = soft_delete_all_contacts_and_groups(&mut conn, "2026-09-14T12:00:00Z")
             .expect("repeat delete all");
@@ -8967,11 +9373,9 @@ mod tests {
         assert_eq!(active_events.len(), 2);
         assert!(active_events.iter().any(|event| event.id == "event-old"));
         assert!(active_events.iter().any(|event| event.id == "event-new"));
-        assert!(parse_calendar_events(
-            &merged.browser_storage,
-            CALENDAR_DELETED_STORAGE_KEY
-        )
-        .is_empty());
+        assert!(
+            parse_calendar_events(&merged.browser_storage, CALENDAR_DELETED_STORAGE_KEY).is_empty()
+        );
     }
 
     #[test]

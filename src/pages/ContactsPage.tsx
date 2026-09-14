@@ -14,6 +14,7 @@ import type { Page } from "../components/Sidebar";
 import { t } from "../i18n";
 import {
   clearContactGroups,
+  cleanupContactDuplicates,
   deleteAllContacts,
   deleteContact,
   deleteContacts,
@@ -117,6 +118,8 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
   const [duplicateReviewOpen, setDuplicateReviewOpen] = useState(false);
   const [duplicateCheckBusy, setDuplicateCheckBusy] = useState(false);
   const [duplicateGroups, setDuplicateGroups] = useState<ContactDuplicateGroup[]>([]);
+  const [duplicateCleanupConfirmOpen, setDuplicateCleanupConfirmOpen] = useState(false);
+  const [duplicateCleanupBusy, setDuplicateCleanupBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState<"success" | "error" | "info">("info");
   const [actionResult, setActionResult] = useState<ActionResult | null>(null);
@@ -284,6 +287,50 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
   const openDuplicateContact = (contact: Contact) => {
     setDuplicateReviewOpen(false);
     setEditing(toContactInput(contact));
+  };
+
+  const cleanContactDuplicates = async () => {
+    setDuplicateCleanupBusy(true);
+    try {
+      const result = await cleanupContactDuplicates();
+      const currentContacts = await listContacts("");
+      const remainingGroups = findContactDuplicateGroups(currentContacts);
+      setDuplicateGroups(remainingGroups);
+      setDuplicateCleanupConfirmOpen(false);
+      setDuplicateReviewOpen(false);
+      await refresh();
+      notifyLocalM365Change();
+
+      const remainingText = remainingGroups.length > 0
+        ? `${remainingGroups.length} unsichere Treffergruppen bleiben zur manuellen Prüfung erhalten.`
+        : "Es sind keine weiteren möglichen Duplikate übrig.";
+      setActionResult({
+        title: result.removed > 0 ? "Kontaktduplikate bereinigt" : "Keine sicheren Duplikate entfernt",
+        summary: result.removed > 0
+          ? `${result.removed} ${result.removed === 1 ? "doppelte Kopie wurde" : "doppelte Kopien wurden"} in den Papierkorb verschoben. Jeweils ein vollständiger Kontakt bleibt erhalten.`
+          : "Es wurden keine Kontakte gelöscht, weil die gefundenen Einträge nicht eindeutig genug zusammenpassen.",
+        details: [
+          "Ergänzende Angaben wie E-Mail-Adresse, Telefonnummer und Gruppenzuordnung wurden im erhaltenen Kontakt zusammengeführt.",
+          remainingText,
+          "Die entfernten Kopien können im Papierkorb wiederhergestellt werden."
+        ],
+        items: result.contacts.map((contact) => ({
+          label: contact.displayName || "Kontakt ohne Namen",
+          detail: contact.email || contact.phone || undefined
+        })),
+        itemsLabel: `${result.removed} entfernte ${result.removed === 1 ? "Kopie" : "Kopien"} anzeigen`,
+        tone: result.removed > 0 ? "success" : "info"
+      });
+    } catch (error) {
+      setDuplicateCleanupConfirmOpen(false);
+      setActionResult({
+        title: "Duplikate nicht bereinigt",
+        summary: `Es wurden keine Kontakte verändert: ${error}`,
+        tone: "error"
+      });
+    } finally {
+      setDuplicateCleanupBusy(false);
+    }
   };
 
   const openGroupCreate = () => {
@@ -811,14 +858,14 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
                   <h3 id="contact-duplicate-title">Mögliche Kontaktduplikate</h3>
                   <p>{duplicateCandidateCount} Kontakte in {duplicateGroups.length} {duplicateGroups.length === 1 ? "Treffergruppe" : "Treffergruppen"} gefunden.</p>
                 </div>
-                <button className="icon-only" type="button" aria-label="Schließen" onClick={() => setDuplicateReviewOpen(false)}>
+                <button className="icon-only" type="button" aria-label="Schließen" onClick={() => { setDuplicateCleanupConfirmOpen(false); setDuplicateReviewOpen(false); }}>
                   <X size={22} />
                 </button>
               </div>
 
               <div className="contact-duplicate-safety" role="note">
                 <ShieldCheck size={21} aria-hidden="true" />
-                <span><strong>Nur prüfen, nichts automatisch löschen.</strong> Gleiche E-Mail-Adressen sind starke Treffer. Gleiche Namen oder Telefonnummern sollten Sie vor einer Änderung kontrollieren.</span>
+                <span><strong>Sicher bereinigen ist möglich.</strong> Die App behält automatisch den vollständigsten Kontakt, ergänzt fehlende Angaben und verschiebt nur passende Kopien in den Papierkorb. Widersprüchliche Kontakte bleiben erhalten.</span>
               </div>
 
               <div className="contact-duplicate-list">
@@ -846,8 +893,11 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
                 ))}
               </div>
 
-              <div className="button-row">
-                <button className="primary" type="button" onClick={() => setDuplicateReviewOpen(false)}>Fertig</button>
+              <div className="button-row contact-duplicate-actions">
+                <button type="button" onClick={() => setDuplicateReviewOpen(false)} disabled={duplicateCleanupBusy}>Schließen</button>
+                <button className="danger-button" type="button" onClick={() => setDuplicateCleanupConfirmOpen(true)} disabled={duplicateCleanupBusy}>
+                  <Trash2 size={18} /> Alle Duplikate bereinigen
+                </button>
               </div>
             </section>
           </div>
@@ -1109,6 +1159,18 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
           </div>
         </section>
       )}
+
+      <ConfirmDialog
+        open={duplicateCleanupConfirmOpen}
+        title="Alle Kontaktduplikate bereinigen?"
+        message="Die App führt ergänzende Daten zusammen, behält je Treffer einen Kontakt und verschiebt passende Kopien in den Papierkorb. Bei widersprüchlichen E-Mail-Adressen, Telefonnummern oder Adressen wird nichts gelöscht."
+        confirmLabel="Duplikate bereinigen"
+        notice="Vorher wird automatisch eine Wiederherstellungskopie angelegt."
+        busy={duplicateCleanupBusy}
+        busyLabel="Duplikate werden bereinigt …"
+        onCancel={() => setDuplicateCleanupConfirmOpen(false)}
+        onConfirm={() => void cleanContactDuplicates()}
+      />
 
       <ConfirmDialog
         open={deleteRequest !== null}

@@ -50,6 +50,11 @@ export interface MigrationCaptureStatus {
   completedAt: string | null;
 }
 
+export interface WelcomeDataCounts {
+  contacts: number;
+  calendarEvents: number;
+}
+
 export interface MigrationCaptureResult {
   accountsSubmitted: number;
   completedAt: string;

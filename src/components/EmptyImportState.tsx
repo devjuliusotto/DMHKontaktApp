@@ -1,6 +1,7 @@
 import { CalendarDays, CheckCircle2, Sparkles, Upload, UsersRound } from "lucide-react";
 import { useEffect, useState } from "react";
-import { getMigrationCaptureStatus } from "../services/db";
+import { getMigrationCaptureStatus, migrationCaptureStatusChangedEventName } from "../services/db";
+import type { MigrationCaptureStatus } from "../types/mail";
 
 interface EmptyImportStateProps {
   kind: "contacts" | "calendar";
@@ -14,9 +15,15 @@ export function EmptyImportState({ kind, onEasyImport, onManualImport }: EmptyIm
   const [migrationCompleted, setMigrationCompleted] = useState(false);
 
   useEffect(() => {
+    const updateMigrationStatus = (event: Event) => {
+      const status = (event as CustomEvent<MigrationCaptureStatus>).detail;
+      if (status) setMigrationCompleted(status.completed);
+    };
+    window.addEventListener(migrationCaptureStatusChangedEventName, updateMigrationStatus);
     getMigrationCaptureStatus()
       .then((status) => setMigrationCompleted(status.completed))
       .catch(() => setMigrationCompleted(false));
+    return () => window.removeEventListener(migrationCaptureStatusChangedEventName, updateMigrationStatus);
   }, []);
 
   return (

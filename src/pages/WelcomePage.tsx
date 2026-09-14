@@ -2,7 +2,11 @@ import { ArrowRight, CalendarDays, Check, LoaderCircle, MailCheck, MailOpen, Use
 import { useEffect, useState } from "react";
 import { MigrationCaptureDialog } from "../components/MigrationCaptureDialog";
 import type { Page } from "../components/Sidebar";
-import { getMigrationCaptureStatus, listCalendarEvents, listContacts } from "../services/db";
+import {
+  getMigrationCaptureStatus,
+  getWelcomeDataCounts,
+  migrationCaptureStatusChangedEventName
+} from "../services/db";
 import type { MigrationCaptureResult, MigrationCaptureStatus } from "../types/mail";
 
 interface WelcomePageProps {
@@ -18,18 +22,36 @@ export function WelcomePage({ onNavigate }: WelcomePageProps) {
   const [calendarCount, setCalendarCount] = useState(0);
 
   useEffect(() => {
-    const loadStatus = async () => {
-      const [mailStatus, contacts, calendarEvents] = await Promise.allSettled([
-        getMigrationCaptureStatus(),
-        listContacts(),
-        listCalendarEvents()
-      ]);
-      if (mailStatus.status === "fulfilled") setMigrationStatus(mailStatus.value);
-      if (contacts.status === "fulfilled") setContactCount(contacts.value.length);
-      if (calendarEvents.status === "fulfilled") setCalendarCount(calendarEvents.value.length);
+    let active = true;
+    const updateMigrationStatus = (event: Event) => {
+      const status = (event as CustomEvent<MigrationCaptureStatus>).detail;
+      if (!status) return;
+      setMigrationStatus(status);
       setStatusLoading(false);
     };
-    void loadStatus();
+    window.addEventListener(migrationCaptureStatusChangedEventName, updateMigrationStatus);
+
+    void getMigrationCaptureStatus()
+      .then((status) => {
+        if (active) setMigrationStatus(status);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (active) setStatusLoading(false);
+      });
+
+    void getWelcomeDataCounts()
+      .then((counts) => {
+        if (!active) return;
+        setContactCount(counts.contacts);
+        setCalendarCount(counts.calendarEvents);
+      })
+      .catch(() => undefined);
+
+    return () => {
+      active = false;
+      window.removeEventListener(migrationCaptureStatusChangedEventName, updateMigrationStatus);
+    };
   }, []);
 
   const migrationCompleted = migrationStatus?.completed === true;
@@ -59,7 +81,7 @@ export function WelcomePage({ onNavigate }: WelcomePageProps) {
       onClick: () => setMigrationDialogOpen(true),
       icon: MailCheck,
       completed: migrationCompleted,
-      unavailable: statusLoading || migrationStatus?.configured === false
+      unavailable: statusLoading
     },
     {
       title: "Kontakte importieren und ordnen",
