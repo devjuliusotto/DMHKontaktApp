@@ -43,7 +43,7 @@ export function BackupPage() {
       <StatusMessage message={message} />
       <section className="backup-status-card form-panel" title="Die automatische lokale Sicherung ergänzt die spätere Azure-Speicherung und schützt bei Verbindungsproblemen oder versehentlichen Änderungen.">
         <span className="backup-status-icon"><CheckCircle2 size={23} aria-hidden="true" /></span>
-        <div><strong>Automatische Sicherung aktiv</strong><small>Wird regelmäßig und beim Schließen aktualisiert</small></div>
+        <div><strong>Zwei automatische Sicherungen aktiv</strong><small>Laufender Schutz im Hintergrund und zusätzlich ein Abschlussarchiv beim Schließen</small></div>
       </section>
       <section className="backup-action-grid">
         <article className="form-panel backup-action-card">
@@ -61,7 +61,8 @@ export function BackupPage() {
         <summary><Info size={18} /> Was wird gesichert?</summary>
         <div>
           <p>Die manuelle Datei enthält Kontakte, Gruppen, Kalender und Darstellung. Kennwörter und der EDV-Übertragungsstatus werden nicht exportiert.</p>
-          <p>Die automatische Sicherung liegt unter <code>Dokumente\DMH Kontakte und Kalender\Automatische Sicherung</code>. Kennwörter werden dort ausschließlich verschlüsselt gespeichert.</p>
+          <p>Das Abschlussarchiv liegt zusätzlich unter <code>Dokumente\DMH Kontakte und Kalender\Automatische Sicherung</code>. Der laufende Schutz wird getrennt im geschützten App-Bereich gespeichert. Kontakte, Gruppen und Termine werden durch normales Löschen oder Leeren des Papierkorbs nicht aus diesen Archiven entfernt.</p>
+          <p>Kennwörter werden ausschließlich verschlüsselt gespeichert.</p>
           <p>Auch mit SQL Azure bleibt diese lokale Sicherung sinnvoll: Sie schützt bei fehlender Internetverbindung, versehentlichem Löschen und Problemen mit dem Cloud-Dienst.</p>
         </div>
       </details>

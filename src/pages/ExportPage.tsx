@@ -2,6 +2,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { AtSign, CalendarClock, CalendarDays, CheckCircle2, ContactRound, Download, FolderOpen, LoaderCircle, Send } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { StatusMessage } from "../components/StatusMessage";
+import { ActionResultDialog, type ActionResult } from "../components/ActionResultDialog";
 import { t } from "../i18n";
 import { listCalendarEvents, listContacts, listGroups, listMailAccounts, pushProjectAppointmentsToOutlook, pushProjectContactsToOutlook, writeExportFile } from "../services/db";
 import type { OutlookCalendarExportResult } from "../types/calendar";
@@ -13,6 +14,7 @@ import { exportGeneralCsv, exportNewOutlookCsv, exportOutlookClassicCsv } from "
 type ContactExportKind = "classic" | "new" | "general";
 type ContactExportStep = "account" | "folders" | "autocomplete" | "format" | "groups" | "confirm";
 type OutlookFolderScope = "all" | "selected";
+type OutlookContactExportMode = "contacts-and-autocomplete" | "contacts-only" | "autocomplete-only";
 type CalendarExportTarget = "apple" | "google" | "teams" | "universal";
 type ExportChoice = "outlook" | "outlook-calendar" | "calendar" | "contacts";
 
@@ -35,6 +37,7 @@ interface ExportPageProps {
 
 export function ExportPage({ embedded = false }: ExportPageProps) {
   const [message, setMessage] = useState("");
+  const [actionResult, setActionResult] = useState<ActionResult | null>(null);
   const [groups, setGroups] = useState<Group[]>([]);
   const [selectedGroupIds, setSelectedGroupIds] = useState<number[]>([]);
   const [choice, setChoice] = useState<ExportChoice | null>(null);
@@ -43,7 +46,7 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
   const [outlookFolderScope, setOutlookFolderScope] = useState<OutlookFolderScope>("all");
   const [selectedOutlookGroupIds, setSelectedOutlookGroupIds] = useState<number[]>([]);
   const [includeUngroupedOutlook, setIncludeUngroupedOutlook] = useState(true);
-  const [seedOutlookAutocomplete, setSeedOutlookAutocomplete] = useState(true);
+  const [outlookContactExportMode, setOutlookContactExportMode] = useState<OutlookContactExportMode>("contacts-and-autocomplete");
   const [calendarExportTarget, setCalendarExportTarget] = useState<CalendarExportTarget>("universal");
   const [mailAccounts, setMailAccounts] = useState<MailAccount[]>([]);
   const [selectedMailAccountId, setSelectedMailAccountId] = useState<number | null>(null);
@@ -92,6 +95,11 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
     ? contactExportStep === "account" ? "1" : contactExportStep === "folders" ? "2" : contactExportStep === "autocomplete" ? "3" : "4"
     : contactExportStep === "format" ? "1" : contactExportStep === "groups" ? "2" : "3";
   const directFolderSelectionValid = outlookFolderScope === "all" || selectedOutlookGroupIds.length > 0 || includeUngroupedOutlook;
+
+  const showExportResult = (title: string, summary: string, tone: ActionResult["tone"], details?: string[]) => {
+    setMessage("");
+    setActionResult({ title, summary, tone, details });
+  };
 
   const toggleGroup = (groupId: number) => {
     setSelectedGroupIds((current) => current.includes(groupId) ? current.filter((id) => id !== groupId) : [...current, groupId]);
@@ -155,15 +163,18 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
       const contacts = filterContactsByGroups(await listContacts());
       const csv = kind === "classic" ? exportOutlookClassicCsv(contacts) : kind === "new" ? exportNewOutlookCsv(contacts) : exportGeneralCsv(contacts);
       await writeExportFile(path, csv);
-      setMessage(
-        `${selectedGroupIds.length ? `${contacts.length} Kontakte aus ausgewählten Gruppen exportiert.` : `${contacts.length} Kontakte exportiert.`} ${
+      showExportResult(
+        "Kontaktdatei wurde erstellt",
+        selectedGroupIds.length ? `${contacts.length} Kontakte aus ausgewählten Gruppen wurden exportiert.` : `${contacts.length} Kontakte wurden exportiert.`,
+        "success",
+        [
           kind === "general"
-            ? "CSV-Datei wurde erstellt."
+            ? "Die CSV-Datei kann jetzt in einem Tabellenprogramm geöffnet werden."
             : "Öffnen Sie Outlook, gehen Sie zu Personen/Kontakte und wählen Sie Importieren."
-        }`
+        ]
       );
     } catch (error) {
-      setMessage(`Export fehlgeschlagen: ${error}`);
+      showExportResult("Kontaktdatei konnte nicht erstellt werden", String(error), "error", ["Ihre Kontakte im App wurden nicht verändert."]);
     }
   };
 
@@ -171,7 +182,7 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
     try {
       const events = await loadCalendarEvents();
       if (!events.length) {
-        setMessage("Es gibt keine Kalendertermine zum Exportieren.");
+        showExportResult("Keine Termine zum Exportieren", "Im Kalender wurden keine Termine gefunden.", "info");
         return;
       }
       const path = await save({
@@ -187,15 +198,20 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
           : target === "teams"
             ? "Importieren Sie die Datei in den Outlook-Kalender desselben Microsoft-365-Kontos; die Termine erscheinen danach auch im Teams-Kalender."
             : "Die ICS-Datei kann in gängigen Kalenderprogrammen importiert werden.";
-      setMessage(`${events.length} Termine und Terminserien für ${calendarTargetNames[target]} exportiert. ${nextStep}`);
+      showExportResult(
+        "Kalenderdatei wurde erstellt",
+        `${events.length} Termine und Terminserien wurden für ${calendarTargetNames[target]} exportiert.`,
+        "success",
+        [nextStep]
+      );
     } catch (error) {
-      setMessage(`Kalenderexport fehlgeschlagen: ${error}`);
+      showExportResult("Kalenderdatei konnte nicht erstellt werden", String(error), "error", ["Ihre Termine im App wurden nicht verändert."]);
     }
   };
 
   const runDirectOutlookExport = async () => {
     if (!("__TAURI_INTERNALS__" in window)) {
-      setMessage("Die direkte Outlook-Übertragung ist nur in der installierten Windows-App verfügbar.");
+      showExportResult("Outlook-Übertragung nicht verfügbar", "Diese Funktion steht nur in der installierten Windows-App zur Verfügung.", "info");
       return;
     }
     setDirectOutlookBusy(true);
@@ -206,20 +222,39 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
         targetEmail: selectedMailAccount?.email,
         selectedGroupIds: outlookFolderScope === "selected" ? selectedOutlookGroupIds : undefined,
         includeUngrouped: outlookFolderScope === "all" || includeUngroupedOutlook,
-        seedAutocomplete: seedOutlookAutocomplete
+        seedAutocomplete: outlookContactExportMode !== "contacts-only",
+        autocompleteOnly: outlookContactExportMode === "autocomplete-only"
       });
       setDirectOutlookResult(result);
       if (result.total === 0) {
-        setMessage("Es sind keine Kontakte zum Übertragen vorhanden.");
+        showExportResult("Keine Kontakte übertragen", "Es wurden keine passenden Kontakte für die gewählte Auswahl gefunden.", "info");
       } else if (result.errors > 0 || result.autocompleteErrors > 0) {
-        setMessage(`${result.linked} von ${result.total} Kontakten wurden an Outlook übertragen. ${result.errors + result.autocompleteErrors} Einträge konnten nicht vollständig verarbeitet werden.`);
+        showExportResult(
+          "Outlook-Übertragung teilweise abgeschlossen",
+          outlookContactExportMode === "autocomplete-only"
+            ? `${result.autocompleteResolved} Vorschläge wurden vorbereitet. ${result.autocompleteErrors} E-Mail-Adressen konnten nicht vollständig verarbeitet werden.`
+            : `${result.linked} von ${result.total} Kontakten wurden an Outlook übertragen.`,
+          "error",
+          [`${result.errors + result.autocompleteErrors} Einträge konnten nicht vollständig verarbeitet werden.`, "Die Kontakte im App wurden nicht verändert."]
+        );
       } else {
-        setMessage(seedOutlookAutocomplete
-          ? `${result.total} Kontakte wurden in ${result.foldersUsed} Outlook-Ordner übertragen; ${result.autocompleteResolved} Adressen wurden für die Empfängersuche vorbereitet.`
-          : `${result.total} Kontakte wurden in ${result.foldersUsed} Outlook-Ordner übertragen.`);
+        showExportResult(
+          "Outlook-Übertragung abgeschlossen",
+          outlookContactExportMode === "autocomplete-only"
+            ? `${result.autocompleteResolved} E-Mail-Adressen wurden für die Outlook-Autovervollständigung vorbereitet.`
+            : outlookContactExportMode === "contacts-and-autocomplete"
+              ? `${result.total} Kontakte wurden in ${result.foldersUsed} Outlook-Ordner übertragen.`
+              : `${result.total} Kontakte wurden in ${result.foldersUsed} Outlook-Ordner übertragen.`,
+          "success",
+          outlookContactExportMode === "autocomplete-only"
+            ? ["Es wurden keine Outlook-Kontakte angelegt."]
+            : outlookContactExportMode === "contacts-and-autocomplete"
+              ? [`${result.autocompleteResolved} Adressen wurden zusätzlich für die Empfängersuche vorbereitet.`]
+              : undefined
+        );
       }
     } catch (error) {
-      setMessage(`Direkte Outlook-Übertragung fehlgeschlagen: ${error}`);
+      showExportResult("Outlook-Übertragung fehlgeschlagen", String(error), "error", ["Ihre Kontakte im App wurden nicht verändert."]);
     } finally {
       setDirectOutlookBusy(false);
     }
@@ -227,12 +262,12 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
 
   const runDirectOutlookCalendarExport = async () => {
     if (!("__TAURI_INTERNALS__" in window)) {
-      setMessage("Die direkte Outlook-Übertragung ist nur in der installierten Windows-App verfügbar.");
+      showExportResult("Outlook-Übertragung nicht verfügbar", "Diese Funktion steht nur in der installierten Windows-App zur Verfügung.", "info");
       return;
     }
     const events = await loadCalendarEvents();
     if (!events.length) {
-      setMessage("Es gibt keine Termine zum Übertragen.");
+      showExportResult("Keine Termine übertragen", "Im Kalender wurden keine Termine gefunden.", "info");
       return;
     }
     setDirectOutlookCalendarBusy(true);
@@ -242,12 +277,19 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
       const result = await pushProjectAppointmentsToOutlook(events, selectedMailAccount?.email);
       setDirectOutlookCalendarResult(result);
       if (result.errors > 0) {
-        setMessage(`${result.created + result.updated} von ${result.total} Terminen wurden an Outlook übertragen. ${result.errors} konnten nicht vollständig verarbeitet werden.`);
+        showExportResult(
+          "Kalender teilweise übertragen",
+          `${result.created + result.updated} von ${result.total} Terminen wurden an Outlook übertragen.`,
+          "error",
+          [`${result.errors} Termine konnten nicht vollständig verarbeitet werden.`, "Ihre Termine im App wurden nicht verändert."]
+        );
       } else {
-        setMessage(`${result.total} Termine wurden an Outlook Classic übertragen.`);
+        showExportResult("Kalender übertragen", `${result.total} Termine wurden an Outlook Classic übertragen.`, "success", [
+          `${result.created} neu angelegt · ${result.updated} aktualisiert`
+        ]);
       }
     } catch (error) {
-      setMessage(`Outlook-Kalenderübertragung fehlgeschlagen: ${error}`);
+      showExportResult("Outlook-Kalenderübertragung fehlgeschlagen", String(error), "error", ["Ihre Termine im App wurden nicht verändert."]);
     } finally {
       setDirectOutlookCalendarBusy(false);
     }
@@ -268,10 +310,11 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
     setOutlookFolderScope("all");
     setSelectedOutlookGroupIds([]);
     setIncludeUngroupedOutlook(true);
-    setSeedOutlookAutocomplete(true);
+    setOutlookContactExportMode("contacts-and-autocomplete");
     setCalendarExportTarget("universal");
     setDirectOutlookResult(null);
     setDirectOutlookCalendarResult(null);
+    setActionResult(null);
     setContactExportStep("format");
     setMessage("");
   };
@@ -286,7 +329,8 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
           </div>
         </header>
       )}
-      <StatusMessage message={message} />
+      <StatusMessage message={actionResult ? "" : message} />
+      <ActionResultDialog result={actionResult} onClose={() => setActionResult(null)} />
 
       {!choice && (
         <section className="export-choice-groups" aria-label="Exportart auswählen">
@@ -382,29 +426,33 @@ export function ExportPage({ embedded = false }: ExportPageProps) {
 
           {choice === "outlook" && contactExportStep === "autocomplete" && <section className="export-single-step" aria-labelledby="contact-export-autocomplete-title">
             <span className="export-step-number">3</span>
-            <h4 id="contact-export-autocomplete-title">Soll Outlook die Kontakte beim Tippen vorschlagen?</h4>
-            <p>Die ausgewählten Kontaktordner werden im Outlook-Classic-Adressbuch aktiviert. Zusätzlich bereitet Outlook jede E-Mail-Adresse für die Empfängersuche vor.</p>
+            <h4 id="contact-export-autocomplete-title">Wie sollen die Kontakte in Outlook verwendet werden?</h4>
+            <p>Wählen Sie, ob Kontakte als Outlook-Kontakte angelegt werden sollen oder nur beim Schreiben als Vorschlag erscheinen.</p>
             <div className="export-radio-list">
-              <label className={seedOutlookAutocomplete ? "export-radio-option selected" : "export-radio-option"}>
-                <input type="radio" name="outlook-autocomplete" checked={seedOutlookAutocomplete} onChange={() => setSeedOutlookAutocomplete(true)} />
-                <span><strong>Ja, Vorschläge aktivieren</strong><small>Empfohlen: Namen und E-Mail-Adressen beim Schreiben schneller finden</small></span>
+              <label className={outlookContactExportMode === "contacts-and-autocomplete" ? "export-radio-option selected" : "export-radio-option"}>
+                <input type="radio" name="outlook-contact-export-mode" checked={outlookContactExportMode === "contacts-and-autocomplete"} onChange={() => setOutlookContactExportMode("contacts-and-autocomplete")} />
+                <span><strong>Kontakte und Vorschläge</strong><small>Kontaktordner anlegen und E-Mail-Adressen beim Schreiben vorschlagen</small></span>
               </label>
-              <label className={!seedOutlookAutocomplete ? "export-radio-option selected" : "export-radio-option"}>
-                <input type="radio" name="outlook-autocomplete" checked={!seedOutlookAutocomplete} onChange={() => setSeedOutlookAutocomplete(false)} />
-                <span><strong>Nein, nur Kontaktordner</strong><small>Keine Änderung an der Outlook-Autovervollständigung</small></span>
+              <label className={outlookContactExportMode === "contacts-only" ? "export-radio-option selected" : "export-radio-option"}>
+                <input type="radio" name="outlook-contact-export-mode" checked={outlookContactExportMode === "contacts-only"} onChange={() => setOutlookContactExportMode("contacts-only")} />
+                <span><strong>Nur Kontaktordner</strong><small>Kontakte anlegen, ohne die Autovervollständigung zu ändern</small></span>
+              </label>
+              <label className={outlookContactExportMode === "autocomplete-only" ? "export-radio-option selected" : "export-radio-option"}>
+                <input type="radio" name="outlook-contact-export-mode" checked={outlookContactExportMode === "autocomplete-only"} onChange={() => setOutlookContactExportMode("autocomplete-only")} />
+                <span><strong>Nur Autovervollständigung</strong><small>Keine Kontakte oder Kontaktordner in Outlook anlegen</small></span>
               </label>
             </div>
-            {seedOutlookAutocomplete && <p className="outlook-autocomplete-note"><AtSign size={18} /> Outlook speichert neue Vorschläge endgültig, wenn es anschließend einmal normal geschlossen wird.</p>}
+            {outlookContactExportMode !== "contacts-only" && <p className="outlook-autocomplete-note"><AtSign size={18} /> Nur Kontakte mit E-Mail-Adresse können vorgeschlagen werden. Outlook anschließend einmal normal schließen, damit Vorschläge gespeichert werden.</p>}
           </section>}
 
           {choice === "outlook" && contactExportStep === "confirm" && <section className="export-single-step" aria-labelledby="contact-export-direct-confirm-title">
             <span className="export-step-number">4</span>
             <h4 id="contact-export-direct-confirm-title">Bereit für die Übertragung?</h4>
-            <p>Kontrollieren Sie Konto, Ordner und Empfängersuche, bevor Outlook aktualisiert wird.</p>
+            <p>Kontrollieren Sie Konto und Auswahl, bevor Outlook aktualisiert wird.</p>
             {selectedMailAccount && <div className="export-summary-card"><ContactRound size={24} /><span><strong>{selectedMailAccount.accountName || selectedMailAccount.email}</strong><small>{selectedMailAccount.email}</small></span></div>}
-            <div className="export-summary-card"><FolderOpen size={24} /><span><strong>{outlookFolderScope === "all" ? "Alle Kontaktordner" : "Ausgewählte Kontaktordner"}</strong><small>{outlookScopeText}</small></span></div>
-            <div className="export-summary-card"><AtSign size={24} /><span><strong>{seedOutlookAutocomplete ? "Outlook-Vorschläge werden vorbereitet" : "Nur Kontaktordner"}</strong><small>{seedOutlookAutocomplete ? "Outlook nach der Übertragung einmal normal schließen." : "Die Autovervollständigung bleibt unverändert."}</small></span></div>
-            {directOutlookResult && <div className="outlook-direct-result" role="status"><CheckCircle2 size={24} aria-hidden="true" /><div><strong>{directOutlookResult.linked} Kontakte · {directOutlookResult.foldersUsed} Gruppenordner</strong><span>{directOutlookResult.contactCopies} Einträge · {directOutlookResult.created} neu · {directOutlookResult.updated} aktualisiert{seedOutlookAutocomplete ? ` · ${directOutlookResult.autocompleteResolved} Vorschläge` : ""}</span>{directOutlookResult.folderPath && <small>Ziel: {directOutlookResult.folderPath}</small>}</div></div>}
+            {outlookContactExportMode !== "autocomplete-only" && <div className="export-summary-card"><FolderOpen size={24} /><span><strong>{outlookFolderScope === "all" ? "Alle Kontaktordner" : "Ausgewählte Kontaktordner"}</strong><small>{outlookScopeText}</small></span></div>}
+            <div className="export-summary-card"><AtSign size={24} /><span><strong>{outlookContactExportMode === "autocomplete-only" ? "Nur Outlook-Vorschläge" : outlookContactExportMode === "contacts-and-autocomplete" ? "Outlook-Kontakte und Vorschläge" : "Nur Kontaktordner"}</strong><small>{outlookContactExportMode === "autocomplete-only" ? "Es werden keine Outlook-Kontakte angelegt." : outlookContactExportMode === "contacts-and-autocomplete" ? "Outlook nach der Übertragung einmal normal schließen." : "Die Autovervollständigung bleibt unverändert."}</small></span></div>
+            {directOutlookResult && <div className="outlook-direct-result" role="status"><CheckCircle2 size={24} aria-hidden="true" /><div><strong>{outlookContactExportMode === "autocomplete-only" ? `${directOutlookResult.autocompleteResolved} Outlook-Vorschläge` : `${directOutlookResult.linked} Kontakte · ${directOutlookResult.foldersUsed} Gruppenordner`}</strong><span>{outlookContactExportMode === "autocomplete-only" ? `${directOutlookResult.autocompleteErrors} Adressen konnten nicht vorbereitet werden` : `${directOutlookResult.contactCopies} Einträge · ${directOutlookResult.created} neu · ${directOutlookResult.updated} aktualisiert${outlookContactExportMode === "contacts-and-autocomplete" ? ` · ${directOutlookResult.autocompleteResolved} Vorschläge` : ""}`}</span>{outlookContactExportMode !== "autocomplete-only" && directOutlookResult.folderPath && <small>Ziel: {directOutlookResult.folderPath}</small>}</div></div>}
           </section>}
 
           {choice === "contacts" && contactExportStep === "format" && <section className="export-single-step" aria-labelledby="contact-export-format-title">

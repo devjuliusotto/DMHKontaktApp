@@ -49,6 +49,11 @@ export interface CalendarEventMergeResult {
   total: number;
 }
 
+export interface CalendarOverview {
+  total: number;
+  sources: string[];
+}
+
 export interface CalendarDirectImportResult {
   found: number;
   skippedInvalid: number;

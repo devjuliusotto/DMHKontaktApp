@@ -8,8 +8,13 @@ export const emptyContact: ContactInput = {
   lastName: "",
   displayName: "",
   email: "",
+  privateEmail: "",
+  secondPrivateEmail: "",
   phone: "",
   mobilePhone: "",
+  privatePhone: "",
+  secondPrivatePhone: "",
+  company: "",
   street: "",
   postalCode: "",
   city: "",
@@ -26,8 +31,13 @@ export function toContactInput(contact: Contact): ContactInput {
     lastName: contact.lastName,
     displayName: contact.displayName,
     email: contact.email,
+    privateEmail: contact.privateEmail ?? "",
+    secondPrivateEmail: contact.secondPrivateEmail ?? "",
     phone: contact.phone,
     mobilePhone: contact.mobilePhone,
+    privatePhone: contact.privatePhone ?? "",
+    secondPrivatePhone: contact.secondPrivatePhone ?? "",
+    company: contact.company ?? "",
     street: contact.street,
     postalCode: contact.postalCode,
     city: contact.city,
@@ -38,6 +48,17 @@ export function toContactInput(contact: Contact): ContactInput {
   };
 }
 
-export function displayName(contact: Pick<Contact, "displayName" | "firstName" | "lastName" | "email">): string {
-  return contact.displayName || `${contact.firstName} ${contact.lastName}`.trim() || contact.email || "Ohne Namen";
+export function displayName(
+  contact: Pick<Contact, "displayName" | "firstName" | "lastName" | "email" | "privateEmail" | "secondPrivateEmail">
+): string {
+  return contact.displayName || `${contact.firstName} ${contact.lastName}`.trim() || primaryContactEmail(contact) || "Ohne Namen";
+}
+
+export function contactEmails(contact: Pick<Contact, "email" | "privateEmail" | "secondPrivateEmail">): string[] {
+  return Array.from(new Set([contact.email, contact.privateEmail, contact.secondPrivateEmail]
+    .map((email) => email.trim()).filter(Boolean)));
+}
+
+export function primaryContactEmail(contact: Pick<Contact, "email" | "privateEmail" | "secondPrivateEmail">): string {
+  return contactEmails(contact)[0] ?? "";
 }

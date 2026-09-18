@@ -1,5 +1,5 @@
 import { CalendarDays, ChevronLeft, ChevronRight, Clock3, Download, Filter, ListChecks, MoreHorizontal, PanelLeftClose, Plus, RefreshCw, Rows3, Settings2, Trash2, Undo2, Upload, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { CalendarReconciliationDialog } from "../components/CalendarReconciliationDialog";
 import { CalendarEventForm } from "../components/CalendarEventForm";
 import { ActionResultDialog, type ActionResult } from "../components/ActionResultDialog";
@@ -19,8 +19,11 @@ import {
 } from "../utils/automaticCalendarSync";
 import {
   listCalendarEvents,
+  listCalendarEventsInRange,
+  getCalendarOverview,
   mergeCalendarEvents,
   moveCalendarEventsToTrash,
+  restoreCalendarEvents,
   saveCalendarEvents
 } from "../services/db";
 
@@ -39,7 +42,7 @@ const allCategoriesValue = "__all__";
 
 interface CalendarDuplicateCleanupBackup {
   createdAt: string;
-  removedEvents: CalendarEvent[];
+  removedEventIds: string[];
 }
 
 interface AdvancedCalendarSettings {
@@ -65,9 +68,14 @@ function readDuplicateCleanupBackup(): CalendarDuplicateCleanupBackup | null {
   const raw = localStorage.getItem(duplicateCleanupBackupKey);
   if (!raw) return null;
   try {
-    const value = JSON.parse(raw) as Partial<CalendarDuplicateCleanupBackup>;
-    if (typeof value.createdAt !== "string" || !Array.isArray(value.removedEvents)) return null;
-    return { createdAt: value.createdAt, removedEvents: value.removedEvents as CalendarEvent[] };
+    const value = JSON.parse(raw) as Partial<CalendarDuplicateCleanupBackup> & { removedEvents?: CalendarEvent[] };
+    if (typeof value.createdAt !== "string") return null;
+    const removedEventIds = Array.isArray(value.removedEventIds)
+      ? value.removedEventIds.filter((id): id is string => typeof id === "string")
+      : Array.isArray(value.removedEvents)
+        ? value.removedEvents.map((event) => event.id).filter(Boolean)
+        : [];
+    return removedEventIds.length > 0 ? { createdAt: value.createdAt, removedEventIds } : null;
   } catch {
     return null;
   }
@@ -313,6 +321,19 @@ function normalizeCategory(category: CalendarCategory): CalendarCategory {
   };
 }
 
+function upsertSortedCalendarEvent(events: CalendarEvent[], event: CalendarEvent): CalendarEvent[] {
+  const next = events.filter((entry) => entry.id !== event.id);
+  let low = 0;
+  let high = next.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (next[middle].startsAt.localeCompare(event.startsAt) <= 0) low = middle + 1;
+    else high = middle;
+  }
+  next.splice(low, 0, event);
+  return next;
+}
+
 interface CalendarPageProps {
   advancedMode: boolean;
   onAdvancedModeChange: (enabled: boolean) => void;
@@ -321,9 +342,12 @@ interface CalendarPageProps {
 
 export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }: CalendarPageProps) {
   const [events, setEvents] = useState<CalendarEvent[]>([]);
+  const [totalCalendarEvents, setTotalCalendarEvents] = useState(0);
+  const [calendarSources, setCalendarSources] = useState<string[]>([]);
   const [calendarLoaded, setCalendarLoaded] = useState(false);
   const [easyImportOpen, setEasyImportOpen] = useState(false);
   const [reconciliationOpen, setReconciliationOpen] = useState(false);
+  const [reconciliationEvents, setReconciliationEvents] = useState<CalendarEvent[]>([]);
   const [categories, setCategories] = useState<CalendarCategory[]>([]);
   const [message, setMessage] = useState("");
   const [actionResult, setActionResult] = useState<ActionResult | null>(null);
@@ -336,6 +360,7 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
   const [categoryFilter, setCategoryFilter] = useState(allCategoriesValue);
   const [showCategoryDialog, setShowCategoryDialog] = useState(false);
   const [showDuplicateDialog, setShowDuplicateDialog] = useState(false);
+  const [exactDuplicateGroups, setExactDuplicateGroups] = useState<ReturnType<typeof findExactCalendarDuplicateGroups>>([]);
   const [showActionsMenu, setShowActionsMenu] = useState(false);
   const [m365SyncDialogOpen, setM365SyncDialogOpen] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
@@ -353,46 +378,63 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
   const suppressEventClickRef = useRef<string | null>(null);
   const timeGridScrollRef = useRef<HTMLDivElement | null>(null);
   const eventsRef = useRef<CalendarEvent[]>([]);
+  const duplicateReviewEventsRef = useRef<CalendarEvent[]>([]);
+
+  const displayRange = useMemo(() => {
+    if (view === "month") {
+      const first = startOfWeek(new Date(cursor.getFullYear(), cursor.getMonth(), 1));
+      return { start: first, end: addDays(first, 42) };
+    }
+    if (view === "workweek") {
+      const first = startOfWeek(cursor);
+      return { start: first, end: addDays(first, 5) };
+    }
+    if (view === "week") {
+      const first = startOfWeek(cursor);
+      return { start: first, end: addDays(first, 7) };
+    }
+    return { start: startOfDay(cursor), end: addDays(startOfDay(cursor), 1) };
+  }, [cursor, view]);
+
+  const loadVisibleEvents = useCallback(async () => {
+    if ("__TAURI_INTERNALS__" in window) {
+      let overview = await getCalendarOverview();
+      if (overview.total === 0) {
+        const legacy = JSON.parse(localStorage.getItem(calendarStorageKey) ?? "[]") as unknown;
+        if (Array.isArray(legacy) && legacy.length > 0) {
+          await mergeCalendarEvents(legacy as CalendarEvent[]);
+          localStorage.removeItem(calendarStorageKey);
+          overview = await getCalendarOverview();
+          window.dispatchEvent(new Event(calendarChangedEventName));
+        }
+      }
+      const storedEvents = await listCalendarEventsInRange(
+        toLocalDateTime(displayRange.end.toISOString()),
+        toLocalDateTime(displayRange.start.toISOString())
+      );
+      const normalized = storedEvents.map(normalizeEvent);
+      eventsRef.current = normalized;
+      setEvents(normalized);
+      setTotalCalendarEvents(overview.total);
+      setCalendarSources(overview.sources);
+      return;
+    }
+
+    const saved = localStorage.getItem(calendarStorageKey);
+    const normalized = saved ? (JSON.parse(saved) as CalendarEvent[]).map(normalizeEvent) : [];
+    eventsRef.current = normalized;
+    setEvents(normalized);
+    setTotalCalendarEvents(normalized.length);
+    setCalendarSources(Array.from(new Set(normalized.map((event) => event.source?.trim()).filter((source): source is string => Boolean(source)))).sort((left, right) => left.localeCompare(right, "de")));
+  }, [displayRange]);
 
   useEffect(() => {
-    const loadEvents = async () => {
-      try {
-        if ("__TAURI_INTERNALS__" in window) {
-          let storedEvents = await listCalendarEvents();
-          let migratedLegacyEvents = false;
-          // One-time migration for calendars created by earlier app versions.
-          if (storedEvents.length === 0) {
-            const legacy = JSON.parse(localStorage.getItem(calendarStorageKey) ?? "[]") as unknown;
-            if (Array.isArray(legacy) && legacy.length > 0) {
-              await mergeCalendarEvents(legacy as CalendarEvent[]);
-              storedEvents = await listCalendarEvents();
-              localStorage.removeItem(calendarStorageKey);
-              migratedLegacyEvents = true;
-            }
-          }
-          const normalized = storedEvents.map(normalizeEvent);
-          eventsRef.current = normalized;
-          setEvents(normalized);
-          // Only announce the migration after SQLite contains every event.
-          // This makes the first Exchange synchronization see the same data as
-          // the calendar view, even on a very large imported calendar.
-          if (migratedLegacyEvents) window.dispatchEvent(new Event(calendarChangedEventName));
-        } else {
-          const saved = localStorage.getItem(calendarStorageKey);
-          if (saved) {
-            const normalized = (JSON.parse(saved) as CalendarEvent[]).map(normalizeEvent);
-            eventsRef.current = normalized;
-            setEvents(normalized);
-          }
-        }
-      } catch {
-        setMessage("Die gespeicherten Kalenderdaten konnten nicht geladen werden.");
-      } finally {
-        setCalendarLoaded(true);
-      }
-    };
-    void loadEvents();
+    void loadVisibleEvents()
+      .catch(() => setMessage("Die gespeicherten Kalenderdaten konnten nicht geladen werden."))
+      .finally(() => setCalendarLoaded(true));
+  }, [loadVisibleEvents]);
 
+  useEffect(() => {
     try {
       const savedCategories = localStorage.getItem(calendarCategoriesStorageKey);
       if (savedCategories) {
@@ -415,12 +457,7 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
   useEffect(() => {
     const reloadStoredEvents = async () => {
       try {
-        const storedEvents = "__TAURI_INTERNALS__" in window
-          ? await listCalendarEvents()
-          : JSON.parse(localStorage.getItem(calendarStorageKey) ?? "[]") as CalendarEvent[];
-        const normalized = storedEvents.map(normalizeEvent);
-        eventsRef.current = normalized;
-        setEvents(normalized);
+        await loadVisibleEvents();
         setCalendarLoaded(true);
       } catch {
         setMessage("Die von Microsoft 365 empfangenen Kalenderdaten konnten nicht angezeigt werden.");
@@ -437,27 +474,7 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
       window.removeEventListener(calendarStorageUpdatedEventName, reload);
       window.removeEventListener(calendarAutomaticSyncStatusEventName, showAutomaticSyncStatus);
     };
-  }, []);
-
-  const displayRange = useMemo(() => {
-    if (view === "month") {
-      const first = startOfWeek(new Date(cursor.getFullYear(), cursor.getMonth(), 1));
-      return { start: first, end: addDays(first, 42) };
-    }
-    if (view === "workweek") {
-      const first = startOfWeek(cursor);
-      return { start: first, end: addDays(first, 5) };
-    }
-    if (view === "week") {
-      const first = startOfWeek(cursor);
-      return { start: first, end: addDays(first, 7) };
-    }
-    return { start: startOfDay(cursor), end: addDays(startOfDay(cursor), 1) };
-  }, [cursor, view]);
-  const calendarSources = useMemo(
-    () => Array.from(new Set(events.map((event) => event.source?.trim()).filter((source): source is string => Boolean(source)))).sort((left, right) => left.localeCompare(right, "de")),
-    [events]
-  );
+  }, [loadVisibleEvents]);
   const allSortedEvents = useMemo(
     () => expandCalendarEvents(events, displayRange.start, displayRange.end)
       .filter((event) => !advancedMode || !event.source || !advancedSettings.hiddenSources.includes(event.source.trim()))
@@ -479,7 +496,6 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
       : allSortedEvents.filter((event) => event.category.trim() === categoryFilter),
     [allSortedEvents, categoryFilter]
   );
-  const exactDuplicateGroups = useMemo(() => findExactCalendarDuplicateGroups(events), [events]);
   const exactDuplicateCopies = useMemo(
     () => exactDuplicateGroups.reduce((total, group) => total + group.copies - 1, 0),
     [exactDuplicateGroups]
@@ -555,9 +571,41 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
         if (changed.length > 0 || removedIds.length > 0) {
           window.dispatchEvent(new Event(calendarChangedEventName));
         }
+        await loadVisibleEvents();
       })().catch(() => setMessage("Kalenderänderung konnte nicht sicher gespeichert werden."));
     } else {
       localStorage.setItem(calendarStorageKey, JSON.stringify(sorted));
+    }
+  };
+
+  const persistSingleEvent = (event: CalendarEvent) => {
+    const normalized = normalizeEvent(event);
+    const existing = eventsRef.current.some((entry) => entry.id === normalized.id);
+    const next = upsertSortedCalendarEvent(eventsRef.current, normalized);
+    eventsRef.current = next;
+    setEvents(next);
+    if (!existing) setTotalCalendarEvents((total) => total + 1);
+    if ("__TAURI_INTERNALS__" in window) {
+      void saveCalendarEvents([normalized])
+        .then(() => window.dispatchEvent(new Event(calendarChangedEventName)))
+        .catch(() => setMessage("Kalenderänderung konnte nicht sicher gespeichert werden."));
+    } else {
+      localStorage.setItem(calendarStorageKey, JSON.stringify(next));
+    }
+  };
+
+  const persistRemovedEvent = (id: string) => {
+    const existing = eventsRef.current.some((event) => event.id === id);
+    const next = eventsRef.current.filter((event) => event.id !== id);
+    eventsRef.current = next;
+    setEvents(next);
+    if (existing) setTotalCalendarEvents((total) => Math.max(0, total - 1));
+    if ("__TAURI_INTERNALS__" in window) {
+      void moveCalendarEventsToTrash([id])
+        .then(() => window.dispatchEvent(new Event(calendarChangedEventName)))
+        .catch(() => setMessage("Kalenderänderung konnte nicht sicher gespeichert werden."));
+    } else {
+      localStorage.setItem(calendarStorageKey, JSON.stringify(next));
     }
   };
 
@@ -571,16 +619,31 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
     localStorage.setItem(calendarCategoriesStorageKey, JSON.stringify(sorted));
   };
 
-  const reviewExactDuplicates = () => {
-    if (exactDuplicateCopies === 0) {
-      setMessage("Keine doppelten Termine gefunden.");
-      return;
+  const reviewExactDuplicates = async () => {
+    setMessage("Kalender wird auf Duplikate geprüft …");
+    try {
+      const allEvents = "__TAURI_INTERNALS__" in window ? await listCalendarEvents() : events;
+      const groups = findExactCalendarDuplicateGroups(allEvents);
+      duplicateReviewEventsRef.current = allEvents;
+      setExactDuplicateGroups(groups);
+      setMessage("");
+      if (groups.length === 0) {
+        setActionResult({
+          title: "Duplikate geprüft",
+          summary: "Es wurden keine Termine mit gleichem Titel, Datum und Beginn gefunden.",
+          tone: "success"
+        });
+        return;
+      }
+      setShowDuplicateDialog(true);
+    } catch (error) {
+      setMessage("");
+      setActionResult({ title: "Duplikate konnten nicht geprüft werden", summary: String(error), tone: "error" });
     }
-    setShowDuplicateDialog(true);
   };
 
-  const cleanupExactDuplicates = () => {
-    const result = removeExactCalendarDuplicates(events);
+  const cleanupExactDuplicates = async () => {
+    const result = removeExactCalendarDuplicates(duplicateReviewEventsRef.current);
     if (result.removedEvents.length === 0) {
       setShowDuplicateDialog(false);
       setMessage("Keine doppelten Termine gefunden.");
@@ -590,49 +653,62 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
     const previousBackup = readDuplicateCleanupBackup();
     const backup: CalendarDuplicateCleanupBackup = {
       createdAt: previousBackup?.createdAt ?? new Date().toISOString(),
-      removedEvents: [...(previousBackup?.removedEvents ?? []), ...result.removedEvents]
+      removedEventIds: Array.from(new Set([...(previousBackup?.removedEventIds ?? []), ...result.removedEvents.map((event) => event.id)]))
     };
+    try {
+      if ("__TAURI_INTERNALS__" in window) {
+        await moveCalendarEventsToTrash(result.removedEvents.map((event) => event.id));
+        await loadVisibleEvents();
+        window.dispatchEvent(new Event(calendarChangedEventName));
+      } else {
+        persist(result.events);
+      }
+    } catch (error) {
+      setActionResult({ title: "Duplikate nicht entfernt", summary: String(error), tone: "error" });
+      return;
+    }
     localStorage.setItem(duplicateCleanupBackupKey, JSON.stringify(backup));
     setDuplicateCleanupBackup(backup);
-    persist(result.events);
     setShowDuplicateDialog(false);
     setActionResult({
       title: "Duplikate entfernt",
       summary: `${result.removedEvents.length} überzählige ${result.removedEvents.length === 1 ? "Kopie wurde" : "Kopien wurden"} entfernt.`,
       details: [
         "Je Termin bleibt immer eine Kopie erhalten.",
-        "Die entfernten Kopien sind gesichert und können über „Bereinigung rückgängig“ wiederhergestellt werden."
+        "Die entfernten Kopien sind gesichert und können über „Bereinigung rückgängig“ wiederhergestellt werden.",
+        ...(result.removedEvents.length > 500 ? ["Aus Leistungsgründen zeigt diese Liste die ersten 500 Einträge. Im Papierkorb sind alle Kopien vollständig vorhanden."] : [])
       ],
-      items: result.removedEvents.map((event) => ({ label: event.title || "Ohne Titel", detail: formatCalendarDate(event.startsAt) })),
-      itemsLabel: `${result.removedEvents.length} entfernte Kopien anzeigen`,
+      items: result.removedEvents.slice(0, 500).map((event) => ({ label: event.title || "Ohne Titel", detail: formatCalendarDate(event.startsAt) })),
+      itemsLabel: `${Math.min(500, result.removedEvents.length)} von ${result.removedEvents.length} entfernten Kopien anzeigen`,
       tone: "success"
     });
   };
 
-  const undoDuplicateCleanup = () => {
+  const undoDuplicateCleanup = async () => {
     const backup = readDuplicateCleanupBackup();
-    if (!backup?.removedEvents.length) {
+    if (!backup?.removedEventIds.length) {
       setDuplicateCleanupBackup(null);
       setMessage("Keine frühere Duplikatbereinigung zum Wiederherstellen vorhanden.");
       return;
     }
-    if (!window.confirm(`${backup.removedEvents.length} zuvor entfernte Kalenderkopien wiederherstellen? Bestehende oder inzwischen geänderte Termine werden nicht überschrieben.`)) return;
+    if (!window.confirm(`${backup.removedEventIds.length} zuvor entfernte Kalenderkopien wiederherstellen?`)) return;
 
-    const usedIds = new Set(events.map((event) => event.id));
-    const restoredEvents = backup.removedEvents.map((event) => {
-      const id = usedIds.has(event.id) ? crypto.randomUUID() : event.id;
-      usedIds.add(id);
-      return id === event.id ? event : { ...event, id };
-    });
-    persist([...events, ...restoredEvents]);
+    try {
+      if ("__TAURI_INTERNALS__" in window) {
+        await restoreCalendarEvents(backup.removedEventIds);
+        await loadVisibleEvents();
+        window.dispatchEvent(new Event(calendarChangedEventName));
+      }
+    } catch (error) {
+      setActionResult({ title: "Bereinigung konnte nicht rückgängig gemacht werden", summary: String(error), tone: "error" });
+      return;
+    }
     localStorage.removeItem(duplicateCleanupBackupKey);
     setDuplicateCleanupBackup(null);
     setActionResult({
       title: "Bereinigung rückgängig gemacht",
-      summary: `${restoredEvents.length} ${restoredEvents.length === 1 ? "Kalenderkopie wurde" : "Kalenderkopien wurden"} wiederhergestellt.`,
+      summary: `${backup.removedEventIds.length} ${backup.removedEventIds.length === 1 ? "Kalenderkopie wurde" : "Kalenderkopien wurden"} wiederhergestellt.`,
       details: ["Bestehende Termine wurden dabei nicht überschrieben."],
-      items: restoredEvents.map((event) => ({ label: event.title || "Ohne Titel", detail: formatCalendarDate(event.startsAt) })),
-      itemsLabel: `${restoredEvents.length} wiederhergestellte Kopien anzeigen`,
       tone: "success"
     });
   };
@@ -759,12 +835,12 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
     if (!oldStart || !oldEnd) return;
     const duration = Math.max(15 * 60_000, oldEnd.getTime() - oldStart.getTime());
     const nextEnd = new Date(nextStart.getTime() + duration);
-    persist(events.map((entry) => entry.id === id ? {
-      ...entry,
+    persistSingleEvent({
+      ...existing,
       startsAt: toLocalDateTime(nextStart.toISOString()),
       endsAt: toLocalDateTime(nextEnd.toISOString()),
       updatedAt: new Date().toISOString()
-    } : entry));
+    });
   };
 
   const beginEventPointerDrag = (event: ReactPointerEvent<HTMLButtonElement>, eventId: string) => {
@@ -895,13 +971,11 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
 
   const saveEvent = () => {
     if (!editingEvent) return;
-    const next = events.filter((event) => event.id !== editingEvent.id);
     const matchingCategory = categories.find((category) => category.name === editingEvent.category.trim());
-    persist([...next, normalizeEvent({ ...editingEvent, updatedAt: new Date().toISOString(), color: matchingCategory?.color ?? editingEvent.color, source: editingEvent.source || "DMH Backup" })]);
+    persistSingleEvent({ ...editingEvent, updatedAt: new Date().toISOString(), color: matchingCategory?.color ?? editingEvent.color, source: editingEvent.source || "DMH Backup" });
     const date = eventDate(editingEvent);
     if (date) setCursor(startOfDay(date));
     setEditingEvent(null);
-    window.dispatchEvent(new Event(calendarChangedEventName));
   };
 
   const deleteEvent = (event = editingEvent) => {
@@ -909,7 +983,7 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
     const master = event.recurrenceMasterId ? events.find((entry) => entry.id === event.recurrenceMasterId) ?? event : event;
     const objectName = master.recurrence ? `Terminserie "${master.title}"` : `Termin "${master.title}"`;
     if (!window.confirm(`${objectName} wirklich löschen?`)) return;
-    persist(events.filter((entry) => entry.id !== master.id));
+    persistRemovedEvent(master.id);
     setEditingEvent(null);
     setActionResult({
       title: master.recurrence ? "Terminserie in den Papierkorb verschoben" : "Termin in den Papierkorb verschoben",
@@ -918,22 +992,47 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
       itemsLabel: "Betroffenen Termin anzeigen",
       tone: "success"
     });
-    window.dispatchEvent(new Event(calendarChangedEventName));
   };
 
-  const deleteAllEvents = () => {
-    if (events.length === 0 || !window.confirm(`Alle ${events.length} Termine und Terminserien in den Papierkorb verschieben?`)) return;
-    const movedEvents = events.map(normalizeEvent);
-    persist([]);
-    setEditingEvent(null);
-    setActionResult({
-      title: "Termine in den Papierkorb verschoben",
-      summary: `${events.length} Termine und Serien können im Papierkorb wiederhergestellt werden.`,
-      items: movedEvents.map((event) => ({ label: event.title || "Ohne Titel", detail: formatCalendarDate(event.startsAt) })),
-      itemsLabel: `${events.length} verschobene Termine anzeigen`,
-      tone: "success"
-    });
-    window.dispatchEvent(new Event(calendarChangedEventName));
+  const deleteAllEvents = async () => {
+    if (totalCalendarEvents === 0) return;
+    try {
+      const allEvents = "__TAURI_INTERNALS__" in window ? await listCalendarEvents() : events;
+      if (!window.confirm(`Alle ${allEvents.length} Termine und Terminserien in den Papierkorb verschieben?`)) return;
+      const movedEvents = allEvents.map(normalizeEvent);
+      if ("__TAURI_INTERNALS__" in window) {
+        await moveCalendarEventsToTrash(movedEvents.map((event) => event.id));
+        await loadVisibleEvents();
+        window.dispatchEvent(new Event(calendarChangedEventName));
+      } else {
+        persist([]);
+      }
+      setTotalCalendarEvents(0);
+      setEditingEvent(null);
+      setActionResult({
+        title: "Termine in den Papierkorb verschoben",
+        summary: `${movedEvents.length} Termine und Serien können im Papierkorb wiederhergestellt werden.`,
+        details: movedEvents.length > 100 ? ["Aus Leistungsgründen zeigt diese Liste die ersten 100 Einträge. Im Papierkorb sind alle Termine vollständig vorhanden."] : undefined,
+        items: movedEvents.slice(0, 100).map((event) => ({ label: event.title || "Ohne Titel", detail: formatCalendarDate(event.startsAt) })),
+        itemsLabel: `${Math.min(100, movedEvents.length)} von ${movedEvents.length} verschobenen Terminen anzeigen`,
+        tone: "success"
+      });
+    } catch (error) {
+      setActionResult({ title: "Termine konnten nicht gelöscht werden", summary: String(error), tone: "error" });
+    }
+  };
+
+  const openReconciliation = async () => {
+    setMessage("Kalenderdaten werden für den Vergleich vorbereitet …");
+    try {
+      const allEvents = "__TAURI_INTERNALS__" in window ? await listCalendarEvents() : events;
+      setReconciliationEvents(allEvents.map(normalizeEvent));
+      setMessage("");
+      setReconciliationOpen(true);
+    } catch (error) {
+      setMessage("");
+      setActionResult({ title: "Kalendervergleich konnte nicht geöffnet werden", summary: String(error), tone: "error" });
+    }
   };
 
   return (
@@ -958,7 +1057,7 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
               <span className="calendar-actions-separator" />
               <button type="button" onClick={() => { setShowActionsMenu(false); onNavigate("import"); }}><Upload size={18} /> Termine importieren</button>
               <button type="button" onClick={() => { setShowActionsMenu(false); onNavigate("export"); }}><Download size={18} /> Termine exportieren</button>
-              <button type="button" onClick={() => { setShowActionsMenu(false); setReconciliationOpen(true); }}><RefreshCw size={18} /> Kalender erneut abgleichen</button>
+              <button type="button" onClick={() => { setShowActionsMenu(false); void openReconciliation(); }}><RefreshCw size={18} /> Kalender erneut abgleichen</button>
               <button type="button" onClick={() => { setShowActionsMenu(false); setShowCategoryDialog(true); }}><Plus size={18} /> Kategorie erstellen</button>
               <button type="button" onClick={() => { setShowActionsMenu(false); reviewExactDuplicates(); }}><ListChecks size={18} /> Duplikate prüfen</button>
               {duplicateCleanupBackup && <button type="button" onClick={() => { setShowActionsMenu(false); undoDuplicateCleanup(); }}><Undo2 size={18} /> Bereinigung rückgängig</button>}
@@ -967,12 +1066,12 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
                 <Settings2 size={18} /> {advancedMode ? "Einfacher Kalender" : "Kalender erweitert"}
               </button>
               <span className="calendar-actions-separator" />
-              <button className="danger" type="button" onClick={() => { setShowActionsMenu(false); deleteAllEvents(); }} disabled={events.length === 0}><Trash2 size={18} /> Alle Termine löschen</button>
+              <button className="danger" type="button" onClick={() => { setShowActionsMenu(false); void deleteAllEvents(); }} disabled={totalCalendarEvents === 0}><Trash2 size={18} /> Alle Termine löschen</button>
             </div>}
           </div>
         </div>
       </header>
-      <StatusMessage message={message} />
+      <StatusMessage message={actionResult ? "" : message} />
 
       <ActionResultDialog result={actionResult} onClose={() => setActionResult(null)} />
 
@@ -1069,7 +1168,7 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
 
       {!calendarLoaded ? (
         <div className="page-loading">Kalender wird geladen …</div>
-      ) : events.length === 0 ? (
+      ) : totalCalendarEvents === 0 ? (
         <EmptyImportState kind="calendar" onEasyImport={() => setEasyImportOpen(true)} onManualImport={() => onNavigate("calendar-import")} />
       ) : <section className={advancedMode ? "calendar-shell advanced-calendar-shell" : "calendar-shell"}>
         {advancedMode && (
@@ -1385,12 +1484,7 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
           onNavigate("synchronizations");
         }}
         onImported={async () => {
-          const storedEvents = "__TAURI_INTERNALS__" in window
-            ? await listCalendarEvents()
-            : JSON.parse(localStorage.getItem(calendarStorageKey) ?? "[]") as CalendarEvent[];
-          const normalized = storedEvents.map(normalizeEvent);
-          eventsRef.current = normalized;
-          setEvents(normalized);
+          await loadVisibleEvents();
           const storedCategories = JSON.parse(localStorage.getItem(calendarCategoriesStorageKey) ?? "[]") as CalendarCategory[];
           setCategories(storedCategories.map(normalizeCategory).filter((category) => category.name));
         }}
@@ -1398,8 +1492,8 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
 
       <CalendarReconciliationDialog
         open={reconciliationOpen}
-        events={events}
-        onClose={() => setReconciliationOpen(false)}
+        events={reconciliationEvents}
+        onClose={() => { setReconciliationOpen(false); setReconciliationEvents([]); }}
         onChanged={(nextEvents) => {
           persist(nextEvents);
           try {

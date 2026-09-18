@@ -1,6 +1,6 @@
 use chrono::Utc;
 use flate2::{read::GzDecoder, write::GzEncoder, Compression};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -94,8 +94,18 @@ pub struct Contact {
     pub last_name: String,
     pub display_name: String,
     pub email: String,
+    #[serde(default)]
+    pub private_email: String,
+    #[serde(default)]
+    pub second_private_email: String,
     pub phone: String,
     pub mobile_phone: String,
+    #[serde(default)]
+    pub private_phone: String,
+    #[serde(default)]
+    pub second_private_phone: String,
+    #[serde(default)]
+    pub company: String,
     pub street: String,
     pub postal_code: String,
     pub city: String,
@@ -117,8 +127,18 @@ pub struct ContactInput {
     pub last_name: String,
     pub display_name: String,
     pub email: String,
+    #[serde(default)]
+    pub private_email: String,
+    #[serde(default)]
+    pub second_private_email: String,
     pub phone: String,
     pub mobile_phone: String,
+    #[serde(default)]
+    pub private_phone: String,
+    #[serde(default)]
+    pub second_private_phone: String,
+    #[serde(default)]
+    pub company: String,
     pub street: String,
     pub postal_code: String,
     pub city: String,
@@ -192,6 +212,21 @@ pub struct DeleteAllContactsResult {
 pub struct WelcomeDataCounts {
     pub contacts: usize,
     pub calendar_events: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContactOverviewCounts {
+    pub total: usize,
+    pub ungrouped: usize,
+    pub groups: HashMap<i64, usize>,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarOverview {
+    pub total: usize,
+    pub sources: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -395,8 +430,13 @@ struct ExistingContactRow {
     last_name: String,
     display_name: String,
     email: String,
+    private_email: String,
+    second_private_email: String,
     phone: String,
     mobile_phone: String,
+    private_phone: String,
+    second_private_phone: String,
+    company: String,
     street: String,
     postal_code: String,
     city: String,
@@ -432,9 +472,19 @@ struct OutlookContactRecord {
     #[serde(default)]
     email: String,
     #[serde(default)]
+    private_email: String,
+    #[serde(default)]
+    second_private_email: String,
+    #[serde(default)]
     phone: String,
     #[serde(default)]
     mobile_phone: String,
+    #[serde(default)]
+    private_phone: String,
+    #[serde(default)]
+    second_private_phone: String,
+    #[serde(default)]
+    company: String,
     #[serde(default)]
     street: String,
     #[serde(default)]
@@ -719,8 +769,13 @@ struct LocalOutlookContact {
     last_name: String,
     display_name: String,
     email: String,
+    private_email: String,
+    second_private_email: String,
     phone: String,
     mobile_phone: String,
+    private_phone: String,
+    second_private_phone: String,
+    company: String,
     street: String,
     postal_code: String,
     city: String,
@@ -818,8 +873,13 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
             last_name TEXT NOT NULL DEFAULT '',
             display_name TEXT NOT NULL DEFAULT '',
             email TEXT NOT NULL DEFAULT '',
+            private_email TEXT NOT NULL DEFAULT '',
+            second_private_email TEXT NOT NULL DEFAULT '',
             phone TEXT NOT NULL DEFAULT '',
             mobile_phone TEXT NOT NULL DEFAULT '',
+            private_phone TEXT NOT NULL DEFAULT '',
+            second_private_phone TEXT NOT NULL DEFAULT '',
+            company TEXT NOT NULL DEFAULT '',
             street TEXT NOT NULL DEFAULT '',
             postal_code TEXT NOT NULL DEFAULT '',
             city TEXT NOT NULL DEFAULT '',
@@ -951,6 +1011,31 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
 
     ensure_column(&conn, "contacts", "deleted_at", "TEXT")?;
     ensure_column(&conn, "contacts", "short_info", "TEXT NOT NULL DEFAULT ''")?;
+    ensure_column(
+        &conn,
+        "contacts",
+        "private_email",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(
+        &conn,
+        "contacts",
+        "second_private_email",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(
+        &conn,
+        "contacts",
+        "private_phone",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(
+        &conn,
+        "contacts",
+        "second_private_phone",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(&conn, "contacts", "company", "TEXT NOT NULL DEFAULT ''")?;
     ensure_column(&conn, "contacts", "outlook_entry_id", "TEXT")?;
     ensure_column(&conn, "contacts", "outlook_store_id", "TEXT")?;
     ensure_column(&conn, "groups", "deleted_at", "TEXT")?;
@@ -962,6 +1047,10 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
             ON contacts(display_name COLLATE NOCASE);
         CREATE INDEX IF NOT EXISTS idx_contacts_email_search
             ON contacts(email COLLATE NOCASE);
+        CREATE INDEX IF NOT EXISTS idx_contacts_private_email_search
+            ON contacts(private_email COLLATE NOCASE);
+        CREATE INDEX IF NOT EXISTS idx_contacts_second_private_email_search
+            ON contacts(second_private_email COLLATE NOCASE);
         CREATE INDEX IF NOT EXISTS idx_contacts_phone_search ON contacts(phone);
         CREATE INDEX IF NOT EXISTS idx_contacts_mobile_phone_search ON contacts(mobile_phone);
         CREATE INDEX IF NOT EXISTS idx_contacts_import_batch ON contacts(import_batch_id);
@@ -981,14 +1070,9 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
     )
     .map_err(|err| err.to_string())?;
 
-    if let Err(error) = create_auto_backup(app, &conn) {
-        eprintln!("Automatische Sicherung beim Start fehlgeschlagen: {error}");
-    }
-    if let Ok(backup) = load_backup_data(&conn) {
-        if let Err(error) = write_recovery_checkpoint(app, backup) {
-            eprintln!("Wiederherstellungspunkt beim Start fehlgeschlagen: {error}");
-        }
-    }
+    // Large installations can contain hundreds of thousands of appointments.
+    // Creating two complete JSON archives here would block the first window.
+    // App.tsx schedules one combined native safety backup after startup instead.
     if let Err(error) = vault::write_automatic_password_backup(app, false) {
         eprintln!("Automatische Kennwort-Sicherung beim Start fehlgeschlagen: {error}");
     }
@@ -1135,6 +1219,66 @@ fn write_calendar_events(
 #[tauri::command]
 fn list_calendar_events(app: AppHandle) -> Result<Vec<CalendarEvent>, String> {
     read_calendar_events(&open_db(&app)?, false)
+}
+
+#[tauri::command]
+fn list_calendar_events_in_range(
+    app: AppHandle,
+    starts_before: String,
+    ends_after: String,
+) -> Result<Vec<CalendarEvent>, String> {
+    let conn = open_db(&app)?;
+    let mut statement = conn
+        .prepare(
+            "SELECT event_json FROM calendar_events
+             WHERE deleted_at IS NULL
+               AND starts_at < ?1
+               AND (
+                 COALESCE(json_extract(event_json, '$.endsAt'), starts_at) > ?2
+                 OR (json_type(event_json, '$.recurrence') IS NOT NULL
+                     AND json_type(event_json, '$.recurrence') != 'null')
+               )
+             ORDER BY starts_at",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params![starts_before, ends_after], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|error| error.to_string())?;
+    rows.map(|row| {
+        serde_json::from_str::<CalendarEvent>(&row.map_err(|error| error.to_string())?)
+            .map_err(|error| format!("Gespeicherter Kalendertermin ist beschädigt: {error}"))
+    })
+    .collect()
+}
+
+#[tauri::command]
+fn get_calendar_overview(app: AppHandle) -> Result<CalendarOverview, String> {
+    let conn = open_db(&app)?;
+    let total = conn
+        .query_row(
+            "SELECT COUNT(*) FROM calendar_events WHERE deleted_at IS NULL",
+            [],
+            |row| row.get::<_, usize>(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let mut statement = conn
+        .prepare(
+            "SELECT DISTINCT trim(json_extract(event_json, '$.source'))
+             FROM calendar_events
+             WHERE deleted_at IS NULL
+               AND json_extract(event_json, '$.source') IS NOT NULL
+               AND trim(json_extract(event_json, '$.source')) != ''
+             ORDER BY 1 COLLATE NOCASE",
+        )
+        .map_err(|error| error.to_string())?;
+    let sources = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    Ok(CalendarOverview { total, sources })
 }
 
 #[tauri::command]
@@ -1606,9 +1750,11 @@ pub fn read_contact_sync_outbox(
     let mut statement = conn
         .prepare(
             "SELECT contacts.id, contacts.first_name, contacts.last_name, contacts.display_name,
-                    contacts.email, contacts.phone, contacts.mobile_phone, contacts.street,
-                    contacts.postal_code, contacts.city, contacts.country, contacts.short_info,
-                    contacts.notes, contacts.created_at, contacts.updated_at, contacts.deleted_at,
+                    contacts.email, contacts.private_email, contacts.second_private_email,
+                    contacts.phone, contacts.mobile_phone, contacts.private_phone, contacts.second_private_phone,
+                    contacts.company, contacts.street, contacts.postal_code, contacts.city,
+                    contacts.country, contacts.short_info, contacts.notes,
+                    contacts.created_at, contacts.updated_at, contacts.deleted_at,
                     contact_sync_outbox.action
              FROM contact_sync_outbox
              INNER JOIN contacts ON contacts.id = contact_sync_outbox.local_contact_id
@@ -1625,20 +1771,25 @@ pub fn read_contact_sync_outbox(
                     last_name: row.get(2)?,
                     display_name: row.get(3)?,
                     email: row.get(4)?,
-                    phone: row.get(5)?,
-                    mobile_phone: row.get(6)?,
-                    street: row.get(7)?,
-                    postal_code: row.get(8)?,
-                    city: row.get(9)?,
-                    country: row.get(10)?,
-                    short_info: row.get(11)?,
-                    notes: row.get(12)?,
+                    private_email: row.get(5)?,
+                    second_private_email: row.get(6)?,
+                    phone: row.get(7)?,
+                    mobile_phone: row.get(8)?,
+                    private_phone: row.get(9)?,
+                    second_private_phone: row.get(10)?,
+                    company: row.get(11)?,
+                    street: row.get(12)?,
+                    postal_code: row.get(13)?,
+                    city: row.get(14)?,
+                    country: row.get(15)?,
+                    short_info: row.get(16)?,
+                    notes: row.get(17)?,
                     groups: Vec::new(),
-                    created_at: row.get(13)?,
-                    updated_at: row.get(14)?,
-                    deleted_at: row.get(15)?,
+                    created_at: row.get(18)?,
+                    updated_at: row.get(19)?,
+                    deleted_at: row.get(20)?,
                 },
-                row.get::<_, String>(16)?,
+                row.get::<_, String>(21)?,
             ))
         })
         .map_err(|error| error.to_string())?;
@@ -2207,6 +2358,79 @@ pub struct RecoveryRestoreResult {
     pub calendar_events: usize,
 }
 
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryPreviewItem {
+    pub kind: String,
+    pub id: String,
+    pub title: String,
+    pub detail: String,
+    pub destination: String,
+    pub groups: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryGroupPreview {
+    pub name: String,
+    pub contacts: usize,
+    pub will_be_created: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryArchivePreview {
+    pub source: String,
+    pub source_label: String,
+    pub created_at: String,
+    pub active_contacts: usize,
+    pub trash_contacts: usize,
+    pub active_calendar_events: usize,
+    pub trash_calendar_events: usize,
+    pub groups_to_create: usize,
+    pub total_items: usize,
+    pub matching_items: usize,
+    pub offset: usize,
+    pub has_more: bool,
+    pub items: Vec<RecoveryPreviewItem>,
+    pub groups: Vec<RecoveryGroupPreview>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryArchiveRestoreResult {
+    pub source: String,
+    pub restored_at: String,
+    pub active_contacts: usize,
+    pub trash_contacts: usize,
+    pub active_calendar_events: usize,
+    pub trash_calendar_events: usize,
+    pub groups: usize,
+}
+
+#[derive(Debug, Clone)]
+struct RecoverableContact {
+    contact: Contact,
+    existing_id: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+struct RecoverableCalendarEvent {
+    event: CalendarEvent,
+    existing_id: Option<String>,
+}
+
+#[derive(Debug)]
+struct RecoveryCandidates {
+    source: String,
+    source_label: String,
+    created_at: String,
+    contacts: Vec<RecoverableContact>,
+    calendar_events: Vec<RecoverableCalendarEvent>,
+    groups: Vec<Group>,
+    existing_contact_groups: Vec<(i64, Vec<Group>)>,
+}
+
 fn recovery_checkpoint_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let app_data = app.path().app_data_dir().map_err(|error| {
         format!("Interner Wiederherstellungsordner konnte nicht ermittelt werden: {error}")
@@ -2611,9 +2835,729 @@ fn recovery_checkpoint_for_restore(
         .or_else(|| checkpoints.last().map(|stored| stored.checkpoint.clone()))
 }
 
-fn create_auto_backup(app: &AppHandle, conn: &Connection) -> Result<(), String> {
-    let data = load_backup_data(conn)?;
-    write_automatic_backup(app, data, false)
+fn read_automatic_recovery_backup(app: &AppHandle) -> Result<BackupData, String> {
+    let app_data_path = automatic_backup_app_data_dir(app)?.join(AUTOMATIC_BACKUP_LATEST);
+    let documents_path = automatic_backup_dir(app)?.join(AUTOMATIC_BACKUP_LATEST);
+    let content = fs::read_to_string(&app_data_path)
+        .or_else(|_| fs::read_to_string(&documents_path))
+        .map_err(|error| format!("Das Abschlussarchiv konnte nicht gelesen werden: {error}"))?;
+    serde_json::from_str(&content)
+        .map_err(|error| format!("Das Abschlussarchiv ist beschädigt: {error}"))
+}
+
+fn read_recovery_source(
+    app: &AppHandle,
+    source: &str,
+    checkpoint_id: Option<&str>,
+) -> Result<(BackupData, String, String), String> {
+    match source {
+        "closing" => {
+            let backup = read_automatic_recovery_backup(app)?;
+            let created_at = backup.exported_at.clone();
+            Ok((backup, "Abschlussarchiv".to_string(), created_at))
+        }
+        "background" => {
+            let checkpoints = read_recovery_checkpoints(app)?;
+            let stored = if let Some(id) = checkpoint_id {
+                checkpoints.iter().find(|stored| stored.id == id)
+            } else {
+                checkpoints.last()
+            }
+            .ok_or_else(|| "Noch kein Hintergrund-Backup vorhanden.".to_string())?;
+            Ok((
+                stored.checkpoint.backup.clone(),
+                "Laufender Schutz".to_string(),
+                stored.checkpoint.created_at.clone(),
+            ))
+        }
+        _ => Err("Unbekannte Backup-Quelle.".to_string()),
+    }
+}
+
+fn normalized_recovery_name(contact: &Contact) -> String {
+    let name = if contact.display_name.trim().is_empty() {
+        format!("{} {}", contact.first_name, contact.last_name)
+    } else {
+        contact.display_name.clone()
+    };
+    name.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn recovery_contact_emails(contact: &Contact) -> HashSet<String> {
+    [
+        &contact.email,
+        &contact.private_email,
+        &contact.second_private_email,
+    ]
+    .into_iter()
+    .map(|value| value.trim().to_lowercase())
+    .filter(|value| !value.is_empty())
+    .collect()
+}
+
+fn recovery_contact_phones(contact: &Contact) -> HashSet<String> {
+    [
+        &contact.phone,
+        &contact.mobile_phone,
+        &contact.private_phone,
+        &contact.second_private_phone,
+    ]
+    .into_iter()
+    .map(|value| normalize_phone_for_match(value))
+    .filter(|value| !value.is_empty())
+    .collect()
+}
+
+fn recovery_contacts_match(left: &Contact, right: &Contact) -> bool {
+    let left_emails = recovery_contact_emails(left);
+    let right_emails = recovery_contact_emails(right);
+    if !left_emails.is_disjoint(&right_emails) {
+        return true;
+    }
+    let left_name = normalized_recovery_name(left);
+    if left_name.is_empty() || left_name != normalized_recovery_name(right) {
+        return false;
+    }
+    let left_phones = recovery_contact_phones(left);
+    let right_phones = recovery_contact_phones(right);
+    !left_phones.is_empty() && !left_phones.is_disjoint(&right_phones)
+}
+
+fn recovery_contact_title(contact: &Contact) -> String {
+    let name = if contact.display_name.trim().is_empty() {
+        format!("{} {}", contact.first_name, contact.last_name)
+            .trim()
+            .to_string()
+    } else {
+        contact.display_name.trim().to_string()
+    };
+    if name.is_empty() {
+        [
+            &contact.email,
+            &contact.private_email,
+            &contact.second_private_email,
+        ]
+        .into_iter()
+        .find(|value| !value.trim().is_empty())
+        .map(|value| value.trim().to_string())
+        .unwrap_or_else(|| "Kontakt ohne Namen".to_string())
+    } else {
+        name
+    }
+}
+
+fn build_recovery_candidates(
+    app: &AppHandle,
+    source: &str,
+    checkpoint_id: Option<&str>,
+) -> Result<RecoveryCandidates, String> {
+    let (backup, source_label, created_at) = read_recovery_source(app, source, checkpoint_id)?;
+    let conn = open_db(app)?;
+    let current = load_backup_data(&conn)?;
+
+    let mut contacts = Vec::new();
+    let mut existing_contact_groups = Vec::new();
+    for backup_contact in &backup.contacts {
+        let existing = backup_contact
+            .id
+            .and_then(|id| {
+                current
+                    .contacts
+                    .iter()
+                    .find(|contact| contact.id == Some(id))
+            })
+            .filter(|contact| recovery_contacts_match(contact, backup_contact))
+            .or_else(|| {
+                current
+                    .contacts
+                    .iter()
+                    .find(|contact| recovery_contacts_match(contact, backup_contact))
+            });
+        match existing {
+            Some(contact)
+                if contact.deleted_at.is_some() && backup_contact.deleted_at.is_none() =>
+            {
+                contacts.push(RecoverableContact {
+                    contact: backup_contact.clone(),
+                    existing_id: contact.id,
+                });
+            }
+            Some(contact) => {
+                if backup_contact.deleted_at.is_none() {
+                    if let Some(id) = contact.id {
+                        existing_contact_groups.push((id, backup_contact.groups.clone()));
+                    }
+                }
+            }
+            None => contacts.push(RecoverableContact {
+                contact: backup_contact.clone(),
+                existing_id: None,
+            }),
+        }
+    }
+
+    let current_active =
+        parse_calendar_events(&current.browser_storage, CALENDAR_ACTIVE_STORAGE_KEY);
+    let current_deleted =
+        parse_calendar_events(&current.browser_storage, CALENDAR_DELETED_STORAGE_KEY);
+    let mut current_by_id = HashMap::<String, (CalendarEvent, bool)>::new();
+    let mut current_by_duplicate = HashMap::<String, (String, bool)>::new();
+    for event in current_active {
+        current_by_duplicate.insert(
+            normalized_calendar_duplicate_key(&event),
+            (event.id.clone(), false),
+        );
+        current_by_id.insert(event.id.clone(), (event, false));
+    }
+    for event in current_deleted {
+        current_by_duplicate.insert(
+            normalized_calendar_duplicate_key(&event),
+            (event.id.clone(), true),
+        );
+        current_by_id.insert(event.id.clone(), (event, true));
+    }
+
+    let mut backup_events =
+        parse_calendar_events(&backup.browser_storage, CALENDAR_ACTIVE_STORAGE_KEY);
+    backup_events.extend(parse_calendar_events(
+        &backup.browser_storage,
+        CALENDAR_DELETED_STORAGE_KEY,
+    ));
+    let mut calendar_events = Vec::new();
+    for backup_event in backup_events {
+        if let Some((current_event, is_deleted)) = current_by_id.get(&backup_event.id) {
+            if *is_deleted && backup_event.deleted_at.is_none() {
+                calendar_events.push(RecoverableCalendarEvent {
+                    event: backup_event,
+                    existing_id: Some(current_event.id.clone()),
+                });
+            }
+            continue;
+        }
+        let duplicate_key = normalized_calendar_duplicate_key(&backup_event);
+        if let Some((existing_id, is_deleted)) = current_by_duplicate.get(&duplicate_key) {
+            if *is_deleted && backup_event.deleted_at.is_none() {
+                calendar_events.push(RecoverableCalendarEvent {
+                    event: backup_event,
+                    existing_id: Some(existing_id.clone()),
+                });
+            }
+            continue;
+        }
+        calendar_events.push(RecoverableCalendarEvent {
+            event: backup_event,
+            existing_id: None,
+        });
+    }
+
+    let current_groups_by_name = current
+        .groups
+        .iter()
+        .map(|group| (group.name.trim().to_lowercase(), group.deleted_at.is_some()))
+        .collect::<HashMap<_, _>>();
+    let groups = backup
+        .groups
+        .into_iter()
+        .filter(|group| {
+            let key = group.name.trim().to_lowercase();
+            match current_groups_by_name.get(&key) {
+                None => true,
+                Some(is_deleted) => *is_deleted && group.deleted_at.is_none(),
+            }
+        })
+        .collect();
+
+    Ok(RecoveryCandidates {
+        source: source.to_string(),
+        source_label,
+        created_at,
+        contacts,
+        calendar_events,
+        groups,
+        existing_contact_groups,
+    })
+}
+
+fn recovery_preview_item_matches(item: &RecoveryPreviewItem, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    let haystack = format!(
+        "{} {} {} {}",
+        item.title,
+        item.detail,
+        item.destination,
+        item.groups.join(" ")
+    )
+    .to_lowercase();
+    haystack.contains(query)
+}
+
+fn preview_recovery_archive_blocking(
+    app: AppHandle,
+    source: String,
+    checkpoint_id: Option<String>,
+    query: Option<String>,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> Result<RecoveryArchivePreview, String> {
+    let candidates = build_recovery_candidates(&app, &source, checkpoint_id.as_deref())?;
+    let mut group_counts = candidates
+        .groups
+        .iter()
+        .map(|group| (group.name.clone(), 0usize))
+        .collect::<BTreeMap<_, _>>();
+    let mut items =
+        Vec::with_capacity(candidates.contacts.len() + candidates.calendar_events.len());
+    let mut active_contacts = 0usize;
+    let mut trash_contacts = 0usize;
+    let mut active_calendar_events = 0usize;
+    let mut trash_calendar_events = 0usize;
+
+    for candidate in &candidates.contacts {
+        let contact = &candidate.contact;
+        let destination = if contact.deleted_at.is_some() {
+            "trash"
+        } else {
+            "contacts"
+        };
+        if destination == "trash" {
+            trash_contacts += 1;
+        } else {
+            active_contacts += 1;
+        }
+        let groups = contact
+            .groups
+            .iter()
+            .map(|group| group.name.clone())
+            .collect::<Vec<_>>();
+        for group in &groups {
+            *group_counts.entry(group.clone()).or_default() += 1;
+        }
+        let detail = [
+            &contact.email,
+            &contact.private_email,
+            &contact.phone,
+            &contact.mobile_phone,
+        ]
+        .into_iter()
+        .find(|value| !value.trim().is_empty())
+        .map(|value| value.trim().to_string())
+        .unwrap_or_else(|| "Keine E-Mail oder Telefonnummer".to_string());
+        items.push(RecoveryPreviewItem {
+            kind: "contact".to_string(),
+            id: contact.id.map(|id| id.to_string()).unwrap_or_default(),
+            title: recovery_contact_title(contact),
+            detail,
+            destination: destination.to_string(),
+            groups,
+        });
+    }
+    for (_, groups) in &candidates.existing_contact_groups {
+        for group in groups {
+            *group_counts.entry(group.name.clone()).or_default() += 1;
+        }
+    }
+    for candidate in &candidates.calendar_events {
+        let event = &candidate.event;
+        let destination = if event.deleted_at.is_some() {
+            "trash"
+        } else {
+            "calendar"
+        };
+        if destination == "trash" {
+            trash_calendar_events += 1;
+        } else {
+            active_calendar_events += 1;
+        }
+        items.push(RecoveryPreviewItem {
+            kind: "calendar".to_string(),
+            id: event.id.clone(),
+            title: if event.title.trim().is_empty() {
+                "Termin ohne Titel".to_string()
+            } else {
+                event.title.clone()
+            },
+            detail: format!("{} · {}", event.starts_at, event.source),
+            destination: destination.to_string(),
+            groups: Vec::new(),
+        });
+    }
+    items.sort_by(|left, right| {
+        left.kind
+            .cmp(&right.kind)
+            .then_with(|| left.title.to_lowercase().cmp(&right.title.to_lowercase()))
+    });
+
+    let query = query.unwrap_or_default().trim().to_lowercase();
+    let matching = items
+        .into_iter()
+        .filter(|item| recovery_preview_item_matches(item, &query))
+        .collect::<Vec<_>>();
+    let matching_items = matching.len();
+    let offset = offset.unwrap_or(0).min(matching_items);
+    let limit = limit.unwrap_or(100).clamp(1, 250);
+    let page = matching
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .collect::<Vec<_>>();
+    let has_more = offset + page.len() < matching_items;
+    let new_group_names = candidates
+        .groups
+        .iter()
+        .map(|group| group.name.to_lowercase())
+        .collect::<HashSet<_>>();
+    let groups = group_counts
+        .into_iter()
+        .map(|(name, contacts)| RecoveryGroupPreview {
+            will_be_created: new_group_names.contains(&name.to_lowercase()),
+            name,
+            contacts,
+        })
+        .collect::<Vec<_>>();
+
+    Ok(RecoveryArchivePreview {
+        source: candidates.source,
+        source_label: candidates.source_label,
+        created_at: candidates.created_at,
+        active_contacts,
+        trash_contacts,
+        active_calendar_events,
+        trash_calendar_events,
+        groups_to_create: candidates.groups.len(),
+        total_items: active_contacts
+            + trash_contacts
+            + active_calendar_events
+            + trash_calendar_events
+            + candidates.groups.len(),
+        matching_items,
+        offset,
+        has_more,
+        items: page,
+        groups,
+    })
+}
+
+#[tauri::command]
+async fn preview_recovery_archive(
+    app: AppHandle,
+    source: String,
+    checkpoint_id: Option<String>,
+    query: Option<String>,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> Result<RecoveryArchivePreview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        preview_recovery_archive_blocking(app, source, checkpoint_id, query, offset, limit)
+    })
+    .await
+    .map_err(|error| format!("Backup-Vorschau konnte nicht ausgeführt werden: {error}"))?
+}
+
+fn ensure_recovery_group(
+    tx: &rusqlite::Transaction<'_>,
+    group: &Group,
+) -> Result<(i64, bool), String> {
+    let existing = tx
+        .query_row(
+            "SELECT id, deleted_at FROM groups WHERE lower(name) = lower(?1) LIMIT 1",
+            params![group.name.trim()],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    if let Some((id, deleted_at)) = existing {
+        if deleted_at.is_some() && group.deleted_at.is_none() {
+            tx.execute(
+                "UPDATE groups SET description = ?1, updated_at = ?2, deleted_at = NULL WHERE id = ?3",
+                params![group.description, now(), id],
+            )
+            .map_err(|error| error.to_string())?;
+            return Ok((id, true));
+        }
+        return Ok((id, false));
+    }
+    tx.execute(
+        "INSERT INTO groups (name, description, created_at, updated_at, deleted_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            group.name.trim(),
+            group.description,
+            group.created_at,
+            group.updated_at,
+            group.deleted_at
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok((tx.last_insert_rowid(), true))
+}
+
+fn write_recovered_contact(
+    tx: &rusqlite::Transaction<'_>,
+    candidate: &RecoverableContact,
+    group_ids: &[i64],
+) -> Result<i64, String> {
+    let contact = &candidate.contact;
+    let contact_id = if let Some(existing_id) = candidate.existing_id {
+        tx.execute(
+            "UPDATE contacts SET
+               first_name = ?1, last_name = ?2, display_name = ?3, email = ?4,
+               private_email = ?5, second_private_email = ?6, phone = ?7,
+               mobile_phone = ?8, private_phone = ?9, second_private_phone = ?10,
+               company = ?11, street = ?12, postal_code = ?13, city = ?14,
+               country = ?15, short_info = ?16, notes = ?17, updated_at = ?18,
+               deleted_at = NULL
+             WHERE id = ?19",
+            params![
+                contact.first_name,
+                contact.last_name,
+                contact.display_name,
+                contact.email,
+                contact.private_email,
+                contact.second_private_email,
+                contact.phone,
+                contact.mobile_phone,
+                contact.private_phone,
+                contact.second_private_phone,
+                contact.company,
+                contact.street,
+                contact.postal_code,
+                contact.city,
+                contact.country,
+                contact.short_info,
+                contact.notes,
+                now(),
+                existing_id
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+        existing_id
+    } else {
+        tx.execute(
+            "INSERT INTO contacts (
+               first_name, last_name, display_name, email, private_email, second_private_email,
+               phone, mobile_phone, private_phone, second_private_phone, company, street,
+               postal_code, city, country, short_info, notes, created_at, updated_at, deleted_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+            params![
+                contact.first_name,
+                contact.last_name,
+                contact.display_name,
+                contact.email,
+                contact.private_email,
+                contact.second_private_email,
+                contact.phone,
+                contact.mobile_phone,
+                contact.private_phone,
+                contact.second_private_phone,
+                contact.company,
+                contact.street,
+                contact.postal_code,
+                contact.city,
+                contact.country,
+                contact.short_info,
+                contact.notes,
+                contact.created_at,
+                contact.updated_at,
+                contact.deleted_at
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+        tx.last_insert_rowid()
+    };
+
+    for group_id in group_ids {
+        tx.execute(
+            "INSERT OR IGNORE INTO contact_groups (contact_id, group_id) VALUES (?1, ?2)",
+            params![contact_id, group_id],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    if contact.deleted_at.is_none() {
+        queue_contact_sync_in_transaction(tx, contact_id, "upsert")?;
+    }
+    Ok(contact_id)
+}
+
+fn write_recovered_calendar_event(
+    tx: &rusqlite::Transaction<'_>,
+    candidate: &RecoverableCalendarEvent,
+) -> Result<(), String> {
+    let mut event = candidate.event.clone();
+    if let Some(existing_id) = &candidate.existing_id {
+        event.id = existing_id.clone();
+    }
+    let event_json = serde_json::to_string(&event).map_err(|error| error.to_string())?;
+    let duplicate_key = normalized_calendar_duplicate_key(&event);
+    if candidate.existing_id.is_some() {
+        tx.execute(
+            "UPDATE calendar_events SET starts_at = ?1, duplicate_key = ?2, event_json = ?3,
+                    updated_at = ?4, deleted_at = ?5 WHERE id = ?6",
+            params![
+                event.starts_at,
+                duplicate_key,
+                event_json,
+                now(),
+                event.deleted_at,
+                event.id
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    } else {
+        tx.execute(
+            "INSERT INTO calendar_events (id, starts_at, duplicate_key, event_json, updated_at, deleted_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                event.id,
+                event.starts_at,
+                duplicate_key,
+                event_json,
+                if event.updated_at.trim().is_empty() { now() } else { event.updated_at.clone() },
+                event.deleted_at
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    if event.deleted_at.is_none() {
+        tx.execute(
+            "INSERT INTO calendar_sync_outbox (event_id, action, queued_at, attempts, last_error)
+             VALUES (?1, 'upsert', ?2, 0, NULL)
+             ON CONFLICT(event_id) DO UPDATE SET action = 'upsert', queued_at = excluded.queued_at,
+               attempts = 0, last_error = NULL",
+            params![event.id, now()],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn restore_recovery_archive_blocking(
+    app: AppHandle,
+    source: String,
+    checkpoint_id: Option<String>,
+) -> Result<RecoveryArchiveRestoreResult, String> {
+    let candidates = build_recovery_candidates(&app, &source, checkpoint_id.as_deref())?;
+    let mut conn = open_db(&app)?;
+    checkpoint_before_destructive_change(&app, &conn)?;
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+
+    let mut group_ids_by_name = HashMap::<String, i64>::new();
+    let mut groups_changed = 0usize;
+    for group in &candidates.groups {
+        let (id, changed) = ensure_recovery_group(&tx, group)?;
+        group_ids_by_name.insert(group.name.trim().to_lowercase(), id);
+        if changed {
+            groups_changed += 1;
+        }
+    }
+    for candidate in &candidates.contacts {
+        for group in &candidate.contact.groups {
+            let key = group.name.trim().to_lowercase();
+            if group_ids_by_name.contains_key(&key) {
+                continue;
+            }
+            let (id, changed) = ensure_recovery_group(&tx, group)?;
+            group_ids_by_name.insert(key, id);
+            if changed {
+                groups_changed += 1;
+            }
+        }
+    }
+    for (_, groups) in &candidates.existing_contact_groups {
+        for group in groups {
+            let key = group.name.trim().to_lowercase();
+            if group_ids_by_name.contains_key(&key) {
+                continue;
+            }
+            let (id, changed) = ensure_recovery_group(&tx, group)?;
+            group_ids_by_name.insert(key, id);
+            if changed {
+                groups_changed += 1;
+            }
+        }
+    }
+
+    let mut active_contacts = 0usize;
+    let mut trash_contacts = 0usize;
+    for candidate in &candidates.contacts {
+        let group_ids = candidate
+            .contact
+            .groups
+            .iter()
+            .filter(|group| group.deleted_at.is_none())
+            .filter_map(|group| {
+                group_ids_by_name
+                    .get(&group.name.trim().to_lowercase())
+                    .copied()
+            })
+            .collect::<Vec<_>>();
+        write_recovered_contact(&tx, candidate, &group_ids)?;
+        if candidate.contact.deleted_at.is_some() {
+            trash_contacts += 1;
+        } else {
+            active_contacts += 1;
+        }
+    }
+    for (contact_id, groups) in &candidates.existing_contact_groups {
+        for group_id in groups
+            .iter()
+            .filter(|group| group.deleted_at.is_none())
+            .filter_map(|group| {
+                group_ids_by_name
+                    .get(&group.name.trim().to_lowercase())
+                    .copied()
+            })
+        {
+            tx.execute(
+                "INSERT OR IGNORE INTO contact_groups (contact_id, group_id) VALUES (?1, ?2)",
+                params![contact_id, group_id],
+            )
+            .map_err(|error| error.to_string())?;
+        }
+    }
+
+    let mut active_calendar_events = 0usize;
+    let mut trash_calendar_events = 0usize;
+    for candidate in &candidates.calendar_events {
+        write_recovered_calendar_event(&tx, candidate)?;
+        if candidate.event.deleted_at.is_some() {
+            trash_calendar_events += 1;
+        } else {
+            active_calendar_events += 1;
+        }
+    }
+    tx.commit().map_err(|error| error.to_string())?;
+
+    let refreshed = load_backup_data(&conn)?;
+    write_automatic_backup(&app, refreshed.clone(), true)?;
+    write_recovery_checkpoint(&app, refreshed)?;
+
+    Ok(RecoveryArchiveRestoreResult {
+        source: candidates.source,
+        restored_at: now(),
+        active_contacts,
+        trash_contacts,
+        active_calendar_events,
+        trash_calendar_events,
+        groups: groups_changed,
+    })
+}
+
+#[tauri::command]
+async fn restore_recovery_archive(
+    app: AppHandle,
+    source: String,
+    checkpoint_id: Option<String>,
+) -> Result<RecoveryArchiveRestoreResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        restore_recovery_archive_blocking(app, source, checkpoint_id)
+    })
+    .await
+    .map_err(|error| format!("Wiederherstellung konnte nicht ausgeführt werden: {error}"))?
 }
 
 fn checkpoint_before_destructive_change(app: &AppHandle, conn: &Connection) -> Result<(), String> {
@@ -2710,15 +3654,16 @@ fn list_contacts(
     let mut stmt = conn
         .prepare(
             "
-            SELECT DISTINCT c.id, c.first_name, c.last_name, c.display_name, c.email, c.phone,
-                   c.mobile_phone, c.street, c.postal_code, c.city, c.country, c.short_info, c.notes,
-                   c.created_at, c.updated_at
+            SELECT DISTINCT c.id, c.first_name, c.last_name, c.display_name, c.email,
+                   c.private_email, c.second_private_email, c.phone, c.mobile_phone,
+                   c.private_phone, c.second_private_phone, c.company, c.street, c.postal_code,
+                   c.city, c.country, c.short_info, c.notes, c.created_at, c.updated_at
             FROM contacts c
             LEFT JOIN contact_groups cg ON cg.contact_id = c.id
             WHERE (?2 IS NULL OR cg.group_id = ?2)
               AND c.deleted_at IS NULL
               AND (
-                lower(c.first_name || ' ' || c.last_name || ' ' || c.display_name || ' ' || c.email || ' ' || c.phone || ' ' || c.mobile_phone || ' ' || c.city || ' ' || c.short_info)
+                lower(c.first_name || ' ' || c.last_name || ' ' || c.display_name || ' ' || c.email || ' ' || c.private_email || ' ' || c.second_private_email || ' ' || c.phone || ' ' || c.mobile_phone || ' ' || c.private_phone || ' ' || c.second_private_phone || ' ' || c.company || ' ' || c.city || ' ' || c.short_info)
                 LIKE ?1
               )
             ORDER BY c.last_name COLLATE NOCASE, c.first_name COLLATE NOCASE, c.display_name COLLATE NOCASE
@@ -2734,17 +3679,22 @@ fn list_contacts(
                 last_name: row.get(2)?,
                 display_name: row.get(3)?,
                 email: row.get(4)?,
-                phone: row.get(5)?,
-                mobile_phone: row.get(6)?,
-                street: row.get(7)?,
-                postal_code: row.get(8)?,
-                city: row.get(9)?,
-                country: row.get(10)?,
-                short_info: row.get(11)?,
-                notes: row.get(12)?,
+                private_email: row.get(5)?,
+                second_private_email: row.get(6)?,
+                phone: row.get(7)?,
+                mobile_phone: row.get(8)?,
+                private_phone: row.get(9)?,
+                second_private_phone: row.get(10)?,
+                company: row.get(11)?,
+                street: row.get(12)?,
+                postal_code: row.get(13)?,
+                city: row.get(14)?,
+                country: row.get(15)?,
+                short_info: row.get(16)?,
+                notes: row.get(17)?,
                 groups: Vec::new(),
-                created_at: row.get(13)?,
-                updated_at: row.get(14)?,
+                created_at: row.get(18)?,
+                updated_at: row.get(19)?,
                 deleted_at: None,
             })
         })
@@ -2753,12 +3703,108 @@ fn list_contacts(
     let mut contacts = rows
         .collect::<Result<Vec<_>, _>>()
         .map_err(|err| err.to_string())?;
-    for contact in &mut contacts {
-        if let Some(id) = contact.id {
-            contact.groups = read_groups_for_contact(&conn, id)?;
+    // Load all group memberships in one query. The previous per-contact query
+    // caused tens of thousands of SQLite round trips for large address books.
+    let contact_indexes = contacts
+        .iter()
+        .enumerate()
+        .filter_map(|(index, contact)| contact.id.map(|id| (id, index)))
+        .collect::<HashMap<_, _>>();
+    if !contact_indexes.is_empty() {
+        let contact_ids = contact_indexes.keys().copied().collect::<Vec<_>>();
+        let contact_filter = if contact_ids.len() <= 900 {
+            format!(
+                " AND cg.contact_id IN ({})",
+                std::iter::repeat_n("?", contact_ids.len())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        } else {
+            String::new()
+        };
+        let mut group_statement = conn
+            .prepare(&format!(
+                "SELECT cg.contact_id, g.id, g.name, g.description, g.created_at, g.updated_at, g.deleted_at
+                 FROM contact_groups cg
+                 JOIN groups g ON g.id = cg.group_id
+                 WHERE g.deleted_at IS NULL{contact_filter}
+                 ORDER BY g.name COLLATE NOCASE"
+            ))
+            .map_err(|error| error.to_string())?;
+        let memberships = group_statement
+            .query_map(
+                params_from_iter(contact_ids.iter().take(if contact_ids.len() <= 900 {
+                    contact_ids.len()
+                } else {
+                    0
+                })),
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        Group {
+                            id: Some(row.get(1)?),
+                            name: row.get(2)?,
+                            description: row.get(3)?,
+                            created_at: row.get(4)?,
+                            updated_at: row.get(5)?,
+                            deleted_at: row.get(6)?,
+                        },
+                    ))
+                },
+            )
+            .map_err(|error| error.to_string())?;
+        for membership in memberships {
+            let (contact_id, group) = membership.map_err(|error| error.to_string())?;
+            if let Some(index) = contact_indexes.get(&contact_id) {
+                contacts[*index].groups.push(group);
+            }
         }
     }
     Ok(contacts)
+}
+
+#[tauri::command]
+fn get_contact_overview_counts(app: AppHandle) -> Result<ContactOverviewCounts, String> {
+    let conn = open_db(&app)?;
+    let total = conn
+        .query_row(
+            "SELECT COUNT(*) FROM contacts WHERE deleted_at IS NULL",
+            [],
+            |row| row.get::<_, usize>(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let ungrouped = conn
+        .query_row(
+            "SELECT COUNT(*) FROM contacts c
+             WHERE c.deleted_at IS NULL
+               AND NOT EXISTS (SELECT 1 FROM contact_groups cg WHERE cg.contact_id = c.id)",
+            [],
+            |row| row.get::<_, usize>(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let mut statement = conn
+        .prepare(
+            "SELECT cg.group_id, COUNT(DISTINCT cg.contact_id)
+             FROM contact_groups cg
+             JOIN contacts c ON c.id = cg.contact_id
+             JOIN groups g ON g.id = cg.group_id
+             WHERE c.deleted_at IS NULL AND g.deleted_at IS NULL
+             GROUP BY cg.group_id",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, usize>(1)?))
+        })
+        .map_err(|error| error.to_string())?;
+    let groups = rows
+        .collect::<Result<HashMap<_, _>, _>>()
+        .map_err(|error| error.to_string())?;
+    Ok(ContactOverviewCounts {
+        total,
+        ungrouped,
+        groups,
+    })
 }
 
 fn save_contact_internal(
@@ -2784,8 +3830,9 @@ fn save_contact_internal(
             .execute(
                 "
             UPDATE contacts
-            SET first_name = ?, last_name = ?, display_name = ?, email = ?, phone = ?,
-                mobile_phone = ?, street = ?, postal_code = ?, city = ?, country = ?,
+            SET first_name = ?, last_name = ?, display_name = ?, email = ?, private_email = ?,
+                second_private_email = ?, phone = ?, mobile_phone = ?, private_phone = ?,
+                second_private_phone = ?, company = ?, street = ?, postal_code = ?, city = ?, country = ?,
                 short_info = ?, notes = ?, updated_at = ?
             WHERE id = ?
             ",
@@ -2794,8 +3841,13 @@ fn save_contact_internal(
                     contact.last_name,
                     display_name,
                     contact.email,
+                    contact.private_email,
+                    contact.second_private_email,
                     contact.phone,
                     contact.mobile_phone,
+                    contact.private_phone,
+                    contact.second_private_phone,
+                    contact.company,
                     contact.street,
                     contact.postal_code,
                     contact.city,
@@ -2813,18 +3865,24 @@ fn save_contact_internal(
             .execute(
                 "
             INSERT INTO contacts (
-                first_name, last_name, display_name, email, phone, mobile_phone, street,
+                first_name, last_name, display_name, email, private_email, second_private_email,
+                phone, mobile_phone, private_phone, second_private_phone, company, street,
                 postal_code, city, country, short_info, notes, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ",
                 params![
                     contact.first_name,
                     contact.last_name,
                     display_name,
                     contact.email,
+                    contact.private_email,
+                    contact.second_private_email,
                     contact.phone,
                     contact.mobile_phone,
+                    contact.private_phone,
+                    contact.second_private_phone,
+                    contact.company,
                     contact.street,
                     contact.postal_code,
                     contact.city,
@@ -3018,7 +4076,8 @@ fn list_deleted_contacts(app: AppHandle) -> Result<Vec<Contact>, String> {
     let mut stmt = conn
         .prepare(
             "
-            SELECT id, first_name, last_name, display_name, email, phone, mobile_phone,
+            SELECT id, first_name, last_name, display_name, email, private_email, second_private_email,
+                   phone, mobile_phone, private_phone, second_private_phone, company,
                    street, postal_code, city, country, short_info, notes, created_at, updated_at, deleted_at
             FROM contacts
             WHERE deleted_at IS NOT NULL
@@ -3034,18 +4093,23 @@ fn list_deleted_contacts(app: AppHandle) -> Result<Vec<Contact>, String> {
                 last_name: row.get(2)?,
                 display_name: row.get(3)?,
                 email: row.get(4)?,
-                phone: row.get(5)?,
-                mobile_phone: row.get(6)?,
-                street: row.get(7)?,
-                postal_code: row.get(8)?,
-                city: row.get(9)?,
-                country: row.get(10)?,
-                short_info: row.get(11)?,
-                notes: row.get(12)?,
+                private_email: row.get(5)?,
+                second_private_email: row.get(6)?,
+                phone: row.get(7)?,
+                mobile_phone: row.get(8)?,
+                private_phone: row.get(9)?,
+                second_private_phone: row.get(10)?,
+                company: row.get(11)?,
+                street: row.get(12)?,
+                postal_code: row.get(13)?,
+                city: row.get(14)?,
+                country: row.get(15)?,
+                short_info: row.get(16)?,
+                notes: row.get(17)?,
                 groups: Vec::new(),
-                created_at: row.get(13)?,
-                updated_at: row.get(14)?,
-                deleted_at: row.get(15)?,
+                created_at: row.get(18)?,
+                updated_at: row.get(19)?,
+                deleted_at: row.get(20)?,
             })
         })
         .map_err(|err| err.to_string())?;
@@ -3441,7 +4505,10 @@ fn purge_deleted_items(
         &category,
         vault_entry_ids.clone(),
     )?;
-    purge_targets_from_automatic_backups(&app, &targets)?;
+    // Contacts, groups and calendar events intentionally remain in both data
+    // archives even when the user empties the app trash. The recovery copy is
+    // the last line of defence against an accidental mass deletion. Password
+    // records keep their stricter explicit-purge behaviour.
     vault::purge_targets_from_automatic_backups(&app, &targets.vault_entry_uuids)?;
     purge_deleted_items_from_connection(
         &mut conn,
@@ -3481,18 +4548,24 @@ fn import_contacts(app: AppHandle, payload: ImportPayload) -> Result<ImportResul
         tx.execute(
             "
             INSERT INTO contacts (
-                first_name, last_name, display_name, email, phone, mobile_phone, street,
+                first_name, last_name, display_name, email, private_email, second_private_email,
+                phone, mobile_phone, private_phone, second_private_phone, company, street,
                 postal_code, city, country, short_info, notes, import_batch_id, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ",
             params![
                 contact.first_name,
                 contact.last_name,
                 display_name,
                 email,
+                contact.private_email,
+                contact.second_private_email,
                 contact.phone,
                 contact.mobile_phone,
+                contact.private_phone,
+                contact.second_private_phone,
+                contact.company,
                 contact.street,
                 contact.postal_code,
                 contact.city,
@@ -3620,12 +4693,13 @@ fn undo_last_outlook_contact_import(app: AppHandle) -> Result<usize, String> {
     Ok(deleted)
 }
 
-fn load_backup_data(conn: &Connection) -> Result<BackupData, String> {
+fn load_backup_data_without_calendar(conn: &Connection) -> Result<BackupData, String> {
     let contacts = {
         let mut stmt = conn
             .prepare(
                 "
-                SELECT id, first_name, last_name, display_name, email, phone, mobile_phone,
+                SELECT id, first_name, last_name, display_name, email, private_email, second_private_email,
+                       phone, mobile_phone, private_phone, second_private_phone, company,
                        street, postal_code, city, country, short_info, notes, created_at, updated_at, deleted_at
                 FROM contacts
                 ORDER BY last_name COLLATE NOCASE, first_name COLLATE NOCASE
@@ -3640,27 +4714,64 @@ fn load_backup_data(conn: &Connection) -> Result<BackupData, String> {
                     last_name: row.get(2)?,
                     display_name: row.get(3)?,
                     email: row.get(4)?,
-                    phone: row.get(5)?,
-                    mobile_phone: row.get(6)?,
-                    street: row.get(7)?,
-                    postal_code: row.get(8)?,
-                    city: row.get(9)?,
-                    country: row.get(10)?,
-                    short_info: row.get(11)?,
-                    notes: row.get(12)?,
+                    private_email: row.get(5)?,
+                    second_private_email: row.get(6)?,
+                    phone: row.get(7)?,
+                    mobile_phone: row.get(8)?,
+                    private_phone: row.get(9)?,
+                    second_private_phone: row.get(10)?,
+                    company: row.get(11)?,
+                    street: row.get(12)?,
+                    postal_code: row.get(13)?,
+                    city: row.get(14)?,
+                    country: row.get(15)?,
+                    short_info: row.get(16)?,
+                    notes: row.get(17)?,
                     groups: Vec::new(),
-                    created_at: row.get(13)?,
-                    updated_at: row.get(14)?,
-                    deleted_at: row.get(15)?,
+                    created_at: row.get(18)?,
+                    updated_at: row.get(19)?,
+                    deleted_at: row.get(20)?,
                 })
             })
             .map_err(|err| err.to_string())?;
         let mut contacts = rows
             .collect::<Result<Vec<_>, _>>()
             .map_err(|err| err.to_string())?;
-        for contact in &mut contacts {
-            if let Some(id) = contact.id {
-                contact.groups = read_groups_for_contact(conn, id)?;
+        let contact_indexes = contacts
+            .iter()
+            .enumerate()
+            .filter_map(|(index, contact)| contact.id.map(|id| (id, index)))
+            .collect::<HashMap<_, _>>();
+        if !contact_indexes.is_empty() {
+            let mut group_statement = conn
+                .prepare(
+                    "SELECT cg.contact_id, g.id, g.name, g.description, g.created_at, g.updated_at, g.deleted_at
+                     FROM contact_groups cg
+                     JOIN groups g ON g.id = cg.group_id
+                     WHERE g.deleted_at IS NULL
+                     ORDER BY g.name COLLATE NOCASE",
+                )
+                .map_err(|error| error.to_string())?;
+            let memberships = group_statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        Group {
+                            id: Some(row.get(1)?),
+                            name: row.get(2)?,
+                            description: row.get(3)?,
+                            created_at: row.get(4)?,
+                            updated_at: row.get(5)?,
+                            deleted_at: row.get(6)?,
+                        },
+                    ))
+                })
+                .map_err(|error| error.to_string())?;
+            for membership in memberships {
+                let (contact_id, group) = membership.map_err(|error| error.to_string())?;
+                if let Some(index) = contact_indexes.get(&contact_id) {
+                    contacts[*index].groups.push(group);
+                }
             }
         }
         contacts
@@ -3707,9 +4818,21 @@ fn load_backup_data(conn: &Connection) -> Result<BackupData, String> {
             .map_err(|err| err.to_string())?
     };
 
+    Ok(BackupData {
+        version: "2.0.0".to_string(),
+        exported_at: now(),
+        contacts,
+        groups,
+        settings,
+        browser_storage: HashMap::new(),
+    })
+}
+
+fn load_backup_data(conn: &Connection) -> Result<BackupData, String> {
+    let mut backup = load_backup_data_without_calendar(conn)?;
     let active_calendar_events = read_calendar_events(conn, false)?;
     let deleted_calendar_events = read_calendar_events(conn, true)?;
-    let mut browser_storage = HashMap::new();
+    let browser_storage = &mut backup.browser_storage;
     browser_storage.insert(
         CALENDAR_ACTIVE_STORAGE_KEY.to_string(),
         serde_json::to_string(&active_calendar_events).map_err(|error| error.to_string())?,
@@ -3719,14 +4842,7 @@ fn load_backup_data(conn: &Connection) -> Result<BackupData, String> {
         serde_json::to_string(&deleted_calendar_events).map_err(|error| error.to_string())?,
     );
 
-    Ok(BackupData {
-        version: "2.0.0".to_string(),
-        exported_at: now(),
-        contacts,
-        groups,
-        settings,
-        browser_storage,
-    })
+    Ok(backup)
 }
 
 #[tauri::command]
@@ -3738,12 +4854,10 @@ fn get_backup_data(app: AppHandle) -> Result<BackupData, String> {
 #[tauri::command]
 fn get_sync_backup_data(app: AppHandle) -> Result<BackupData, String> {
     let conn = open_db(&app)?;
-    let mut backup = load_backup_data(&conn)?;
-    // Calendar events are read by the synchronizer directly from SQLite. Keeping
-    // them out of the WebView message prevents very large calendars from being
-    // serialized every 30 seconds.
-    backup.browser_storage.clear();
-    Ok(backup)
+    // Calendar events are read by the synchronizer directly from SQLite. Do not
+    // load or serialize them here: this command runs during every automatic sync
+    // and installations may contain hundreds of thousands of appointments.
+    load_backup_data_without_calendar(&conn)
 }
 
 #[tauri::command]
@@ -3758,6 +4872,31 @@ fn create_automatic_backup(
 #[tauri::command]
 fn create_recovery_checkpoint(app: AppHandle, backup: BackupData) -> Result<(), String> {
     write_recovery_checkpoint(&app, backup)
+}
+
+#[tauri::command]
+async fn create_automatic_safety_backup(
+    app: AppHandle,
+    snapshot: Option<bool>,
+    browser_storage: HashMap<String, String>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = open_db(&app)?;
+        let mut backup = load_backup_data(&conn)?;
+        for (key, value) in browser_storage {
+            if key != CALENDAR_ACTIVE_STORAGE_KEY && key != CALENDAR_DELETED_STORAGE_KEY {
+                backup.browser_storage.insert(key, value);
+            }
+        }
+        // Both archives use the same consistent database read and run in one
+        // background job, so they never compete for CPU, memory or disk I/O.
+        write_automatic_backup(&app, backup.clone(), snapshot.unwrap_or(false))?;
+        write_recovery_checkpoint(&app, backup)?;
+        vault::write_automatic_password_backup(&app, snapshot.unwrap_or(false))?;
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("Automatische Sicherung konnte nicht ausgeführt werden: {error}"))?
 }
 
 #[tauri::command]
@@ -3947,10 +5086,11 @@ fn restore_backup(app: AppHandle, backup: BackupData) -> Result<(), String> {
             tx.execute(
                 "
                 INSERT INTO contacts (
-                    id, first_name, last_name, display_name, email, phone, mobile_phone, street,
+                    id, first_name, last_name, display_name, email, private_email, second_private_email,
+                    phone, mobile_phone, private_phone, second_private_phone, company, street,
                     postal_code, city, country, short_info, notes, created_at, updated_at, deleted_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ",
                 params![
                     id,
@@ -3958,8 +5098,13 @@ fn restore_backup(app: AppHandle, backup: BackupData) -> Result<(), String> {
                     &contact.last_name,
                     &contact.display_name,
                     &contact.email,
+                    &contact.private_email,
+                    &contact.second_private_email,
                     &contact.phone,
                     &contact.mobile_phone,
+                    &contact.private_phone,
+                    &contact.second_private_phone,
+                    &contact.company,
                     &contact.street,
                     &contact.postal_code,
                     &contact.city,
@@ -3977,18 +5122,24 @@ fn restore_backup(app: AppHandle, backup: BackupData) -> Result<(), String> {
             tx.execute(
                 "
                 INSERT INTO contacts (
-                    first_name, last_name, display_name, email, phone, mobile_phone, street,
+                    first_name, last_name, display_name, email, private_email, second_private_email,
+                    phone, mobile_phone, private_phone, second_private_phone, company, street,
                     postal_code, city, country, short_info, notes, created_at, updated_at, deleted_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ",
                 params![
                     &contact.first_name,
                     &contact.last_name,
                     &contact.display_name,
                     &contact.email,
+                    &contact.private_email,
+                    &contact.second_private_email,
                     &contact.phone,
                     &contact.mobile_phone,
+                    &contact.private_phone,
+                    &contact.second_private_phone,
+                    &contact.company,
                     &contact.street,
                     &contact.postal_code,
                     &contact.city,
@@ -4481,8 +5632,13 @@ function Read-Contact-Folder($folder, $storeId, $storeName) {
             lastName = [string]$item.LastName
             displayName = [string]$item.FullName
             email = (Get-Contact-Email $item)
+            privateEmail = [string]$item.Email2Address
+            secondPrivateEmail = [string]$item.Email3Address
             phone = [string]$item.BusinessTelephoneNumber
             mobilePhone = [string]$item.MobileTelephoneNumber
+            privatePhone = [string]$item.HomeTelephoneNumber
+            secondPrivatePhone = [string]$item.Home2TelephoneNumber
+            company = [string]$item.CompanyName
             street = [string]$item.BusinessAddressStreet
             postalCode = [string]$item.BusinessAddressPostalCode
             city = [string]$item.BusinessAddressCity
@@ -4583,8 +5739,13 @@ fn read_outlook_classic_contacts_for_import() -> Result<(OutlookReadData, Vec<St
                 last_name: String::new(),
                 display_name,
                 email: entry.email,
+                private_email: String::new(),
+                second_private_email: String::new(),
                 phone: String::new(),
                 mobile_phone: String::new(),
+                private_phone: String::new(),
+                second_private_phone: String::new(),
+                company: String::new(),
                 street: String::new(),
                 postal_code: String::new(),
                 city: String::new(),
@@ -4623,8 +5784,33 @@ fn outlook_record_to_contact(record: &OutlookContactRecord) -> ContactInput {
         last_name: record.last_name.clone(),
         display_name: record.display_name.clone(),
         email: record.email.clone(),
+        private_email: if record
+            .private_email
+            .trim()
+            .eq_ignore_ascii_case(record.email.trim())
+        {
+            String::new()
+        } else {
+            record.private_email.clone()
+        },
+        second_private_email: if record
+            .second_private_email
+            .trim()
+            .eq_ignore_ascii_case(record.email.trim())
+            || record
+                .second_private_email
+                .trim()
+                .eq_ignore_ascii_case(record.private_email.trim())
+        {
+            String::new()
+        } else {
+            record.second_private_email.clone()
+        },
         phone: record.phone.clone(),
         mobile_phone: record.mobile_phone.clone(),
+        private_phone: record.private_phone.clone(),
+        second_private_phone: record.second_private_phone.clone(),
+        company: record.company.clone(),
         street: record.street.clone(),
         postal_code: record.postal_code.clone(),
         city: record.city.clone(),
@@ -4833,7 +6019,12 @@ fn normalize_phone_for_match(value: &str) -> String {
 
 fn contact_phone_keys(contact: &ContactInput) -> Vec<String> {
     let mut phones = Vec::new();
-    for value in [&contact.phone, &contact.mobile_phone] {
+    for value in [
+        &contact.phone,
+        &contact.mobile_phone,
+        &contact.private_phone,
+        &contact.second_private_phone,
+    ] {
         let normalized = normalize_phone_for_match(value);
         if !normalized.is_empty() && !phones.contains(&normalized) {
             phones.push(normalized);
@@ -4842,14 +6033,34 @@ fn contact_phone_keys(contact: &ContactInput) -> Vec<String> {
     phones
 }
 
+fn contact_email_keys(contact: &ContactInput) -> Vec<String> {
+    let mut emails = Vec::new();
+    for value in [
+        &contact.email,
+        &contact.private_email,
+        &contact.second_private_email,
+    ] {
+        let normalized = value.trim().to_lowercase();
+        if !normalized.is_empty() && !emails.contains(&normalized) {
+            emails.push(normalized);
+        }
+    }
+    emails
+}
+
 fn contact_exact_key(contact: &ContactInput, display_name: &str, email: &str) -> String {
     serde_json::to_string(&[
         contact.first_name.as_str(),
         contact.last_name.as_str(),
         display_name,
         email,
+        contact.private_email.as_str(),
+        contact.second_private_email.as_str(),
         contact.phone.as_str(),
         contact.mobile_phone.as_str(),
+        contact.private_phone.as_str(),
+        contact.second_private_phone.as_str(),
+        contact.company.as_str(),
         contact.street.as_str(),
         contact.postal_code.as_str(),
         contact.city.as_str(),
@@ -4863,7 +6074,8 @@ fn contact_exact_key(contact: &ContactInput, display_name: &str, email: &str) ->
 fn load_contact_fingerprints(conn: &Connection) -> Result<ContactFingerprintIndex, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT first_name, last_name, display_name, email, phone, mobile_phone,
+            "SELECT first_name, last_name, display_name, email, private_email, second_private_email,
+                    phone, mobile_phone, private_phone, second_private_phone, company,
                     street, postal_code, city, country, short_info, notes
              FROM contacts
              WHERE deleted_at IS NULL",
@@ -4877,14 +6089,19 @@ fn load_contact_fingerprints(conn: &Connection) -> Result<ContactFingerprintInde
                 last_name: row.get(1)?,
                 display_name: row.get(2)?,
                 email: row.get(3)?,
-                phone: row.get(4)?,
-                mobile_phone: row.get(5)?,
-                street: row.get(6)?,
-                postal_code: row.get(7)?,
-                city: row.get(8)?,
-                country: row.get(9)?,
-                short_info: row.get(10)?,
-                notes: row.get(11)?,
+                private_email: row.get(4)?,
+                second_private_email: row.get(5)?,
+                phone: row.get(6)?,
+                mobile_phone: row.get(7)?,
+                private_phone: row.get(8)?,
+                second_private_phone: row.get(9)?,
+                company: row.get(10)?,
+                street: row.get(11)?,
+                postal_code: row.get(12)?,
+                city: row.get(13)?,
+                country: row.get(14)?,
+                short_info: row.get(15)?,
+                notes: row.get(16)?,
                 group_ids: Vec::new(),
             })
         })
@@ -4914,14 +6131,15 @@ fn classify_outlook_contact(
         );
     }
 
-    if !email.is_empty() {
-        if let Some(existing_name) = fingerprints.emails.get(email) {
-            return (
-                "different".to_string(),
-                "Gleiche E-Mail-Adresse: Fehlende Angaben werden zusammengeführt.".to_string(),
-                Some(existing_name.clone()),
-            );
-        }
+    if let Some(existing_name) = contact_email_keys(contact)
+        .iter()
+        .find_map(|candidate| fingerprints.emails.get(candidate))
+    {
+        return (
+            "different".to_string(),
+            "Gleiche E-Mail-Adresse: Fehlende Angaben werden zusammengeführt.".to_string(),
+            Some(existing_name.clone()),
+        );
     }
 
     let normalized_name = display_name
@@ -4933,8 +6151,7 @@ fn classify_outlook_contact(
         if let Some(same_name_contacts) = fingerprints.contacts_by_name.get(&normalized_name) {
             let distinct_emails = same_name_contacts
                 .iter()
-                .map(|candidate| candidate.email.trim().to_lowercase())
-                .filter(|candidate_email| !candidate_email.is_empty())
+                .flat_map(contact_email_keys)
                 .collect::<HashSet<_>>();
             let email_is_unambiguous = if email.is_empty() {
                 distinct_emails.len() <= 1
@@ -5018,10 +6235,10 @@ fn add_fingerprint(
         .exact_contacts
         .entry(contact_exact_key(contact, display_name, email))
         .or_insert_with(|| label.clone());
-    if !email.is_empty() {
+    for email in contact_email_keys(contact) {
         fingerprints
             .emails
-            .entry(email.to_string())
+            .entry(email)
             .or_insert_with(|| label.clone());
     }
     for phone in contact_phone_keys(contact) {
@@ -5062,8 +6279,13 @@ fn contact_merge_quality(contact: &ContactInput) -> usize {
         &contact.last_name,
         &contact.display_name,
         &contact.email,
+        &contact.private_email,
+        &contact.second_private_email,
         &contact.phone,
         &contact.mobile_phone,
+        &contact.private_phone,
+        &contact.second_private_phone,
+        &contact.company,
         &contact.street,
         &contact.postal_code,
         &contact.city,
@@ -5111,10 +6333,17 @@ fn phone_values_equal(left: &str, right: &str) -> bool {
 }
 
 fn merge_phone_fields(target: &mut ContactInput, source: &ContactInput) {
-    for source_phone in [&source.phone, &source.mobile_phone] {
+    for source_phone in [
+        &source.phone,
+        &source.mobile_phone,
+        &source.private_phone,
+        &source.second_private_phone,
+    ] {
         if source_phone.trim().is_empty()
             || phone_values_equal(&target.phone, source_phone)
             || phone_values_equal(&target.mobile_phone, source_phone)
+            || phone_values_equal(&target.private_phone, source_phone)
+            || phone_values_equal(&target.second_private_phone, source_phone)
         {
             continue;
         }
@@ -5122,6 +6351,33 @@ fn merge_phone_fields(target: &mut ContactInput, source: &ContactInput) {
             target.phone = source_phone.trim().to_string();
         } else if target.mobile_phone.trim().is_empty() {
             target.mobile_phone = source_phone.trim().to_string();
+        } else if target.private_phone.trim().is_empty() {
+            target.private_phone = source_phone.trim().to_string();
+        } else if target.second_private_phone.trim().is_empty() {
+            target.second_private_phone = source_phone.trim().to_string();
+        }
+    }
+}
+
+fn merge_email_fields(target: &mut ContactInput, source: &ContactInput) {
+    for source_email in [
+        &source.email,
+        &source.private_email,
+        &source.second_private_email,
+    ] {
+        if source_email.trim().is_empty()
+            || contact_email_keys(target)
+                .iter()
+                .any(|email| email.eq_ignore_ascii_case(source_email.trim()))
+        {
+            continue;
+        }
+        if target.email.trim().is_empty() {
+            target.email = source_email.trim().to_lowercase();
+        } else if target.private_email.trim().is_empty() {
+            target.private_email = source_email.trim().to_lowercase();
+        } else if target.second_private_email.trim().is_empty() {
+            target.second_private_email = source_email.trim().to_lowercase();
         }
     }
 }
@@ -5130,8 +6386,9 @@ fn merge_contact_fields(target: &mut ContactInput, source: &ContactInput) {
     fill_blank(&mut target.first_name, &source.first_name);
     fill_blank(&mut target.last_name, &source.last_name);
     fill_blank(&mut target.display_name, &source.display_name);
-    fill_blank(&mut target.email, &source.email);
+    merge_email_fields(target, source);
     merge_phone_fields(target, source);
+    fill_blank(&mut target.company, &source.company);
     fill_blank(&mut target.street, &source.street);
     fill_blank(&mut target.postal_code, &source.postal_code);
     fill_blank(&mut target.city, &source.city);
@@ -5170,7 +6427,8 @@ fn load_contacts_for_consolidation(
 ) -> Result<Vec<ContactConsolidationRow>, String> {
     let mut statement = conn
         .prepare(
-            "SELECT id, first_name, last_name, display_name, email, phone, mobile_phone,
+            "SELECT id, first_name, last_name, display_name, email, private_email, second_private_email,
+                    phone, mobile_phone, private_phone, second_private_phone, company,
                     street, postal_code, city, country, short_info, notes, import_batch_id,
                     outlook_entry_id, outlook_store_id
              FROM contacts
@@ -5188,19 +6446,24 @@ fn load_contacts_for_consolidation(
                     last_name: row.get(2)?,
                     display_name: row.get(3)?,
                     email: row.get(4)?,
-                    phone: row.get(5)?,
-                    mobile_phone: row.get(6)?,
-                    street: row.get(7)?,
-                    postal_code: row.get(8)?,
-                    city: row.get(9)?,
-                    country: row.get(10)?,
-                    short_info: row.get(11)?,
-                    notes: row.get(12)?,
+                    private_email: row.get(5)?,
+                    second_private_email: row.get(6)?,
+                    phone: row.get(7)?,
+                    mobile_phone: row.get(8)?,
+                    private_phone: row.get(9)?,
+                    second_private_phone: row.get(10)?,
+                    company: row.get(11)?,
+                    street: row.get(12)?,
+                    postal_code: row.get(13)?,
+                    city: row.get(14)?,
+                    country: row.get(15)?,
+                    short_info: row.get(16)?,
+                    notes: row.get(17)?,
                     group_ids: Vec::new(),
                 },
-                import_batch_id: row.get(13)?,
-                outlook_entry_id: row.get(14)?,
-                outlook_store_id: row.get(15)?,
+                import_batch_id: row.get(18)?,
+                outlook_entry_id: row.get(19)?,
+                outlook_store_id: row.get(20)?,
             })
         })
         .map_err(|error| error.to_string())?;
@@ -5274,8 +6537,9 @@ fn merge_contact_rows(
     .map_err(|error| error.to_string())?;
     conn.execute(
         "UPDATE contacts
-         SET first_name = ?, last_name = ?, display_name = ?, email = ?, phone = ?,
-             mobile_phone = ?, street = ?, postal_code = ?, city = ?, country = ?,
+         SET first_name = ?, last_name = ?, display_name = ?, email = ?, private_email = ?,
+             second_private_email = ?, phone = ?, mobile_phone = ?, private_phone = ?,
+             second_private_phone = ?, company = ?, street = ?, postal_code = ?, city = ?, country = ?,
              short_info = ?, notes = ?, outlook_entry_id = ?, outlook_store_id = ?,
              updated_at = ?
          WHERE id = ?",
@@ -5284,8 +6548,13 @@ fn merge_contact_rows(
             survivor.contact.last_name,
             normalize_contact_display_name(&survivor.contact),
             survivor.contact.email.trim().to_lowercase(),
+            survivor.contact.private_email.trim().to_lowercase(),
+            survivor.contact.second_private_email.trim().to_lowercase(),
             survivor.contact.phone,
             survivor.contact.mobile_phone,
+            survivor.contact.private_phone,
+            survivor.contact.second_private_phone,
+            survivor.contact.company,
             survivor.contact.street,
             survivor.contact.postal_code,
             survivor.contact.city,
@@ -5339,8 +6608,9 @@ fn merge_contact_rows_to_trash(
     .map_err(|error| error.to_string())?;
     conn.execute(
         "UPDATE contacts
-         SET first_name = ?, last_name = ?, display_name = ?, email = ?, phone = ?,
-             mobile_phone = ?, street = ?, postal_code = ?, city = ?, country = ?,
+         SET first_name = ?, last_name = ?, display_name = ?, email = ?, private_email = ?,
+             second_private_email = ?, phone = ?, mobile_phone = ?, private_phone = ?,
+             second_private_phone = ?, company = ?, street = ?, postal_code = ?, city = ?, country = ?,
              short_info = ?, notes = ?, outlook_entry_id = ?, outlook_store_id = ?,
              updated_at = ?
          WHERE id = ? AND deleted_at IS NULL",
@@ -5349,8 +6619,13 @@ fn merge_contact_rows_to_trash(
             survivor.contact.last_name,
             normalize_contact_display_name(&survivor.contact),
             survivor.contact.email.trim().to_lowercase(),
+            survivor.contact.private_email.trim().to_lowercase(),
+            survivor.contact.second_private_email.trim().to_lowercase(),
             survivor.contact.phone,
             survivor.contact.mobile_phone,
+            survivor.contact.private_phone,
+            survivor.contact.second_private_phone,
+            survivor.contact.company,
             survivor.contact.street,
             survivor.contact.postal_code,
             survivor.contact.city,
@@ -5764,19 +7039,25 @@ fn import_selected_outlook_classic_contacts_blocking(
         tx.execute(
             "
             INSERT INTO contacts (
-                first_name, last_name, display_name, email, phone, mobile_phone, street,
+                first_name, last_name, display_name, email, private_email, second_private_email,
+                phone, mobile_phone, private_phone, second_private_phone, company, street,
                 postal_code, city, country, short_info, notes, import_batch_id,
                 created_at, updated_at, outlook_entry_id, outlook_store_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ",
             params![
                 contact.first_name,
                 contact.last_name,
                 display_name,
                 email,
+                contact.private_email,
+                contact.second_private_email,
                 contact.phone,
                 contact.mobile_phone,
+                contact.private_phone,
+                contact.second_private_phone,
+                contact.company,
                 contact.street,
                 contact.postal_code,
                 contact.city,
@@ -5896,7 +7177,8 @@ fn load_local_outlook_contacts(conn: &Connection) -> Result<Vec<LocalOutlookCont
     let mut stmt = conn
         .prepare(
             "
-            SELECT id, first_name, last_name, display_name, email, phone, mobile_phone,
+            SELECT id, first_name, last_name, display_name, email, private_email, second_private_email,
+                   phone, mobile_phone, private_phone, second_private_phone, company,
                    street, postal_code, city, country, short_info, notes,
                    outlook_entry_id, outlook_store_id
             FROM contacts
@@ -5914,18 +7196,23 @@ fn load_local_outlook_contacts(conn: &Connection) -> Result<Vec<LocalOutlookCont
                 last_name: row.get(2)?,
                 display_name: row.get(3)?,
                 email: row.get(4)?,
-                phone: row.get(5)?,
-                mobile_phone: row.get(6)?,
-                street: row.get(7)?,
-                postal_code: row.get(8)?,
-                city: row.get(9)?,
-                country: row.get(10)?,
-                short_info: row.get(11)?,
-                notes: row.get(12)?,
+                private_email: row.get(5)?,
+                second_private_email: row.get(6)?,
+                phone: row.get(7)?,
+                mobile_phone: row.get(8)?,
+                private_phone: row.get(9)?,
+                second_private_phone: row.get(10)?,
+                company: row.get(11)?,
+                street: row.get(12)?,
+                postal_code: row.get(13)?,
+                city: row.get(14)?,
+                country: row.get(15)?,
+                short_info: row.get(16)?,
+                notes: row.get(17)?,
                 groups: Vec::new(),
                 group_ids: Vec::new(),
-                outlook_entry_id: row.get(13)?,
-                outlook_store_id: row.get(14)?,
+                outlook_entry_id: row.get(18)?,
+                outlook_store_id: row.get(19)?,
             })
         })
         .map_err(|err| err.to_string())?;
@@ -6050,7 +7337,8 @@ fn load_local_outlook_contact(
 ) -> Result<Option<LocalOutlookContact>, String> {
     conn.query_row(
         "
-        SELECT id, first_name, last_name, display_name, email, phone, mobile_phone,
+        SELECT id, first_name, last_name, display_name, email, private_email, second_private_email,
+               phone, mobile_phone, private_phone, second_private_phone, company,
                street, postal_code, city, country, short_info, notes,
                outlook_entry_id, outlook_store_id
         FROM contacts
@@ -6064,18 +7352,23 @@ fn load_local_outlook_contact(
                 last_name: row.get(2)?,
                 display_name: row.get(3)?,
                 email: row.get(4)?,
-                phone: row.get(5)?,
-                mobile_phone: row.get(6)?,
-                street: row.get(7)?,
-                postal_code: row.get(8)?,
-                city: row.get(9)?,
-                country: row.get(10)?,
-                short_info: row.get(11)?,
-                notes: row.get(12)?,
+                private_email: row.get(5)?,
+                second_private_email: row.get(6)?,
+                phone: row.get(7)?,
+                mobile_phone: row.get(8)?,
+                private_phone: row.get(9)?,
+                second_private_phone: row.get(10)?,
+                company: row.get(11)?,
+                street: row.get(12)?,
+                postal_code: row.get(13)?,
+                city: row.get(14)?,
+                country: row.get(15)?,
+                short_info: row.get(16)?,
+                notes: row.get(17)?,
                 groups: Vec::new(),
                 group_ids: Vec::new(),
-                outlook_entry_id: row.get(13)?,
-                outlook_store_id: row.get(14)?,
+                outlook_entry_id: row.get(18)?,
+                outlook_store_id: row.get(19)?,
             })
         },
     )
@@ -6164,29 +7457,32 @@ function Find-Outlook-Contact($local, $allContacts) {{
   }}
 
   $email = ([string](Get-Scalar $local.email)).Trim().ToLowerInvariant()
+  if ([string]::IsNullOrWhiteSpace($email)) {{ $email = ([string](Get-Scalar $local.privateEmail)).Trim().ToLowerInvariant() }}
+  if ([string]::IsNullOrWhiteSpace($email)) {{ $email = ([string](Get-Scalar $local.secondPrivateEmail)).Trim().ToLowerInvariant() }}
   $name = ([string](Get-Scalar $local.displayName)).Trim().ToLowerInvariant()
   if ([string]::IsNullOrWhiteSpace($name)) {{ $name = (([string](Get-Scalar $local.firstName) + ' ' + [string](Get-Scalar $local.lastName)).Trim()).ToLowerInvariant() }}
   $phone = ([string](Get-Scalar $local.phone)).Trim()
   $mobile = ([string](Get-Scalar $local.mobilePhone)).Trim()
   $city = ([string](Get-Scalar $local.city)).Trim().ToLowerInvariant()
-  $nameMatches = New-Object System.Collections.Generic.List[object]
 
   foreach ($item in $allContacts.ToArray()) {{
     try {{
-      if (-not [string]::IsNullOrWhiteSpace($email) -and (Get-Contact-Email $item).Trim().ToLowerInvariant() -eq $email) {{ return $item }}
+      $itemEmail = (Get-Contact-Email $item).Trim().ToLowerInvariant()
+      if (-not [string]::IsNullOrWhiteSpace($email)) {{
+        if ($itemEmail -eq $email) {{ return $item }}
+        continue
+      }}
       $itemName = ([string]$item.FullName).Trim().ToLowerInvariant()
       if ([string]::IsNullOrWhiteSpace($itemName)) {{ $itemName = (([string]$item.FirstName + ' ' + [string]$item.LastName).Trim()).ToLowerInvariant() }}
       if (-not [string]::IsNullOrWhiteSpace($name) -and $itemName -eq $name) {{
-        $nameMatches.Add($item) | Out-Null
         if ((-not [string]::IsNullOrWhiteSpace($phone) -and [string]$item.BusinessTelephoneNumber -eq $phone) -or
             (-not [string]::IsNullOrWhiteSpace($mobile) -and [string]$item.MobileTelephoneNumber -eq $mobile) -or
-            ([string]::IsNullOrWhiteSpace($phone) -and [string]::IsNullOrWhiteSpace($mobile) -and ([string]$item.BusinessAddressCity).Trim().ToLowerInvariant() -eq $city)) {{
+            (-not [string]::IsNullOrWhiteSpace($city) -and ([string]$item.BusinessAddressCity).Trim().ToLowerInvariant() -eq $city)) {{
           return $item
         }}
       }}
     }} catch {{}}
   }}
-  if ($nameMatches.Count -eq 1) {{ return $nameMatches[0] }}
   return $null
 }}
 
@@ -6233,6 +7529,7 @@ fn push_local_contacts_to_outlook(
     selected_group_ids: Option<&[i64]>,
     include_ungrouped: bool,
     seed_autocomplete: bool,
+    autocomplete_only: bool,
 ) -> Result<OutlookPushResult, String> {
     let selected_group_ids =
         selected_group_ids.map(|group_ids| group_ids.iter().copied().collect::<HashSet<_>>());
@@ -6246,7 +7543,7 @@ fn push_local_contacts_to_outlook(
         selected_group_ids.as_ref(),
         include_ungrouped,
     )?;
-    if contacts.is_empty() && groups.is_empty() {
+    if contacts.is_empty() && (autocomplete_only || groups.is_empty()) {
         return Ok(OutlookPushResult {
             total: 0,
             created: 0,
@@ -6274,6 +7571,7 @@ fn push_local_contacts_to_outlook(
     let escaped_path = json_path.to_string_lossy().replace('\'', "''");
     let target_email = powershell_single_quote(target_email.unwrap_or_default().trim());
     let seed_autocomplete = if seed_autocomplete { "$true" } else { "$false" };
+    let autocomplete_only = if autocomplete_only { "$true" } else { "$false" };
     let script = format!(
         r#"
 $ErrorActionPreference = 'Stop'
@@ -6281,6 +7579,7 @@ $ErrorActionPreference = 'Stop'
 $contactsPath = '{escaped_path}'
 $targetEmail = {target_email}
 $seedAutocomplete = {seed_autocomplete}
+$autocompleteOnly = {autocomplete_only}
 $payload = Get-Content -LiteralPath $contactsPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $localContacts = @($payload.contacts | ForEach-Object {{ $_ }})
 $localGroups = @($payload.groups | ForEach-Object {{ [string]$_ }})
@@ -6302,6 +7601,7 @@ if (-not [string]::IsNullOrWhiteSpace($targetEmail)) {{
 if ($null -eq $contactsFolder) {{ $contactsFolder = $namespace.GetDefaultFolder(10) }}
 $links = New-Object System.Collections.Generic.List[object]
 $autocompleteCandidates = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+$claimedContactKeys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 $createdCount = 0
 $updatedCount = 0
 $contactCopyCount = 0
@@ -6368,34 +7668,38 @@ function Find-Outlook-Contact-In-Folder($local, $allContacts, $destinationFolder
   if (-not [string]::IsNullOrWhiteSpace($entryId)) {{
     try {{
       $linkedItem = if (-not [string]::IsNullOrWhiteSpace($storeId)) {{ $namespace.GetItemFromID($entryId, $storeId) }} else {{ $namespace.GetItemFromID($entryId) }}
-      if ([string]$linkedItem.Parent.EntryID -eq [string]$destinationFolder.EntryID) {{ return $linkedItem }}
+      $linkedKey = [string]$destinationFolder.EntryID + '|' + [string]$linkedItem.EntryID
+      if ([string]$linkedItem.Parent.EntryID -eq [string]$destinationFolder.EntryID -and -not $claimedContactKeys.Contains($linkedKey)) {{ return $linkedItem }}
     }} catch {{}}
   }}
 
   $email = ([string](Get-Scalar $local.email)).Trim().ToLowerInvariant()
+  if ([string]::IsNullOrWhiteSpace($email)) {{ $email = ([string](Get-Scalar $local.privateEmail)).Trim().ToLowerInvariant() }}
+  if ([string]::IsNullOrWhiteSpace($email)) {{ $email = ([string](Get-Scalar $local.secondPrivateEmail)).Trim().ToLowerInvariant() }}
   $name = ([string](Get-Scalar $local.displayName)).Trim().ToLowerInvariant()
   if ([string]::IsNullOrWhiteSpace($name)) {{ $name = (([string](Get-Scalar $local.firstName) + ' ' + [string](Get-Scalar $local.lastName)).Trim()).ToLowerInvariant() }}
   $phone = ([string](Get-Scalar $local.phone)).Trim()
   $mobile = ([string](Get-Scalar $local.mobilePhone)).Trim()
   $city = ([string](Get-Scalar $local.city)).Trim().ToLowerInvariant()
-  $nameMatches = New-Object System.Collections.Generic.List[object]
 
   foreach ($item in $allContacts.ToArray()) {{
     try {{
-      if (-not [string]::IsNullOrWhiteSpace($email) -and (Get-Contact-Email $item).Trim().ToLowerInvariant() -eq $email) {{ return $item }}
+      $itemEmail = (Get-Contact-Email $item).Trim().ToLowerInvariant()
+      if (-not [string]::IsNullOrWhiteSpace($email)) {{
+        if ($itemEmail -eq $email) {{ return $item }}
+        continue
+      }}
       $itemName = ([string]$item.FullName).Trim().ToLowerInvariant()
       if ([string]::IsNullOrWhiteSpace($itemName)) {{ $itemName = (([string]$item.FirstName + ' ' + [string]$item.LastName).Trim()).ToLowerInvariant() }}
       if (-not [string]::IsNullOrWhiteSpace($name) -and $itemName -eq $name) {{
-        $nameMatches.Add($item) | Out-Null
         if ((-not [string]::IsNullOrWhiteSpace($phone) -and [string]$item.BusinessTelephoneNumber -eq $phone) -or
             (-not [string]::IsNullOrWhiteSpace($mobile) -and [string]$item.MobileTelephoneNumber -eq $mobile) -or
-            ([string]::IsNullOrWhiteSpace($phone) -and [string]::IsNullOrWhiteSpace($mobile) -and ([string]$item.BusinessAddressCity).Trim().ToLowerInvariant() -eq $city)) {{
+            (-not [string]::IsNullOrWhiteSpace($city) -and ([string]$item.BusinessAddressCity).Trim().ToLowerInvariant() -eq $city)) {{
           return $item
         }}
       }}
     }} catch {{}}
   }}
-  if ($nameMatches.Count -eq 1) {{ return $nameMatches[0] }}
   return $null
 }}
 
@@ -6443,29 +7747,32 @@ function Find-Outlook-Contact($local, $allContacts) {{
   }}
 
   $email = ([string](Get-Scalar $local.email)).Trim().ToLowerInvariant()
+  if ([string]::IsNullOrWhiteSpace($email)) {{ $email = ([string](Get-Scalar $local.privateEmail)).Trim().ToLowerInvariant() }}
+  if ([string]::IsNullOrWhiteSpace($email)) {{ $email = ([string](Get-Scalar $local.secondPrivateEmail)).Trim().ToLowerInvariant() }}
   $name = ([string](Get-Scalar $local.displayName)).Trim().ToLowerInvariant()
   if ([string]::IsNullOrWhiteSpace($name)) {{ $name = (([string](Get-Scalar $local.firstName) + ' ' + [string](Get-Scalar $local.lastName)).Trim()).ToLowerInvariant() }}
   $phone = ([string](Get-Scalar $local.phone)).Trim()
   $mobile = ([string](Get-Scalar $local.mobilePhone)).Trim()
   $city = ([string](Get-Scalar $local.city)).Trim().ToLowerInvariant()
-  $nameMatches = New-Object System.Collections.Generic.List[object]
 
   foreach ($item in $allContacts.ToArray()) {{
     try {{
-      if (-not [string]::IsNullOrWhiteSpace($email) -and (Get-Contact-Email $item).Trim().ToLowerInvariant() -eq $email) {{ return $item }}
+      $itemEmail = (Get-Contact-Email $item).Trim().ToLowerInvariant()
+      if (-not [string]::IsNullOrWhiteSpace($email)) {{
+        if ($itemEmail -eq $email) {{ return $item }}
+        continue
+      }}
       $itemName = ([string]$item.FullName).Trim().ToLowerInvariant()
       if ([string]::IsNullOrWhiteSpace($itemName)) {{ $itemName = (([string]$item.FirstName + ' ' + [string]$item.LastName).Trim()).ToLowerInvariant() }}
       if (-not [string]::IsNullOrWhiteSpace($name) -and $itemName -eq $name) {{
-        $nameMatches.Add($item) | Out-Null
         if ((-not [string]::IsNullOrWhiteSpace($phone) -and [string]$item.BusinessTelephoneNumber -eq $phone) -or
             (-not [string]::IsNullOrWhiteSpace($mobile) -and [string]$item.MobileTelephoneNumber -eq $mobile) -or
-            ([string]::IsNullOrWhiteSpace($phone) -and [string]::IsNullOrWhiteSpace($mobile) -and ([string]$item.BusinessAddressCity).Trim().ToLowerInvariant() -eq $city)) {{
+            (-not [string]::IsNullOrWhiteSpace($city) -and ([string]$item.BusinessAddressCity).Trim().ToLowerInvariant() -eq $city)) {{
           return $item
         }}
       }}
     }} catch {{}}
   }}
-  if ($nameMatches.Count -eq 1) {{ return $nameMatches[0] }}
   return $null
 }}
 
@@ -6474,12 +7781,23 @@ function Set-When-Present($item, $property, $value) {{
   if (-not [string]::IsNullOrWhiteSpace($text)) {{ $item.$property = $text }}
 }}
 
-foreach ($groupName in $localGroups) {{
-  if ([string]::IsNullOrWhiteSpace(([string]$groupName).Trim())) {{ continue }}
-  try {{ Get-OrCreate-Contact-Folder $groupName | Out-Null }} catch {{ $errorCount++ }}
+if (-not $autocompleteOnly) {{
+  foreach ($groupName in $localGroups) {{
+    if ([string]::IsNullOrWhiteSpace(([string]$groupName).Trim())) {{ continue }}
+    try {{ Get-OrCreate-Contact-Folder $groupName | Out-Null }} catch {{ $errorCount++ }}
+  }}
 }}
 
 foreach ($local in $localContacts) {{
+  if ($autocompleteOnly) {{
+    foreach ($autocompleteEmail in @($local.email, $local.privateEmail, $local.secondPrivateEmail)) {{
+      $autocompleteEmail = ([string](Get-Scalar $autocompleteEmail)).Trim()
+      if (-not [string]::IsNullOrWhiteSpace($autocompleteEmail)) {{
+        $autocompleteCandidates.Add($autocompleteEmail) | Out-Null
+      }}
+    }}
+    continue
+  }}
   $groupNames = New-Object System.Collections.Generic.List[string]
   $seenGroupNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
   foreach ($rawGroupName in @($local.groups)) {{
@@ -6516,14 +7834,20 @@ foreach ($local in $localContacts) {{
       Set-When-Present $item 'LastName' $local.lastName
       Set-When-Present $item 'FullName' $local.displayName
       Set-When-Present $item 'Email1Address' $local.email
+      Set-When-Present $item 'Email2Address' $local.privateEmail
+      Set-When-Present $item 'Email3Address' $local.secondPrivateEmail
       Set-When-Present $item 'BusinessTelephoneNumber' $local.phone
       Set-When-Present $item 'MobileTelephoneNumber' $local.mobilePhone
+      Set-When-Present $item 'HomeTelephoneNumber' $local.privatePhone
+      Set-When-Present $item 'Home2TelephoneNumber' $local.secondPrivatePhone
+      Set-When-Present $item 'CompanyName' $local.company
       Set-When-Present $item 'BusinessAddressStreet' $local.street
       Set-When-Present $item 'BusinessAddressPostalCode' $local.postalCode
       Set-When-Present $item 'BusinessAddressCity' $local.city
       Set-When-Present $item 'BusinessAddressCountry' $local.country
       Set-When-Present $item 'Body' $local.notes
       $item.Save()
+      $claimedContactKeys.Add(([string]$destination.EntryID + '|' + [string]$item.EntryID)) | Out-Null
       $contactCopyCount++
       $exportedContact = $true
 
@@ -6541,9 +7865,11 @@ foreach ($local in $localContacts) {{
   }}
 
   if ($seedAutocomplete -and $exportedContact) {{
-    $autocompleteEmail = ([string](Get-Scalar $local.email)).Trim()
-    if (-not [string]::IsNullOrWhiteSpace($autocompleteEmail)) {{
-      $autocompleteCandidates.Add($autocompleteEmail) | Out-Null
+    foreach ($autocompleteEmail in @($local.email, $local.privateEmail, $local.secondPrivateEmail)) {{
+      $autocompleteEmail = ([string](Get-Scalar $autocompleteEmail)).Trim()
+      if (-not [string]::IsNullOrWhiteSpace($autocompleteEmail)) {{
+        $autocompleteCandidates.Add($autocompleteEmail) | Out-Null
+      }}
     }}
   }}
 }}
@@ -6579,11 +7905,11 @@ if ($autocompleteCandidates.Count -gt 0) {{
   updated = $updatedCount
   contactCopies = $contactCopyCount
   foldersCreated = $foldersCreatedCount
-  foldersUsed = $folderCache.Count
+  foldersUsed = if ($autocompleteOnly) {{ 0 }} else {{ $folderCache.Count }}
   errors = $errorCount
   autocompleteResolved = $autocompleteResolvedCount
   autocompleteErrors = $autocompleteErrorCount
-  folderPath = [string]$contactsFolder.FolderPath
+  folderPath = if ($autocompleteOnly) {{ '' }} else {{ [string]$contactsFolder.FolderPath }}
   storeName = $storeName
 }} | ConvertTo-Json -Depth 5 -Compress
 "#
@@ -6658,9 +7984,13 @@ fn normalize_contact_display_name(contact: &ContactInput) -> String {
 
 fn contact_has_identity(contact: &ContactInput, display_name: &str, email: &str) -> bool {
     !email.is_empty()
+        || !contact.private_email.trim().is_empty()
+        || !contact.second_private_email.trim().is_empty()
         || !display_name.trim().is_empty()
         || !contact.phone.trim().is_empty()
         || !contact.mobile_phone.trim().is_empty()
+        || !contact.private_phone.trim().is_empty()
+        || !contact.second_private_phone.trim().is_empty()
 }
 
 fn find_existing_sync_contact(
@@ -6673,7 +8003,8 @@ fn find_existing_sync_contact(
     let mut stmt = conn
         .prepare(
             "
-            SELECT id, first_name, last_name, display_name, email, phone, mobile_phone,
+            SELECT id, first_name, last_name, display_name, email, private_email, second_private_email,
+                   phone, mobile_phone, private_phone, second_private_phone, company,
                    street, postal_code, city, country, short_info, notes, deleted_at,
                    outlook_entry_id, outlook_store_id
             FROM contacts
@@ -6714,17 +8045,22 @@ fn find_existing_sync_contact(
                 last_name: row.get(2)?,
                 display_name: row.get(3)?,
                 email: row.get(4)?,
-                phone: row.get(5)?,
-                mobile_phone: row.get(6)?,
-                street: row.get(7)?,
-                postal_code: row.get(8)?,
-                city: row.get(9)?,
-                country: row.get(10)?,
-                short_info: row.get(11)?,
-                notes: row.get(12)?,
-                deleted_at: row.get(13)?,
-                outlook_entry_id: row.get(14)?,
-                outlook_store_id: row.get(15)?,
+                private_email: row.get(5)?,
+                second_private_email: row.get(6)?,
+                phone: row.get(7)?,
+                mobile_phone: row.get(8)?,
+                private_phone: row.get(9)?,
+                second_private_phone: row.get(10)?,
+                company: row.get(11)?,
+                street: row.get(12)?,
+                postal_code: row.get(13)?,
+                city: row.get(14)?,
+                country: row.get(15)?,
+                short_info: row.get(16)?,
+                notes: row.get(17)?,
+                deleted_at: row.get(18)?,
+                outlook_entry_id: row.get(19)?,
+                outlook_store_id: row.get(20)?,
             })
         },
     )
@@ -6745,8 +8081,13 @@ fn contact_needs_update(
         || existing.last_name != contact.last_name
         || existing.display_name != display_name
         || existing.email != email
+        || existing.private_email != contact.private_email
+        || existing.second_private_email != contact.second_private_email
         || existing.phone != contact.phone
         || existing.mobile_phone != contact.mobile_phone
+        || existing.private_phone != contact.private_phone
+        || existing.second_private_phone != contact.second_private_phone
+        || existing.company != contact.company
         || existing.street != contact.street
         || existing.postal_code != contact.postal_code
         || existing.city != contact.city
@@ -6794,19 +8135,25 @@ fn import_outlook_classic_contacts_once(
         tx.execute(
             "
             INSERT INTO contacts (
-                first_name, last_name, display_name, email, phone, mobile_phone, street,
+                first_name, last_name, display_name, email, private_email, second_private_email,
+                phone, mobile_phone, private_phone, second_private_phone, company, street,
                 postal_code, city, country, short_info, notes, import_batch_id,
                 created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ",
             params![
                 contact.first_name,
                 contact.last_name,
                 display_name,
                 email,
+                contact.private_email,
+                contact.second_private_email,
                 contact.phone,
                 contact.mobile_phone,
+                contact.private_phone,
+                contact.second_private_phone,
+                contact.company,
                 contact.street,
                 contact.postal_code,
                 contact.city,
@@ -6849,7 +8196,7 @@ fn import_outlook_classic_contacts_once(
 #[tauri::command]
 fn sync_outlook_classic_contacts(app: AppHandle) -> Result<OutlookSyncResult, String> {
     let mut conn = open_db(&app)?;
-    let pushed = push_local_contacts_to_outlook(&mut conn, None, None, true, true)?;
+    let pushed = push_local_contacts_to_outlook(&mut conn, None, None, true, true, false)?;
     let contacts = read_outlook_classic_contacts()?.contacts;
     let tx = conn.transaction().map_err(|err| err.to_string())?;
     let timestamp = now();
@@ -6883,8 +8230,9 @@ fn sync_outlook_classic_contacts(app: AppHandle) -> Result<OutlookSyncResult, St
                 tx.execute(
                     "
                     UPDATE contacts
-                    SET first_name = ?, last_name = ?, display_name = ?, email = ?, phone = ?,
-                        mobile_phone = ?, street = ?, postal_code = ?, city = ?, country = ?,
+                    SET first_name = ?, last_name = ?, display_name = ?, email = ?, private_email = ?,
+                        second_private_email = ?, phone = ?, mobile_phone = ?, private_phone = ?,
+                        second_private_phone = ?, company = ?, street = ?, postal_code = ?, city = ?, country = ?,
                         short_info = ?, notes = ?, outlook_entry_id = ?, outlook_store_id = ?,
                         deleted_at = NULL, updated_at = ?
                     WHERE id = ?
@@ -6894,8 +8242,13 @@ fn sync_outlook_classic_contacts(app: AppHandle) -> Result<OutlookSyncResult, St
                         contact.last_name,
                         display_name,
                         email,
+                        contact.private_email,
+                        contact.second_private_email,
                         contact.phone,
                         contact.mobile_phone,
+                        contact.private_phone,
+                        contact.second_private_phone,
+                        contact.company,
                         contact.street,
                         contact.postal_code,
                         contact.city,
@@ -6915,19 +8268,25 @@ fn sync_outlook_classic_contacts(app: AppHandle) -> Result<OutlookSyncResult, St
             tx.execute(
                 "
                 INSERT INTO contacts (
-                    first_name, last_name, display_name, email, phone, mobile_phone, street,
+                    first_name, last_name, display_name, email, private_email, second_private_email,
+                    phone, mobile_phone, private_phone, second_private_phone, company, street,
                     postal_code, city, country, short_info, notes, import_batch_id,
                     outlook_entry_id, outlook_store_id, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ",
                 params![
                     contact.first_name,
                     contact.last_name,
                     display_name,
                     email,
+                    contact.private_email,
+                    contact.second_private_email,
                     contact.phone,
                     contact.mobile_phone,
+                    contact.private_phone,
+                    contact.second_private_phone,
+                    contact.company,
                     contact.street,
                     contact.postal_code,
                     contact.city,
@@ -6963,6 +8322,7 @@ fn push_project_contacts_to_outlook(
     selected_group_ids: Option<Vec<i64>>,
     include_ungrouped: Option<bool>,
     seed_autocomplete: Option<bool>,
+    autocomplete_only: Option<bool>,
 ) -> Result<OutlookPushResult, String> {
     let mut conn = open_db(&app)?;
     push_local_contacts_to_outlook(
@@ -6971,6 +8331,7 @@ fn push_project_contacts_to_outlook(
         selected_group_ids.as_deref(),
         include_ungrouped.unwrap_or(true),
         seed_autocomplete.unwrap_or(true),
+        autocomplete_only.unwrap_or(false),
     )
 }
 
@@ -7842,8 +9203,13 @@ function Read-Folders($folder) {{
             lastName = [string]$item.LastName
             displayName = [string]$item.FullName
             email = $email
+            privateEmail = [string]$item.Email2Address
+            secondPrivateEmail = [string]$item.Email3Address
             phone = [string]$item.BusinessTelephoneNumber
             mobilePhone = [string]$item.MobileTelephoneNumber
+            privatePhone = [string]$item.HomeTelephoneNumber
+            secondPrivatePhone = [string]$item.Home2TelephoneNumber
+            company = [string]$item.CompanyName
             street = [string]$item.BusinessAddressStreet
             postalCode = [string]$item.BusinessAddressPostalCode
             city = [string]$item.BusinessAddressCity
@@ -7916,6 +9282,13 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
+fn create_shutdown_safety_backup(app: &AppHandle) -> Result<(), String> {
+    let backup = load_backup_data(&open_db(app)?)?;
+    write_automatic_backup(app, backup.clone(), true)?;
+    write_recovery_checkpoint(app, backup)?;
+    vault::write_automatic_password_backup(app, true)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState {
@@ -7943,7 +9316,12 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "open" => show_main_window(app),
-                    "quit" => app.exit(0),
+                    "quit" => {
+                        if let Err(error) = create_shutdown_safety_backup(app) {
+                            eprintln!("Abschluss-Sicherung fehlgeschlagen: {error}");
+                        }
+                        app.exit(0);
+                    }
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -7970,6 +9348,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             list_contacts,
+            get_contact_overview_counts,
             list_deleted_contacts,
             save_contact,
             delete_contact,
@@ -7983,6 +9362,8 @@ pub fn run() {
             restore_group,
             purge_deleted_items,
             list_calendar_events,
+            list_calendar_events_in_range,
+            get_calendar_overview,
             list_deleted_calendar_events,
             get_welcome_data_counts,
             merge_calendar_events,
@@ -7999,7 +9380,10 @@ pub fn run() {
             get_sync_backup_data,
             create_automatic_backup,
             create_recovery_checkpoint,
+            create_automatic_safety_backup,
             get_recovery_archive_status,
+            preview_recovery_archive,
+            restore_recovery_archive,
             restore_recovery_checkpoint,
             restore_automatic_backup,
             restore_backup,
@@ -8122,7 +9506,10 @@ mod tests {
                 id INTEGER PRIMARY KEY,
                 first_name TEXT NOT NULL DEFAULT '', last_name TEXT NOT NULL DEFAULT '',
                 display_name TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT '',
+                private_email TEXT NOT NULL DEFAULT '', second_private_email TEXT NOT NULL DEFAULT '',
                 phone TEXT NOT NULL DEFAULT '', mobile_phone TEXT NOT NULL DEFAULT '',
+                private_phone TEXT NOT NULL DEFAULT '', second_private_phone TEXT NOT NULL DEFAULT '',
+                company TEXT NOT NULL DEFAULT '',
                 street TEXT NOT NULL DEFAULT '', postal_code TEXT NOT NULL DEFAULT '',
                 city TEXT NOT NULL DEFAULT '', country TEXT NOT NULL DEFAULT '',
                 short_info TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '',
@@ -8231,7 +9618,10 @@ mod tests {
                 id INTEGER PRIMARY KEY,
                 first_name TEXT NOT NULL DEFAULT '', last_name TEXT NOT NULL DEFAULT '',
                 display_name TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT '',
+                private_email TEXT NOT NULL DEFAULT '', second_private_email TEXT NOT NULL DEFAULT '',
                 phone TEXT NOT NULL DEFAULT '', mobile_phone TEXT NOT NULL DEFAULT '',
+                private_phone TEXT NOT NULL DEFAULT '', second_private_phone TEXT NOT NULL DEFAULT '',
+                company TEXT NOT NULL DEFAULT '',
                 street TEXT NOT NULL DEFAULT '', postal_code TEXT NOT NULL DEFAULT '',
                 city TEXT NOT NULL DEFAULT '', country TEXT NOT NULL DEFAULT '',
                 short_info TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '',
@@ -8354,8 +9744,13 @@ mod tests {
                 last_name TEXT NOT NULL DEFAULT '',
                 display_name TEXT NOT NULL DEFAULT '',
                 email TEXT NOT NULL DEFAULT '',
+                private_email TEXT NOT NULL DEFAULT '',
+                second_private_email TEXT NOT NULL DEFAULT '',
                 phone TEXT NOT NULL DEFAULT '',
                 mobile_phone TEXT NOT NULL DEFAULT '',
+                private_phone TEXT NOT NULL DEFAULT '',
+                second_private_phone TEXT NOT NULL DEFAULT '',
+                company TEXT NOT NULL DEFAULT '',
                 street TEXT NOT NULL DEFAULT '',
                 postal_code TEXT NOT NULL DEFAULT '',
                 city TEXT NOT NULL DEFAULT '',
@@ -8427,8 +9822,13 @@ mod tests {
             last_name: String::new(),
             display_name: name.to_string(),
             email: email.to_string(),
+            private_email: String::new(),
+            second_private_email: String::new(),
             phone: phone.to_string(),
             mobile_phone: String::new(),
+            private_phone: String::new(),
+            second_private_phone: String::new(),
+            company: String::new(),
             street: String::new(),
             postal_code: String::new(),
             city: String::new(),
@@ -9177,8 +10577,13 @@ mod tests {
             last_name: "Mustermann".to_string(),
             display_name: "Erika Mustermann".to_string(),
             email: "erika@example.org".to_string(),
+            private_email: String::new(),
+            second_private_email: String::new(),
             phone: String::new(),
             mobile_phone: String::new(),
+            private_phone: String::new(),
+            second_private_phone: String::new(),
+            company: String::new(),
             street: String::new(),
             postal_code: String::new(),
             city: String::new(),
@@ -9279,8 +10684,13 @@ mod tests {
             last_name: "Test".to_string(),
             display_name: format!("{name} Test"),
             email: format!("{}@example.org", name.to_lowercase()),
+            private_email: String::new(),
+            second_private_email: String::new(),
             phone: String::new(),
             mobile_phone: String::new(),
+            private_phone: String::new(),
+            second_private_phone: String::new(),
+            company: String::new(),
             street: String::new(),
             postal_code: String::new(),
             city: String::new(),
@@ -9436,8 +10846,13 @@ mod tests {
             last_name: String::new(),
             display_name: name.to_string(),
             email: format!("{}@example.org", name.to_lowercase()),
+            private_email: String::new(),
+            second_private_email: String::new(),
             phone: String::new(),
             mobile_phone: String::new(),
+            private_phone: String::new(),
+            second_private_phone: String::new(),
+            company: String::new(),
             street: String::new(),
             postal_code: String::new(),
             city: String::new(),

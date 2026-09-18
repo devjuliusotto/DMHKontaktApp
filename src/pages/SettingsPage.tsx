@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { AlertTriangle, CheckCircle2, ChevronDown, Download, Eye, EyeOff, Mail, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { AlertCircle, AlertTriangle, CalendarDays, CheckCircle2, ChevronDown, Cloud, ContactRound, Database, Download, Eye, EyeOff, HeartPulse, Mail, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { PrinterSettings } from "../components/PrinterSettings";
 import { StatusMessage } from "../components/StatusMessage";
 import { updateAvailableEvent } from "../components/UpdateNotifier";
@@ -8,6 +8,9 @@ import type { Page } from "../components/Sidebar";
 import { check } from "@tauri-apps/plugin-updater";
 import {
   getAppSetting,
+  getMicrosoft365ConnectionStatus,
+  getRecoveryArchiveStatus,
+  getWelcomeDataCounts,
   importOutlookAccount,
   listMailAccounts,
   revealMailPassword,
@@ -35,6 +38,13 @@ interface SettingsSearchItem {
   adminOnly?: boolean;
 }
 
+interface SystemCheckItem {
+  label: string;
+  detail: string;
+  status: "ok" | "warning" | "error";
+  icon: typeof Database;
+}
+
 const settingsSearchItems: SettingsSearchItem[] = [
   { id: "mail", label: "E-Mail-Konten verwalten", description: "E-Mail & Konten → Konten", keywords: "e-mail mail konto konten outlook verwalten kennwort", page: "settings", section: "mail", targetId: "settings-mail-accounts" },
   { id: "printer", label: "Drucker hinzufügen", description: "Drucker → Netzwerkdrucker", keywords: "drucker printer netzwerk freigabe ip hinzufügen", page: "settings", section: "printer" },
@@ -42,6 +52,7 @@ const settingsSearchItems: SettingsSearchItem[] = [
   { id: "appearance", label: "Erscheinungsbild öffnen", description: "Erscheinungsbild → Darstellung", keywords: "erscheinungsbild thema farbe dunkel hell akzent", page: "appearance", section: "appearance" },
   { id: "advanced", label: "Optionale Bereiche", description: "Erweitert → optionale Bereiche", keywords: "erweitert optional 2fa passwörter dokumente", page: "feature-development", section: "advanced" },
   { id: "update", label: "App-Aktualisierung", description: "Allgemein → Nach Updates suchen", keywords: "update aktualisierung neue version github", page: "settings", section: "general" },
+  { id: "system-check", label: "Systemprüfung", description: "Allgemein → Migration prüfen", keywords: "prüfung diagnose migration kontakte kalender backup exchange", page: "settings", section: "general", targetId: "settings-system-check" },
   { id: "admin-tools", label: "Admin-Werkzeuge", description: "Erweitert → Wartung und Wiederherstellung", keywords: "admin zurücksetzen wiederherstellen wartung app löschen", page: "feature-development", section: "advanced", adminOnly: true }
 ];
 
@@ -55,6 +66,7 @@ export function SettingsPage({ section = "general", onNavigate = () => undefined
   const [searchQuery, setSearchQuery] = useState("");
   const [searchIndex, setSearchIndex] = useState(0);
   const [confirmDeletions, setConfirmDeletions] = useState(true);
+  const [systemCheck, setSystemCheck] = useState<SystemCheckItem[] | null>(null);
   const [revealedPassword, setRevealedPassword] = useState<{
     accountId: number;
     accountLabel: string;
@@ -136,6 +148,78 @@ export function SettingsPage({ section = "general", onNavigate = () => undefined
     } finally {
       setBusyAction(null);
     }
+  };
+
+  const runSystemCheck = async () => {
+    setBusyAction("system-check");
+    setMessage("");
+    const [countsResult, recoveryResult, m365Result, accountsResult] = await Promise.allSettled([
+      getWelcomeDataCounts(),
+      getRecoveryArchiveStatus(),
+      getMicrosoft365ConnectionStatus(),
+      listMailAccounts()
+    ]);
+
+    const checks: SystemCheckItem[] = [];
+    if (countsResult.status === "fulfilled") {
+      checks.push({
+        label: "Lokale Datenbank",
+        detail: `${countsResult.value.contacts.toLocaleString("de-DE")} Kontakte · ${countsResult.value.calendarEvents.toLocaleString("de-DE")} Termine`,
+        status: "ok",
+        icon: Database
+      });
+    } else {
+      checks.push({ label: "Lokale Datenbank", detail: "Die gespeicherten Daten konnten nicht sicher gelesen werden.", status: "error", icon: Database });
+    }
+
+    if (recoveryResult.status === "fulfilled" && recoveryResult.value.available && recoveryResult.value.latestAt) {
+      const latest = new Date(recoveryResult.value.latestAt);
+      const ageMinutes = Math.max(0, Math.round((Date.now() - latest.getTime()) / 60_000));
+      checks.push({
+        label: "Automatische Wiederherstellung",
+        detail: `Letzte Sicherung: ${latest.toLocaleString("de-DE")} · ${recoveryResult.value.totalCheckpoints} Wiederherstellungspunkte`,
+        status: ageMinutes <= 15 ? "ok" : "warning",
+        icon: HeartPulse
+      });
+    } else {
+      checks.push({ label: "Automatische Wiederherstellung", detail: "Es wurde noch kein lesbarer Wiederherstellungspunkt gefunden.", status: "warning", icon: HeartPulse });
+    }
+
+    if (m365Result.status === "fulfilled" && m365Result.value.connected) {
+      checks.push({
+        label: "Microsoft 365 / Exchange",
+        detail: `Verbunden mit ${m365Result.value.account?.email ?? "dem gespeicherten Konto"}`,
+        status: "ok",
+        icon: Cloud
+      });
+    } else {
+      checks.push({ label: "Microsoft 365 / Exchange", detail: "Nicht verbunden. Für eine reine lokale Migration ist das zulässig.", status: "warning", icon: Cloud });
+    }
+
+    if (accountsResult.status === "fulfilled") {
+      setAccounts(accountsResult.value);
+      checks.push({
+        label: "E-Mail-Konten",
+        detail: accountsResult.value.length > 0
+          ? `${accountsResult.value.length} Outlook-${accountsResult.value.length === 1 ? "Konto" : "Konten"} für die Migration gespeichert`
+          : "Noch kein Outlook-Konto gespeichert.",
+        status: accountsResult.value.length > 0 ? "ok" : "warning",
+        icon: Mail
+      });
+    } else {
+      checks.push({ label: "E-Mail-Konten", detail: "Outlook-Konten konnten nicht geprüft werden.", status: "error", icon: Mail });
+    }
+
+    setSystemCheck(checks);
+    const errors = checks.filter((check) => check.status === "error").length;
+    const warnings = checks.filter((check) => check.status === "warning").length;
+    setMessageType(errors > 0 ? "error" : warnings > 0 ? "info" : "success");
+    setMessage(errors > 0
+      ? `Systemprüfung abgeschlossen: ${errors} Problem(e) müssen geprüft werden.`
+      : warnings > 0
+        ? `Systemprüfung abgeschlossen: ${warnings} Hinweis(e), keine beschädigten lokalen Daten erkannt.`
+        : "Systemprüfung abgeschlossen. Alle geprüften Bereiche sind bereit.");
+    setBusyAction(null);
   };
 
   useEffect(() => {
@@ -370,6 +454,39 @@ export function SettingsPage({ section = "general", onNavigate = () => undefined
                 {busyAction === "app-update" ? "Wird geprüft …" : "Nach Updates suchen"}
               </button>
             </article>
+          </section>
+
+          <section className="settings-overview-section" id="settings-system-check">
+            <h3>Vor der Migration</h3>
+            <article className="settings-overview-card settings-system-check-card">
+              <span className="settings-overview-icon"><HeartPulse size={27} aria-hidden="true" /></span>
+              <div>
+                <h3>System kurz prüfen</h3>
+                <p>Kontrolliert lokale Daten, Sicherung, Exchange und gespeicherte E-Mail-Konten, ohne etwas zu verändern.</p>
+              </div>
+              <button type="button" onClick={() => void runSystemCheck()} disabled={busyAction !== null}>
+                <RefreshCw size={19} className={busyAction === "system-check" ? "spin" : ""} />
+                {busyAction === "system-check" ? "Wird geprüft …" : "Jetzt prüfen"}
+              </button>
+            </article>
+            {systemCheck && (
+              <div className="system-check-results" aria-label="Ergebnis der Systemprüfung">
+                {systemCheck.map((check) => {
+                  const Icon = check.icon;
+                  const StateIcon = check.status === "ok" ? CheckCircle2 : check.status === "error" ? AlertCircle : AlertTriangle;
+                  return (
+                    <article className={`system-check-result ${check.status}`} key={check.label}>
+                      <span className="system-check-area-icon"><Icon size={22} aria-hidden="true" /></span>
+                      <div><strong>{check.label}</strong><small>{check.detail}</small></div>
+                      <StateIcon className="system-check-state-icon" size={22} aria-label={check.status === "ok" ? "In Ordnung" : check.status === "error" ? "Problem" : "Hinweis"} />
+                    </article>
+                  );
+                })}
+                <div className="system-check-summary">
+                  <ContactRound size={19} aria-hidden="true" /> Kontakte und <CalendarDays size={19} aria-hidden="true" /> Termine werden nur gelesen. Die Prüfung ändert oder löscht nichts.
+                </div>
+              </div>
+            )}
           </section>
 
         </div>

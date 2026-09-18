@@ -1,10 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CalendarDirectImportResult, CalendarEvent, CalendarEventMergeResult, DetectedCalendarSourcesResult, OutlookCalendarExportResult, OutlookCalendarPreview, OutlookOneTimeCalendarImportResult, ThunderbirdCalendarImportResult } from "../types/calendar";
+import type { CalendarDirectImportResult, CalendarEvent, CalendarEventMergeResult, CalendarOverview, DetectedCalendarSourcesResult, OutlookCalendarExportResult, OutlookCalendarPreview, OutlookOneTimeCalendarImportResult, ThunderbirdCalendarImportResult } from "../types/calendar";
 import type {
   BackupData,
   AutomaticBackupRestoreResult,
   Contact,
   ContactDuplicateCleanupResult,
+  ContactOverviewCounts,
   ContactInput,
   DeleteAllContactsResult,
   Group,
@@ -77,8 +78,20 @@ export function listContacts(search = "", groupId?: number): Promise<Contact[]> 
   return invoke("list_contacts", { search, groupId });
 }
 
+export function getContactOverviewCounts(): Promise<ContactOverviewCounts> {
+  return invoke("get_contact_overview_counts");
+}
+
 export function listCalendarEvents(): Promise<CalendarEvent[]> {
   return invoke("list_calendar_events");
+}
+
+export function listCalendarEventsInRange(startsBefore: string, endsAfter: string): Promise<CalendarEvent[]> {
+  return invoke("list_calendar_events_in_range", { startsBefore, endsAfter });
+}
+
+export function getCalendarOverview(): Promise<CalendarOverview> {
+  return invoke("get_calendar_overview");
 }
 
 export function listDeletedCalendarEvents(): Promise<CalendarEvent[]> {
@@ -213,8 +226,35 @@ export function createRecoveryCheckpoint(backup: BackupData): Promise<void> {
   return invoke("create_recovery_checkpoint", { backup });
 }
 
+export function createAutomaticSafetyBackup(snapshot = false, browserStorage: Record<string, string> = {}): Promise<void> {
+  return invoke("create_automatic_safety_backup", { snapshot, browserStorage });
+}
+
 export function getRecoveryArchiveStatus(): Promise<import("../types/contact").RecoveryArchiveStatus> {
   return invoke("get_recovery_archive_status");
+}
+
+export function previewRecoveryArchive(
+  source: import("../types/contact").RecoveryArchiveSource,
+  checkpointId?: string,
+  query = "",
+  offset = 0,
+  limit = 100
+): Promise<import("../types/contact").RecoveryArchivePreview> {
+  return invoke("preview_recovery_archive", {
+    source,
+    checkpointId: checkpointId ?? null,
+    query,
+    offset,
+    limit
+  });
+}
+
+export function restoreRecoveryArchive(
+  source: import("../types/contact").RecoveryArchiveSource,
+  checkpointId?: string
+): Promise<import("../types/contact").RecoveryArchiveRestoreResult> {
+  return invoke("restore_recovery_archive", { source, checkpointId: checkpointId ?? null });
 }
 
 export function restoreRecoveryCheckpoint(currentBackup: BackupData, checkpointId?: string): Promise<import("../types/contact").RecoveryRestoreResult> {
@@ -238,6 +278,7 @@ export interface OutlookContactExportOptions {
   selectedGroupIds?: number[];
   includeUngrouped?: boolean;
   seedAutocomplete?: boolean;
+  autocompleteOnly?: boolean;
 }
 
 export function pushProjectContactsToOutlook(options: OutlookContactExportOptions = {}): Promise<OutlookContactExportResult> {
@@ -245,7 +286,8 @@ export function pushProjectContactsToOutlook(options: OutlookContactExportOption
     targetEmail: options.targetEmail || null,
     selectedGroupIds: options.selectedGroupIds ?? null,
     includeUngrouped: options.includeUngrouped ?? true,
-    seedAutocomplete: options.seedAutocomplete ?? true
+    seedAutocomplete: options.seedAutocomplete ?? true,
+    autocompleteOnly: options.autocompleteOnly ?? false
   });
 }
 

@@ -20,8 +20,13 @@ export function contactExactContentKey(contact: Contact | ContactInput): string 
     contact.lastName.trim(),
     name,
     contact.email.trim().toLocaleLowerCase("de-DE"),
+    contact.privateEmail.trim().toLocaleLowerCase("de-DE"),
+    contact.secondPrivateEmail.trim().toLocaleLowerCase("de-DE"),
     contact.phone.trim(),
     contact.mobilePhone.trim(),
+    contact.privatePhone.trim(),
+    contact.secondPrivatePhone.trim(),
+    contact.company.trim(),
     contact.street.trim(),
     contact.postalCode.trim(),
     contact.city.trim(),
@@ -31,8 +36,9 @@ export function contactExactContentKey(contact: Contact | ContactInput): string 
   ]);
 }
 
-function normalizedEmail(contact: Contact): string {
-  return contact.email.trim().toLocaleLowerCase("de-DE");
+function normalizedEmails(contact: Contact): string[] {
+  return Array.from(new Set([contact.email, contact.privateEmail, contact.secondPrivateEmail]
+    .map((email) => email.trim().toLocaleLowerCase("de-DE")).filter(Boolean)));
 }
 
 function normalizedName(contact: Contact): string {
@@ -48,7 +54,8 @@ function normalizedPhone(value: string): string {
 }
 
 function contactPhones(contact: Contact): string[] {
-  return Array.from(new Set([normalizedPhone(contact.phone), normalizedPhone(contact.mobilePhone)].filter(Boolean)));
+  return Array.from(new Set([contact.phone, contact.mobilePhone, contact.privatePhone, contact.secondPrivatePhone]
+    .map(normalizedPhone).filter(Boolean)));
 }
 
 function addToIndex(index: Map<string, Contact[]>, key: string, contact: Contact) {
@@ -82,7 +89,7 @@ export function findContactDuplicateGroups(contacts: Contact[]): ContactDuplicat
   const nameIndex = new Map<string, Contact[]>();
 
   for (const contact of activeContacts) {
-    addToIndex(emailIndex, normalizedEmail(contact), contact);
+    for (const email of normalizedEmails(contact)) addToIndex(emailIndex, email, contact);
     for (const phone of contactPhones(contact)) addToIndex(phoneIndex, phone, contact);
     addToIndex(nameIndex, normalizedName(contact), contact);
   }
@@ -111,7 +118,7 @@ export function findContactDuplicateGroups(contacts: Contact[]): ContactDuplicat
     addGroup("phone", phone, matches, "Gleiche Telefonnummer", "review");
   }
   for (const [name, matches] of nameIndex) {
-    const distinctEmails = new Set(matches.map(normalizedEmail).filter(Boolean));
+    const distinctEmails = new Set(matches.flatMap(normalizedEmails));
     if (distinctEmails.size <= 1) {
       addGroup("name", name, matches, "Gleicher vollständiger Name", "review");
     }

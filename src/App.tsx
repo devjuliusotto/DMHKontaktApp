@@ -8,6 +8,7 @@ import { ContactsPage } from "./pages/ContactsPage";
 import { CalendarPage } from "./pages/CalendarPage";
 import { TrashPage } from "./pages/TrashPage";
 import { UpdateNotifier } from "./components/UpdateNotifier";
+import { ActivityCenter } from "./components/ActivityCenter";
 import { SettingsPage } from "./pages/SettingsPage";
 import { AppearancePage } from "./pages/AppearancePage";
 import { PasswordsPage } from "./pages/PasswordsPage";
@@ -19,9 +20,9 @@ import { DocumentsPage } from "./pages/DocumentsPage";
 import { FeatureDevelopmentPage } from "./pages/FeatureDevelopmentPage";
 import { RecoveryPage } from "./pages/RecoveryPage";
 import { WelcomePage } from "./pages/WelcomePage";
-import { createAutomaticBackup, createAutomaticPasswordBackup, createRecoveryCheckpoint, getBackupData, getMicrosoft365ConnectionStatus, getVaultStatus, syncOfflineDocuments } from "./services/db";
+import { createAutomaticSafetyBackup, getMicrosoft365ConnectionStatus, getVaultStatus, syncOfflineDocuments } from "./services/db";
 import type { VaultStatus } from "./types/vault";
-import { addBrowserDataToBackup } from "./utils/backup";
+import { captureBrowserStorage } from "./utils/backup";
 import {
   clearFeatureOverrides,
   readFeatureAvailability,
@@ -31,6 +32,8 @@ import {
 import {
   calendarAutomaticSyncStatusEventName,
   calendarChangedEventName,
+  calendarStorageUpdatedEventName,
+  m365DataUpdatedEventName,
   recordMicrosoft365SynchronizationError,
   runAutomaticCalendarSync as performAutomaticCalendarSync,
   type CalendarAutomaticSyncStatus
@@ -71,9 +74,8 @@ export default function App() {
   const [startupError, setStartupError] = useState("");
   const [edvUnlocked, setEdvUnlocked] = useState(false);
   const [pendingEdvNavigation, setPendingEdvNavigation] = useState<{ page: Page; section?: SettingsSection } | null>(null);
-  const automaticBackupPromise = useRef<Promise<void> | null>(null);
-  const recoveryCheckpointPromise = useRef<Promise<void> | null>(null);
-  const recoveryCheckpointQueued = useRef(false);
+  const safetyBackupPromise = useRef<Promise<void> | null>(null);
+  const backupDirty = useRef(true);
   const documentSyncPromise = useRef<Promise<void> | null>(null);
   const calendarSyncPromise = useRef<Promise<void> | null>(null);
   const queuedCalendarSyncTrigger = useRef<"open" | "change" | "poll" | null>(null);
@@ -134,45 +136,22 @@ export default function App() {
     setFeatureAvailability(setFeatureOverride(feature, enabled));
   };
 
-  const runAutomaticBackup = useCallback(async (snapshot = false): Promise<void> => {
+  const runSafetyBackup = useCallback(async (snapshot = false): Promise<void> => {
     const isTauri = "__TAURI_INTERNALS__" in window;
     if (!isTauri) return;
-    if (automaticBackupPromise.current) {
-      await automaticBackupPromise.current;
+    if (safetyBackupPromise.current) {
+      await safetyBackupPromise.current;
       if (!snapshot) return;
     }
+    if (!snapshot && !backupDirty.current) return;
 
-    const promise = (async () => {
-      const backup = addBrowserDataToBackup(await getBackupData());
-      await createAutomaticBackup(backup, snapshot);
-      await createAutomaticPasswordBackup(snapshot);
-    })();
-    automaticBackupPromise.current = promise;
+    const promise = createAutomaticSafetyBackup(snapshot, captureBrowserStorage());
+    safetyBackupPromise.current = promise;
     try {
       await promise;
+      backupDirty.current = false;
     } finally {
-      if (automaticBackupPromise.current === promise) automaticBackupPromise.current = null;
-    }
-  }, []);
-
-  const runRecoveryCheckpoint = useCallback(async (): Promise<void> => {
-    if (!("__TAURI_INTERNALS__" in window)) return;
-    if (recoveryCheckpointPromise.current) {
-      recoveryCheckpointQueued.current = true;
-      return recoveryCheckpointPromise.current;
-    }
-    const promise = (async () => {
-      do {
-        recoveryCheckpointQueued.current = false;
-        const backup = addBrowserDataToBackup(await getBackupData());
-        await createRecoveryCheckpoint(backup);
-      } while (recoveryCheckpointQueued.current);
-    })();
-    recoveryCheckpointPromise.current = promise;
-    try {
-      await promise;
-    } finally {
-      if (recoveryCheckpointPromise.current === promise) recoveryCheckpointPromise.current = null;
+      if (safetyBackupPromise.current === promise) safetyBackupPromise.current = null;
     }
   }, []);
 
@@ -277,13 +256,8 @@ export default function App() {
     if (!("__TAURI_INTERNALS__" in window)) return;
 
     const interval = window.setInterval(() => {
-      void runAutomaticBackup().catch(() => {
+      void runSafetyBackup().catch(() => {
         // Backup failures must not interrupt normal contact/calendar work.
-      });
-    }, 5 * 60_000);
-    const recoveryCheckpointInterval = window.setInterval(() => {
-      void runRecoveryCheckpoint().catch(() => {
-        // The last valid recovery point remains available if this attempt fails.
       });
     }, 5 * 60_000);
     const documentSyncInterval = window.setInterval(() => {
@@ -291,27 +265,20 @@ export default function App() {
         // Offline changes remain queued and are retried when the connection returns.
       });
     }, 45_000);
-    void runAutomaticBackup().catch(() => {
-      // The next interval or the close handler will retry automatically.
-    });
-    void runRecoveryCheckpoint().catch(() => {
-      // The next five-minute cycle retries the internal recovery point.
-    });
+    const startupBackupTimer = window.setTimeout(() => {
+      void runSafetyBackup().catch(() => {
+        // The next interval or the close handler will retry automatically.
+      });
+    }, 8_000);
     void runDocumentSync().catch(() => {
       // A missing connection is expected while the device is offline.
     });
 
-    let recoveryDebounceTimer: number | undefined;
-    const queueRecoveryCheckpoint = () => {
-      if (recoveryDebounceTimer !== undefined) window.clearTimeout(recoveryDebounceTimer);
-      recoveryDebounceTimer = window.setTimeout(() => {
-        void runRecoveryCheckpoint().catch(() => {
-          // A failed point never replaces or removes an earlier checkpoint.
-        });
-      }, 1_500);
-    };
-    window.addEventListener(calendarChangedEventName, queueRecoveryCheckpoint);
-    window.addEventListener(dataSectionVisibilityChangedEventName, queueRecoveryCheckpoint);
+    const markBackupDirty = () => { backupDirty.current = true; };
+    window.addEventListener(calendarChangedEventName, markBackupDirty);
+    window.addEventListener(calendarStorageUpdatedEventName, markBackupDirty);
+    window.addEventListener(m365DataUpdatedEventName, markBackupDirty);
+    window.addEventListener(dataSectionVisibilityChangedEventName, markBackupDirty);
 
     const appWindow = getCurrentWindow();
     const unlisten = appWindow.onCloseRequested(async (event) => {
@@ -324,8 +291,7 @@ export default function App() {
         void Promise.allSettled([
           runCalendarSync("poll"),
           runDocumentSync(),
-          runAutomaticBackup(true),
-          runRecoveryCheckpoint()
+          runSafetyBackup(true)
         ]);
       } catch (error) {
         closing.current = false;
@@ -335,14 +301,15 @@ export default function App() {
 
     return () => {
       window.clearInterval(interval);
-      window.clearInterval(recoveryCheckpointInterval);
       window.clearInterval(documentSyncInterval);
-      window.removeEventListener(calendarChangedEventName, queueRecoveryCheckpoint);
-      window.removeEventListener(dataSectionVisibilityChangedEventName, queueRecoveryCheckpoint);
-      if (recoveryDebounceTimer !== undefined) window.clearTimeout(recoveryDebounceTimer);
+      window.clearTimeout(startupBackupTimer);
+      window.removeEventListener(calendarChangedEventName, markBackupDirty);
+      window.removeEventListener(calendarStorageUpdatedEventName, markBackupDirty);
+      window.removeEventListener(m365DataUpdatedEventName, markBackupDirty);
+      window.removeEventListener(dataSectionVisibilityChangedEventName, markBackupDirty);
       void unlisten.then((dispose) => dispose());
     };
-  }, [runAutomaticBackup, runCalendarSync, runDocumentSync, runRecoveryCheckpoint]);
+  }, [runCalendarSync, runDocumentSync, runSafetyBackup]);
 
   if (!vaultStatus) {
     return (
@@ -415,6 +382,7 @@ export default function App() {
           {page === "synchronizations" && <SynchronizationsPage onNavigate={navigate} />}
         </main>
         <UpdateNotifier />
+        <ActivityCenter />
       </div>
       {pendingEdvNavigation && <EdvAccessDialog onCancel={() => setPendingEdvNavigation(null)} onUnlocked={unlockEdvTools} />}
     </div>

@@ -26,11 +26,7 @@ const aliases: Record<ImportField, string[]> = {
   email: [
     "e-mail-adresse",
     "e-mail-adresse 1",
-    "e-mail-adresse 2",
-    "e-mail-adresse 3",
     "e-mail 1",
-    "e-mail 2",
-    "e-mail 3",
     "e-mail",
     "e-mail-adresse geschaeftlich",
     "e-mail-adresse geschäftlich",
@@ -53,17 +49,20 @@ const aliases: Record<ImportField, string[]> = {
     "e mail",
     "emailaddress"
   ],
+  privateEmail: ["e-mail privat", "email privat", "private e-mail", "personal email", "e-mail-adresse 2", "e-mail 2", "email address 2"],
+  secondPrivateEmail: ["zweite private e-mail", "weitere e-mail", "e-mail-adresse 3", "e-mail 3", "email address 3"],
   phone: [
     "telefon",
     "telefon geschaeftlich",
     "telefon geschäftlich",
-    "telefon privat",
     "phone",
     "business phone",
-    "home phone",
     "festnetz"
   ],
   mobilePhone: ["mobiltelefon", "mobile", "mobile phone", "handy", "mobil", "cell phone", "cellular"],
+  privatePhone: ["telefon privat", "privattelefon", "home phone", "private phone"],
+  secondPrivatePhone: ["telefon privat 2", "weiteres telefon", "home phone 2", "other phone"],
+  company: ["unternehmen", "firma", "company", "company name", "organization", "organisation"],
   street: ["straße", "strasse", "straße geschaeftlich", "straße geschäftlich", "straße privat", "street", "business street", "home street"],
   postalCode: ["plz", "plz geschaeftlich", "plz geschäftlich", "plz privat", "postal code", "zip", "postleitzahl", "business postal code"],
   city: ["stadt", "ort", "ort geschaeftlich", "ort geschäftlich", "ort privat", "city", "business city", "home city"],
@@ -78,8 +77,12 @@ export const mappingFields: Array<{ field: ImportField; label: string }> = [
   { field: "firstName", label: "Vorname" },
   { field: "lastName", label: "Nachname" },
   { field: "email", label: "E-Mail" },
+  { field: "privateEmail", label: "E-Mail privat" },
+  { field: "secondPrivateEmail", label: "Zweite private E-Mail" },
   { field: "phone", label: "Telefon" },
-  { field: "mobilePhone", label: "Mobiltelefon" }
+  { field: "mobilePhone", label: "Mobiltelefon" },
+  { field: "privatePhone", label: "Telefon privat" },
+  { field: "company", label: "Unternehmen" }
 ];
 
 const normalize = (value: string) =>
@@ -148,15 +151,16 @@ export function mapRows(rows: Record<string, unknown>[], mapping: ImportMapping)
         contact.displayName = `${contact.firstName} ${contact.lastName}`.trim();
       }
 
-      return { ...contact, selected: Boolean(contact.displayName || contact.email || contact.phone || contact.mobilePhone) };
+      return { ...contact, selected: Boolean(contact.displayName || contact.email || contact.privateEmail || contact.secondPrivateEmail || contact.phone || contact.mobilePhone || contact.privatePhone || contact.secondPrivatePhone) };
     })
     .filter((contact) => contact.selected);
 }
 
 function createLogs(mapping: ImportMapping, contacts: PreviewContact[]): string[] {
-  const withEmail = contacts.filter((contact) => Boolean(contact.email.trim())).length;
+  const withEmail = contacts.filter((contact) => Boolean(contact.email.trim() || contact.privateEmail.trim() || contact.secondPrivateEmail.trim())).length;
+  const mappedEmails = [mapping.email, mapping.privateEmail, mapping.secondPrivateEmail].filter(Boolean);
   return [
-    mapping.email ? `E-Mail-Spalte erkannt: ${mapping.email}` : "Keine E-Mail-Spalte gefunden",
+    mappedEmails.length ? `E-Mail-Spalten erkannt: ${mappedEmails.join(", ")}` : "Keine E-Mail-Spalte gefunden",
     `${withEmail} Kontakte mit E-Mail erkannt`,
     `${contacts.length - withEmail} Kontakte ohne E-Mail erkannt`
   ];
@@ -180,7 +184,7 @@ function createPreview(rows: Record<string, unknown>[]): ImportPreview {
     rows: normalizedRows,
     contacts,
     logs: createLogs(mapping, contacts),
-    emailColumnMissing: !mapping.email
+    emailColumnMissing: !mapping.email && !mapping.privateEmail && !mapping.secondPrivateEmail
   };
 }
 
@@ -191,7 +195,7 @@ export function updatePreviewMapping(preview: ImportPreview, mapping: ImportMapp
     mapping,
     contacts,
     logs: createLogs(mapping, contacts),
-    emailColumnMissing: !mapping.email
+    emailColumnMissing: !mapping.email && !mapping.privateEmail && !mapping.secondPrivateEmail
   };
 }
 

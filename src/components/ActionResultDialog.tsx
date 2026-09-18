@@ -1,4 +1,6 @@
 import { AlertCircle, CheckCircle2, Info, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { recordActivity } from "../utils/activityLog";
 
 export type ActionResultTone = "success" | "info" | "error";
 
@@ -18,6 +20,30 @@ interface ActionResultDialogProps {
 }
 
 export function ActionResultDialog({ result, onClose }: ActionResultDialogProps) {
+  const [visibleItemCount, setVisibleItemCount] = useState(100);
+
+  useEffect(() => setVisibleItemCount(100), [result]);
+
+  useEffect(() => {
+    if (!result) return;
+    recordActivity({
+      title: result.title,
+      summary: result.summary,
+      tone: result.tone ?? "info",
+      details: result.details,
+      items: result.items
+    });
+  }, [result]);
+
+  useEffect(() => {
+    if (!result) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose, result]);
+
   if (!result) return null;
 
   const tone = result.tone ?? "info";
@@ -47,13 +73,18 @@ export function ActionResultDialog({ result, onClose }: ActionResultDialogProps)
           <details className="action-result-items">
             <summary>{result.itemsLabel ?? `${result.items.length} betroffene Einträge anzeigen`}</summary>
             <ul>
-              {result.items.map((item, index) => (
+              {result.items.slice(0, visibleItemCount).map((item, index) => (
                 <li key={`${item.label}-${index}`}>
                   <strong>{item.label}</strong>
                   {item.detail && <span>{item.detail}</span>}
                 </li>
               ))}
             </ul>
+            {visibleItemCount < result.items.length && (
+              <button className="action-result-load-more" type="button" onClick={() => setVisibleItemCount((current) => Math.min(result.items!.length, current + 100))}>
+                Weitere Einträge anzeigen ({Math.min(visibleItemCount, result.items.length)} von {result.items.length})
+              </button>
+            )}
           </details>
         )}
         <div className="button-row action-result-actions">

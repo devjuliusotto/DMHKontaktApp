@@ -20,6 +20,7 @@ import {
   deleteContacts,
   deleteGroup,
   getAppSetting,
+  getContactOverviewCounts,
   listContacts,
   listGroups,
   moveContactToGroup,
@@ -32,7 +33,7 @@ import {
   setAppSetting
 } from "../services/db";
 import type { Contact, ContactInput, Group } from "../types/contact";
-import { collectedAddressesDeletedAtSettingKey, collectedAddressesHiddenSettingKey, displayName, emptyContact, toContactInput } from "../utils/contact";
+import { collectedAddressesDeletedAtSettingKey, collectedAddressesHiddenSettingKey, contactEmails, displayName, emptyContact, primaryContactEmail, toContactInput } from "../utils/contact";
 import { findContactDuplicateGroups, type ContactDuplicateGroup } from "../utils/contactDuplicates";
 import { deletionConfirmationSettingKey } from "../utils/settings";
 import { calendarChangedEventName, m365DataUpdatedEventName } from "../utils/automaticCalendarSync";
@@ -75,11 +76,12 @@ function uniqueContactEmails(contactRows: Contact[]) {
   const seen = new Set<string>();
   const emails: string[] = [];
   for (const contact of contactRows) {
-    const email = contact.email.trim();
-    const key = email.toLowerCase();
-    if (!email.includes("@") || seen.has(key)) continue;
-    seen.add(key);
-    emails.push(email);
+    for (const email of contactEmails(contact)) {
+      const key = email.toLowerCase();
+      if (!email.includes("@") || seen.has(key)) continue;
+      seen.add(key);
+      emails.push(email);
+    }
   }
   return emails;
 }
@@ -105,6 +107,8 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
   const [ungroupedGroupHidden, setUngroupedGroupHidden] = useState(false);
   const [allSearch, setAllSearch] = useState("");
   const [groupSearch, setGroupSearch] = useState("");
+  const [debouncedAllSearch, setDebouncedAllSearch] = useState("");
+  const [debouncedGroupSearch, setDebouncedGroupSearch] = useState("");
   const [groupSelection, setGroupSelection] = useState<GroupSelection>("ungrouped");
   const [editing, setEditing] = useState<ContactInput | null>(null);
   const [groupForm, setGroupForm] = useState<Group>(blankGroup);
@@ -137,6 +141,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
   const [dragPreview, setDragPreview] = useState<DragPreview | null>(null);
   const [bulkAddGroup, setBulkAddGroup] = useState<Group | null>(null);
   const [bulkAddSearch, setBulkAddSearch] = useState("");
+  const [debouncedBulkAddSearch, setDebouncedBulkAddSearch] = useState("");
   const [bulkAddContacts, setBulkAddContacts] = useState<Contact[]>([]);
   const [bulkAddSelectedIds, setBulkAddSelectedIds] = useState<Set<number>>(() => new Set());
   const [contactsFontSizeIndex, setContactsFontSizeIndex] = useState(initialContactsFontSizeIndex);
@@ -172,36 +177,46 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
     });
   };
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedAllSearch(allSearch), 300);
+    return () => window.clearTimeout(timer);
+  }, [allSearch]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedGroupSearch(groupSearch), 300);
+    return () => window.clearTimeout(timer);
+  }, [groupSearch]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedBulkAddSearch(bulkAddSearch), 300);
+    return () => window.clearTimeout(timer);
+  }, [bulkAddSearch]);
+
   const refresh = useCallback(async () => {
-    const [groupRows, allContactRows] = await Promise.all([listGroups(), listContacts("")]);
-    setTotalContactCount(allContactRows.length);
+    const rowsPromise = tab === "all"
+      ? listContacts(debouncedAllSearch)
+      : groupSelection === "ungrouped"
+        ? listContacts(debouncedGroupSearch)
+        : listContacts(debouncedGroupSearch, groupSelection);
+    const [groupRows, overview, rows] = await Promise.all([listGroups(), getContactOverviewCounts(), rowsPromise]);
+    setTotalContactCount(overview.total);
     setGroups(groupRows);
     groupsRef.current = groupRows;
-
-    const counts: Record<number, number> = {};
-    let ungroupedCount = 0;
-    for (const contact of allContactRows) {
-      if (contact.groups.length === 0) ungroupedCount += 1;
-      for (const group of contact.groups) {
-        if (group.id) counts[group.id] = (counts[group.id] ?? 0) + 1;
-      }
-    }
-    setGroupContactCounts(counts);
-    setUngroupedContactCount(ungroupedCount);
+    setGroupContactCounts(overview.groups);
+    setUngroupedContactCount(overview.ungrouped);
 
     if (tab === "all") {
-      setContacts(await listContacts(allSearch));
+      setContacts(rows);
       return;
     }
 
     if (groupSelection === "ungrouped") {
-      const allRows = await listContacts(groupSearch);
-      setContacts(allRows.filter((contact) => contact.groups.length === 0));
+      setContacts(rows.filter((contact) => contact.groups.length === 0));
       return;
     }
 
-    setContacts(await listContacts(groupSearch, groupSelection));
-  }, [allSearch, groupSearch, groupSelection, tab]);
+    setContacts(rows);
+  }, [debouncedAllSearch, debouncedGroupSearch, groupSelection, tab]);
 
   useEffect(() => {
     refresh().catch((error) => {
@@ -246,13 +261,13 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
 
   useEffect(() => {
     if (!bulkAddGroup?.id) return;
-    listContacts(bulkAddSearch)
+    listContacts(debouncedBulkAddSearch)
       .then((rows) => setBulkAddContacts(rows.filter((contact) => contact.id && !contactInGroup(contact, bulkAddGroup.id!))))
       .catch((error) => {
         setMessage(`Kontakte konnten nicht geladen werden: ${error}`);
         setMessageType("error");
       });
-  }, [bulkAddGroup, bulkAddSearch]);
+  }, [bulkAddGroup, debouncedBulkAddSearch]);
 
   const startNew = () => setEditing({ ...emptyContact });
 
@@ -495,7 +510,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
         title: "Kontakte und Gruppen in den Papierkorb verschoben",
         summary: `${result.contacts} ${result.contacts === 1 ? "Kontakt" : "Kontakte"} und ${result.groups} ${result.groups === 1 ? "Gruppe wurden" : "Gruppen wurden"} nicht endgültig gelöscht und können wiederhergestellt werden.`,
         items: [
-          ...affectedContacts.map((contact) => ({ label: displayName(contact), detail: contact.email || contact.phone || undefined })),
+          ...affectedContacts.map((contact) => ({ label: displayName(contact), detail: primaryContactEmail(contact) || contact.phone || contact.privatePhone || undefined })),
           ...affectedGroups
         ],
         itemsLabel: `${result.contacts} Kontakte und ${result.groups} Gruppen anzeigen`,
@@ -522,7 +537,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
       setActionResult({
         title: "Kontakte in den Papierkorb verschoben",
         summary: deleted === 1 ? "1 Kontakt kann im Papierkorb wiederhergestellt werden." : `${deleted} Kontakte können im Papierkorb wiederhergestellt werden.`,
-        items: affectedContacts.map((contact) => ({ label: displayName(contact), detail: contact.email || contact.phone || undefined })),
+        items: affectedContacts.map((contact) => ({ label: displayName(contact), detail: primaryContactEmail(contact) || contact.phone || contact.privatePhone || undefined })),
         itemsLabel: `${deleted} verschobene Kontakte anzeigen`,
         tone: "success"
       });
@@ -689,7 +704,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
       setActionResult({
         title: "Kontakte verschoben",
         summary: contactIds.length === 1 ? `Der Kontakt ist jetzt in „${targetLabel}“.` : `${contactIds.length} Kontakte sind jetzt in „${targetLabel}“.`,
-        items: affectedContacts.map((contact) => ({ label: displayName(contact), detail: contact.email || contact.phone || undefined })),
+        items: affectedContacts.map((contact) => ({ label: displayName(contact), detail: primaryContactEmail(contact) || contact.phone || contact.privatePhone || undefined })),
         itemsLabel: `${contactIds.length} verschobene Kontakte anzeigen`,
         tone: "success"
       });
@@ -845,7 +860,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
         </div>
       </header>
 
-      <StatusMessage message={message} type={messageType} />
+      <StatusMessage message={actionResult ? "" : message} type={messageType} />
       <ActionResultDialog result={actionResult} onClose={() => setActionResult(null)} />
       {m365SyncDialogOpen && <Microsoft365SyncDialog context="contacts" onClose={() => setM365SyncDialogOpen(false)} />}
 
@@ -883,7 +898,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
                         <button type="button" key={contact.id} onClick={() => openDuplicateContact(contact)}>
                           <span>
                             <strong>{displayName(contact)}</strong>
-                            <small>{[contact.email, contact.mobilePhone || contact.phone].filter(Boolean).join(" · ") || "Keine E-Mail oder Telefonnummer"}</small>
+                            <small>{[primaryContactEmail(contact), contact.mobilePhone || contact.phone || contact.privatePhone].filter(Boolean).join(" · ") || "Keine E-Mail oder Telefonnummer"}</small>
                           </span>
                           <span className="contact-duplicate-open"><Pencil size={16} /> Öffnen</span>
                         </button>
@@ -973,7 +988,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
                       <span className={selected ? "selection-dot checked" : "selection-dot"}>{selected ? "✓" : ""}</span>
                       <span>
                         <strong>{displayName(contact)}</strong>
-                        <small>{contact.email || "-"}</small>
+                        <small>{primaryContactEmail(contact) || "-"}</small>
                       </span>
                     </button>
                   );
@@ -1065,6 +1080,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
       ) : tab === "all" ? (
         <ContactTable
           contacts={contacts}
+          paginationKey={`all:${allSearch}`}
           onEdit={(contact) => setEditing(toContactInput(contact))}
           onDelete={remove}
           onCopyEmail={copyEmail}
@@ -1146,6 +1162,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
           <div className="contacts-main">
             <ContactTable
               contacts={contacts}
+              paginationKey={`groups:${groupSelection}:${groupSearch}`}
               onEdit={(contact) => setEditing(toContactInput(contact))}
               onDelete={remove}
               onCopyEmail={copyEmail}

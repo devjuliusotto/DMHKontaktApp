@@ -3,6 +3,7 @@ import { useState } from "react";
 import { EasyImportDialog } from "../components/EasyImportDialog";
 import { OutlookContactImportDialog } from "../components/OutlookContactImportDialog";
 import { StatusMessage } from "../components/StatusMessage";
+import { ActionResultDialog, type ActionResult } from "../components/ActionResultDialog";
 import { importOutlookClassicAppointmentsToCalendar, importThunderbirdCalendarsToCalendar, importThunderbirdContactsOnce, previewOutlookClassicAppointments, undoLastOutlookContactImport } from "../services/db";
 import type { OutlookCalendarPreview } from "../types/calendar";
 import type { OutlookContactImportResult } from "../types/contact";
@@ -26,6 +27,7 @@ export function SimpleImportPage({ embedded = false, onOpenFileImport, onManageS
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState<"success" | "error" | "info">("info");
+  const [actionResult, setActionResult] = useState<ActionResult | null>(null);
   const [contactImportDialogOpen, setContactImportDialogOpen] = useState(false);
   const [outlookCalendarPreview, setOutlookCalendarPreview] = useState<OutlookCalendarPreview | null>(null);
   const [cleanImportedNames, setCleanImportedNames] = useState(true);
@@ -33,11 +35,21 @@ export function SimpleImportPage({ embedded = false, onOpenFileImport, onManageS
   const [activeSource, setActiveSource] = useState<ImportSource | null>(null);
   const [connectedCalendarDialogOpen, setConnectedCalendarDialogOpen] = useState(false);
 
+  const showImportResult = (title: string, summary: string, tone: ActionResult["tone"], details?: string[]) => {
+    setMessage("");
+    setActionResult({ title, summary, tone, details });
+  };
+
   const contactsImported = (result: OutlookContactImportResult, source: "classic" | "csv") => {
-    setMessageType("success");
-    setMessage(
-      `${result.imported} Kontakte aus ${source === "classic" ? "Outlook Classic" : "dem neuen Outlook"} wurden einmalig übernommen. `
-      + `${result.mergedDuplicates} Duplikate wurden automatisch zusammengeführt. ${result.skippedExactDuplicates} in allen Feldern exakt gleiche Kontakte wurden ausgelassen. Gleiche Namen mit unterschiedlichen E-Mail-Adressen bleiben getrennt. Es besteht keine Synchronisierung.`
+    showImportResult(
+      "Kontaktimport abgeschlossen",
+      `${result.imported} Kontakte aus ${source === "classic" ? "Outlook Classic" : "dem neuen Outlook"} wurden einmalig übernommen.`,
+      "success",
+      [
+        `${result.mergedDuplicates} Duplikate wurden automatisch zusammengeführt.`,
+        `${result.skippedExactDuplicates} in allen Feldern exakt gleiche Kontakte wurden ausgelassen.`,
+        "Gleiche Namen mit unterschiedlichen E-Mail-Adressen bleiben getrennt. Es besteht keine Synchronisierung."
+      ]
     );
   };
 
@@ -51,13 +63,15 @@ export function SimpleImportPage({ embedded = false, onOpenFileImport, onManageS
     setMessage("Letzter Outlook-Kontaktimport wird rückgängig gemacht …");
     try {
       const deleted = await undoLastOutlookContactImport();
-      setMessageType(deleted > 0 ? "success" : "info");
-      setMessage(deleted > 0
-        ? `${deleted} Kontakte aus dem letzten Outlook-Import wurden entfernt.`
-        : "Es wurde kein Outlook-Kontaktimport gefunden, der rückgängig gemacht werden kann.");
+      showImportResult(
+        deleted > 0 ? "Import rückgängig gemacht" : "Kein Import zum Rückgängigmachen",
+        deleted > 0
+          ? `${deleted} Kontakte aus dem letzten Outlook-Import wurden entfernt.`
+          : "Es wurde kein Outlook-Kontaktimport gefunden, der rückgängig gemacht werden kann.",
+        deleted > 0 ? "success" : "info"
+      );
     } catch (error) {
-      setMessageType("error");
-      setMessage(`Der letzte Outlook-Kontaktimport konnte nicht rückgängig gemacht werden: ${error}`);
+      showImportResult("Import konnte nicht rückgängig gemacht werden", String(error), "error");
     } finally {
       setBusyAction(null);
     }
@@ -102,15 +116,19 @@ export function SimpleImportPage({ embedded = false, onOpenFileImport, onManageS
     try {
       const result = await importOutlookClassicAppointmentsToCalendar();
       const duplicates = result.skippedSameId + result.skippedExactDuplicates;
-      setMessageType("success");
-      setMessage(
+      showImportResult(
+        result.found === 0 ? "Keine Outlook-Termine gefunden" : "Outlook-Kalender importiert",
         result.found === 0
           ? "In den erreichbaren Outlook-Kalendern wurden keine Termine gefunden."
-          : `${result.imported} von ${result.found} Outlook-Terminen wurden einmalig übernommen. ${duplicates} bereits vorhandene Termine mit gleichem Titel, Datum und Beginn sowie ${result.skippedInvalid} nicht lesbare Einträge wurden ausgelassen.`
+          : `${result.imported} von ${result.found} Outlook-Terminen wurden einmalig übernommen.`,
+        result.found === 0 ? "info" : "success",
+        result.found === 0 ? undefined : [
+          `${duplicates} bereits vorhandene Termine mit gleichem Titel, Datum und Beginn wurden ausgelassen.`,
+          `${result.skippedInvalid} nicht lesbare Einträge wurden ausgelassen.`
+        ]
       );
     } catch (error) {
-      setMessageType("error");
-      setMessage(`Outlook-Termine konnten nicht importiert werden: ${error}`);
+      showImportResult("Outlook-Termine konnten nicht importiert werden", String(error), "error", ["Outlook wurde nicht verändert."]);
     } finally {
       setBusyAction(null);
     }
@@ -131,24 +149,26 @@ export function SimpleImportPage({ embedded = false, onOpenFileImport, onManageS
     setMessage("Thunderbird-Adressbücher und Listen werden gelesen …");
     try {
       const result = await importThunderbirdContactsOnce(cleanImportedNames, includeThunderbirdAutocomplete);
-      setMessageType(result.found > 0 ? "success" : "info");
       const autocompleteSummary = includeThunderbirdAutocomplete
         ? result.autocompleteFound > 0
           ? `${result.autocompleteImported} von ${result.autocompleteFound} früheren Empfängern wurden neu angelegt; ${result.autocompleteLinkedExisting} waren bereits vorhanden. `
           : "In der Thunderbird-Autovervollständigung wurden keine früheren Empfänger gefunden. "
         : "Die Thunderbird-Autovervollständigung wurde nicht importiert. ";
-      setMessage(
+      showImportResult(
+        result.found === 0 ? "Keine Thunderbird-Kontakte gefunden" : "Thunderbird-Kontakte importiert",
         result.found === 0
           ? `In ${result.addressBooks} Thunderbird-Adressbüchern wurden keine Kontakte gefunden.`
-          : `${result.imported} neue Thunderbird-Kontakte wurden importiert. `
-            + `${result.linkedExisting} bereits vorhandene Kontakte wurden den passenden Gruppen zugeordnet. `
-            + autocompleteSummary
-            + `${result.addressBooks} Adressbücher und insgesamt ${result.groupsUsed} Gruppen oder Listen wurden berücksichtigt. `
-            + `${result.skippedInvalid} nicht lesbare Einträge wurden ausgelassen.`
+          : `${result.imported} neue Thunderbird-Kontakte wurden importiert.`,
+        result.found === 0 ? "info" : "success",
+        result.found === 0 ? undefined : [
+          `${result.linkedExisting} bereits vorhandene Kontakte wurden den passenden Gruppen zugeordnet.`,
+          autocompleteSummary.trim(),
+          `${result.addressBooks} Adressbücher und ${result.groupsUsed} Gruppen oder Listen wurden berücksichtigt.`,
+          `${result.skippedInvalid} nicht lesbare Einträge wurden ausgelassen.`
+        ]
       );
     } catch (error) {
-      setMessageType("error");
-      setMessage(`Thunderbird-Kontakte konnten nicht importiert werden: ${error}`);
+      showImportResult("Thunderbird-Kontakte konnten nicht importiert werden", String(error), "error", ["Thunderbird wurde nicht verändert."]);
     } finally {
       setBusyAction(null);
     }
@@ -166,16 +186,19 @@ export function SimpleImportPage({ embedded = false, onOpenFileImport, onManageS
     try {
       const result = await importThunderbirdCalendarsToCalendar();
       const alreadyPresent = result.skippedSameId + result.skippedExactDuplicates;
-      setMessageType(result.found > 0 ? "success" : "info");
-      setMessage(
+      showImportResult(
+        result.found === 0 ? "Keine Thunderbird-Termine gefunden" : "Thunderbird-Kalender importiert",
         result.found === 0
           ? "In den erreichbaren Thunderbird-Kalendern wurden keine Termine gefunden."
-          : `${result.imported} neue Thunderbird-Termine oder Serien wurden übernommen. ${alreadyPresent} Termine mit gleichem Titel, Datum und Beginn waren bereits vorhanden. `
-            + `${result.skippedInvalid} nicht unterstützte oder beschädigte Einträge wurden ausgelassen.`
+          : `${result.imported} neue Thunderbird-Termine oder Serien wurden übernommen.`,
+        result.found === 0 ? "info" : "success",
+        result.found === 0 ? undefined : [
+          `${alreadyPresent} Termine mit gleichem Titel, Datum und Beginn waren bereits vorhanden.`,
+          `${result.skippedInvalid} nicht unterstützte oder beschädigte Einträge wurden ausgelassen.`
+        ]
       );
     } catch (error) {
-      setMessageType("error");
-      setMessage(`Thunderbird-Kalender konnten nicht importiert werden: ${error}`);
+      showImportResult("Thunderbird-Kalender konnten nicht importiert werden", String(error), "error", ["Thunderbird wurde nicht verändert."]);
     } finally {
       setBusyAction(null);
     }
@@ -192,7 +215,8 @@ export function SimpleImportPage({ embedded = false, onOpenFileImport, onManageS
         </header>
       )}
 
-      <StatusMessage message={message} type={messageType} />
+      <StatusMessage message={actionResult ? "" : message} type={messageType} />
+      <ActionResultDialog result={actionResult} onClose={() => setActionResult(null)} />
 
       {!activeSource && (
         <section className="simple-import-source-picker" aria-label="Importquelle auswählen">
@@ -392,8 +416,7 @@ export function SimpleImportPage({ embedded = false, onOpenFileImport, onManageS
         onClose={() => setConnectedCalendarDialogOpen(false)}
         onManageSync={onManageSync}
         onImported={(importResult) => {
-          setMessageType("success");
-          setMessage(importResult.detail);
+          showImportResult("Kalenderimport abgeschlossen", importResult.detail, "success");
         }}
       />
     </div>

@@ -488,14 +488,11 @@ fn properties_to_contact(properties: &HashMap<String, String>) -> ContactInput {
         property(properties, "SecondEmail"),
     ])
     .to_lowercase();
-    let phone = first_non_empty([
-        property(properties, "WorkPhone"),
-        property(properties, "HomePhone"),
-        vcard.work_phone,
-        vcard.home_phone,
-    ]);
+    let phone = first_non_empty([property(properties, "WorkPhone"), vcard.work_phone]);
     let mobile_phone =
         first_non_empty([property(properties, "CellularNumber"), vcard.mobile_phone]);
+    let private_phone = first_non_empty([property(properties, "HomePhone"), vcard.home_phone]);
+    let second_private_phone = property(properties, "HomePhone2");
     let work_street = [
         property(properties, "WorkAddress"),
         property(properties, "WorkAddress2"),
@@ -528,15 +525,9 @@ fn properties_to_contact(properties: &HashMap<String, String>) -> ContactInput {
         property(properties, "HomeCountry"),
         vcard.country,
     ]);
-    let short_info = [
-        first_non_empty([property(properties, "Company"), vcard.organization]),
-        first_non_empty([property(properties, "JobTitle"), vcard.title]),
-    ]
-    .into_iter()
-    .filter(|value| !value.is_empty())
-    .collect::<Vec<_>>()
-    .join(" · ");
-    let mut notes = first_non_empty([property(properties, "Notes"), vcard.notes]);
+    let company = first_non_empty([property(properties, "Company"), vcard.organization]);
+    let short_info = first_non_empty([property(properties, "JobTitle"), vcard.title]);
+    let notes = first_non_empty([property(properties, "Notes"), vcard.notes]);
     let primary_email_lower = email.to_lowercase();
     let mut additional_emails: Vec<String> = vcard
         .emails
@@ -548,15 +539,8 @@ fn properties_to_contact(properties: &HashMap<String, String>) -> ContactInput {
         .into_iter()
         .collect();
     additional_emails.sort_by_key(|value| value.to_lowercase());
-    if !additional_emails.is_empty() {
-        if !notes.is_empty() {
-            notes.push_str("\n\n");
-        }
-        notes.push_str(&format!(
-            "Weitere E-Mail-Adressen: {}",
-            additional_emails.join(", ")
-        ));
-    }
+    let private_email = additional_emails.first().cloned().unwrap_or_default();
+    let second_private_email = additional_emails.get(1).cloned().unwrap_or_default();
 
     ContactInput {
         id: None,
@@ -564,8 +548,13 @@ fn properties_to_contact(properties: &HashMap<String, String>) -> ContactInput {
         last_name,
         display_name,
         email,
+        private_email,
+        second_private_email,
         phone,
         mobile_phone,
+        private_phone,
+        second_private_phone,
+        company,
         street,
         postal_code,
         city,
@@ -704,7 +693,8 @@ fn existing_exact_contact_indexes(tx: &Transaction<'_>) -> Result<HashMap<String
     let mut exact = HashMap::new();
     let mut statement = tx
         .prepare(
-            "SELECT id, first_name, last_name, display_name, email, phone, mobile_phone,
+            "SELECT id, first_name, last_name, display_name, email, private_email, second_private_email,
+                phone, mobile_phone, private_phone, second_private_phone, company,
                 street, postal_code, city, country, short_info, notes
          FROM contacts WHERE deleted_at IS NULL",
         )
@@ -719,14 +709,19 @@ fn existing_exact_contact_indexes(tx: &Transaction<'_>) -> Result<HashMap<String
                     last_name: row.get(2)?,
                     display_name: row.get(3)?,
                     email: row.get(4)?,
-                    phone: row.get(5)?,
-                    mobile_phone: row.get(6)?,
-                    street: row.get(7)?,
-                    postal_code: row.get(8)?,
-                    city: row.get(9)?,
-                    country: row.get(10)?,
-                    short_info: row.get(11)?,
-                    notes: row.get(12)?,
+                    private_email: row.get(5)?,
+                    second_private_email: row.get(6)?,
+                    phone: row.get(7)?,
+                    mobile_phone: row.get(8)?,
+                    private_phone: row.get(9)?,
+                    second_private_phone: row.get(10)?,
+                    company: row.get(11)?,
+                    street: row.get(12)?,
+                    postal_code: row.get(13)?,
+                    city: row.get(14)?,
+                    country: row.get(15)?,
+                    short_info: row.get(16)?,
+                    notes: row.get(17)?,
                     group_ids: Vec::new(),
                 },
             ))
@@ -975,12 +970,15 @@ pub fn import_thunderbird_contacts_once(
             } else {
                 tx.execute(
                     "INSERT INTO contacts (
-                        first_name, last_name, display_name, email, phone, mobile_phone, street,
+                        first_name, last_name, display_name, email, private_email, second_private_email,
+                        phone, mobile_phone, private_phone, second_private_phone, company, street,
                         postal_code, city, country, short_info, notes, import_batch_id, created_at, updated_at
-                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     params![
                         contact.first_name, contact.last_name, contact.display_name, contact.email,
-                        contact.phone, contact.mobile_phone, contact.street, contact.postal_code,
+                        contact.private_email, contact.second_private_email, contact.phone,
+                        contact.mobile_phone, contact.private_phone, contact.second_private_phone,
+                        contact.company, contact.street, contact.postal_code,
                         contact.city, contact.country, contact.short_info, contact.notes,
                         batch_id, timestamp, timestamp,
                     ],
@@ -1631,6 +1629,24 @@ mod tests {
         assert_eq!(parsed.mobile_phone, "+49 170 123456");
         assert_eq!(parsed.city, "Aidlingen");
         assert_eq!(parsed.organization, "DMH · Verwaltung");
+    }
+
+    #[test]
+    fn imports_company_additional_emails_and_private_phones_from_vcard() {
+        let mut properties = HashMap::new();
+        properties.insert(
+            "_vCard".to_string(),
+            "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Erika Mustermann\r\nEMAIL;PREF=1:arbeit@example.org\r\nEMAIL;TYPE=home:privat@example.org\r\nEMAIL;TYPE=home:zweite@example.org\r\nTEL;TYPE=work:+49 7034 100\r\nTEL;TYPE=home:+49 7034 200\r\nTEL;TYPE=cell:+49 170 300\r\nORG:Beispiel GmbH\r\nEND:VCARD".to_string(),
+        );
+
+        let contact = properties_to_contact(&properties);
+        assert_eq!(contact.email, "arbeit@example.org");
+        assert_eq!(contact.private_email, "privat@example.org");
+        assert_eq!(contact.second_private_email, "zweite@example.org");
+        assert_eq!(contact.phone, "+49 7034 100");
+        assert_eq!(contact.private_phone, "+49 7034 200");
+        assert_eq!(contact.mobile_phone, "+49 170 300");
+        assert_eq!(contact.company, "Beispiel GmbH");
     }
 
     #[test]

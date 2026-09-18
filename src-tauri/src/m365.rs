@@ -1147,12 +1147,31 @@ fn remote_contact_summary(value: &Value) -> String {
 
 fn remote_contact_input(value: &Value, existing: Option<&crate::Contact>) -> crate::ContactInput {
     let address = value.get("businessAddress").unwrap_or(&Value::Null);
+    let emails = value.get("emailAddresses").and_then(Value::as_array);
+    let email_at = |index: usize| {
+        emails
+            .and_then(|items| items.get(index))
+            .and_then(|item| item.get("address"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    let home_phones = value.get("homePhones").and_then(Value::as_array);
+    let home_phone_at = |index: usize| {
+        home_phones
+            .and_then(|items| items.get(index))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
     crate::ContactInput {
         id: existing.and_then(|contact| contact.id),
         first_name: value_text(value, "givenName").to_string(),
         last_name: value_text(value, "surname").to_string(),
         display_name: value_text(value, "displayName").to_string(),
         email: first_graph_email(value).to_string(),
+        private_email: email_at(1),
+        second_private_email: email_at(2),
         phone: value
             .get("businessPhones")
             .and_then(Value::as_array)
@@ -1161,6 +1180,9 @@ fn remote_contact_input(value: &Value, existing: Option<&crate::Contact>) -> cra
             .unwrap_or("")
             .to_string(),
         mobile_phone: value_text(value, "mobilePhone").to_string(),
+        private_phone: home_phone_at(0),
+        second_private_phone: home_phone_at(1),
+        company: value_text(value, "companyName").to_string(),
         street: value_text(address, "street").to_string(),
         postal_code: value_text(address, "postalCode").to_string(),
         city: value_text(address, "city").to_string(),
@@ -1198,11 +1220,15 @@ fn graph_contact_payload(contact: &crate::Contact) -> Value {
     } else {
         contact.display_name.clone()
     };
-    let emails = if contact.email.trim().is_empty() {
-        Vec::new()
-    } else {
-        vec![json!({"address": contact.email.trim(), "name": display_name})]
-    };
+    let emails = [
+        &contact.email,
+        &contact.private_email,
+        &contact.second_private_email,
+    ]
+    .into_iter()
+    .filter(|email| !email.trim().is_empty())
+    .map(|email| json!({"address": email.trim(), "name": display_name}))
+    .collect::<Vec<_>>();
     let phones = if contact.phone.trim().is_empty() {
         Vec::<String>::new()
     } else {
@@ -1215,6 +1241,9 @@ fn graph_contact_payload(contact: &crate::Contact) -> Value {
         "emailAddresses": emails,
         "businessPhones": phones,
         "mobilePhone": contact.mobile_phone,
+        "homePhones": ([&contact.private_phone, &contact.second_private_phone]
+            .into_iter().filter(|phone| !phone.trim().is_empty()).map(|phone| phone.trim()).collect::<Vec<_>>()),
+        "companyName": contact.company,
         "businessAddress": {
             "street": contact.street,
             "postalCode": contact.postal_code,
@@ -1234,8 +1263,19 @@ fn contact_equivalent(local: &crate::Contact, remote: &Value) -> bool {
             .email
             .trim()
             .eq_ignore_ascii_case(remote_input.email.trim())
+        && local
+            .private_email
+            .trim()
+            .eq_ignore_ascii_case(remote_input.private_email.trim())
+        && local
+            .second_private_email
+            .trim()
+            .eq_ignore_ascii_case(remote_input.second_private_email.trim())
         && local.phone.trim() == remote_input.phone.trim()
         && local.mobile_phone.trim() == remote_input.mobile_phone.trim()
+        && local.private_phone.trim() == remote_input.private_phone.trim()
+        && local.second_private_phone.trim() == remote_input.second_private_phone.trim()
+        && local.company.trim() == remote_input.company.trim()
         && local.street.trim() == remote_input.street.trim()
         && local.postal_code.trim() == remote_input.postal_code.trim()
         && local.city.trim() == remote_input.city.trim()
@@ -1258,11 +1298,26 @@ fn merge_contact(local: &crate::Contact, remote: &Value) -> crate::Contact {
     if merged.email.trim().is_empty() {
         merged.email = remote_input.email;
     }
+    if merged.private_email.trim().is_empty() {
+        merged.private_email = remote_input.private_email;
+    }
+    if merged.second_private_email.trim().is_empty() {
+        merged.second_private_email = remote_input.second_private_email;
+    }
     if merged.phone.trim().is_empty() {
         merged.phone = remote_input.phone;
     }
     if merged.mobile_phone.trim().is_empty() {
         merged.mobile_phone = remote_input.mobile_phone;
+    }
+    if merged.private_phone.trim().is_empty() {
+        merged.private_phone = remote_input.private_phone;
+    }
+    if merged.second_private_phone.trim().is_empty() {
+        merged.second_private_phone = remote_input.second_private_phone;
+    }
+    if merged.company.trim().is_empty() {
+        merged.company = remote_input.company;
     }
     if merged.street.trim().is_empty() {
         merged.street = remote_input.street;
@@ -2254,7 +2309,7 @@ async fn build_m365_sync_plan(
                 && (!source.shared || request.shared_mailboxes)
         }) {
             let direction = source_direction(request, &source.id);
-            let url = format!("{}?$select=id,givenName,surname,displayName,emailAddresses,businessPhones,mobilePhone,businessAddress,personalNotes,lastModifiedDateTime&$top=100", source.resource_path);
+            let url = format!("{}?$select=id,givenName,surname,displayName,emailAddresses,businessPhones,mobilePhone,homePhones,companyName,businessAddress,personalNotes,lastModifiedDateTime&$top=100", source.resource_path);
             let values = graph_collection(access_token, &url).await?;
             remote_contacts += values.len();
             let remote_by_key: HashMap<String, &Value> = values
@@ -3011,10 +3066,28 @@ fn contact_belongs_to_outbox_source(
 }
 
 fn contact_identity_matches(local: &crate::Contact, remote: &Value) -> bool {
-    let local_email = local.email.trim();
-    let remote_email = first_graph_email(remote).trim();
-    if !local_email.is_empty() && !remote_email.is_empty() {
-        return local_email.eq_ignore_ascii_case(remote_email);
+    let local_emails = [
+        &local.email,
+        &local.private_email,
+        &local.second_private_email,
+    ]
+    .into_iter()
+    .map(|email| email.trim().to_lowercase())
+    .filter(|email| !email.is_empty())
+    .collect::<Vec<_>>();
+    let remote_emails = remote
+        .get("emailAddresses")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.get("address").and_then(Value::as_str))
+        .map(|email| email.trim().to_lowercase())
+        .filter(|email| !email.is_empty())
+        .collect::<Vec<_>>();
+    if !local_emails.is_empty() && !remote_emails.is_empty() {
+        return local_emails
+            .iter()
+            .any(|email| remote_emails.contains(email));
     }
     let local_name = if local.display_name.trim().is_empty() {
         format!("{} {}", local.first_name, local.last_name)
@@ -3038,11 +3111,27 @@ fn contact_identity_matches(local: &crate::Contact, remote: &Value) -> bool {
     if !remote_mobile.is_empty() && !remote_phones.contains(&remote_mobile) {
         remote_phones.push(remote_mobile);
     }
-    let local_phones = [&local.phone, &local.mobile_phone]
+    for phone in remote
+        .get("homePhones")
+        .and_then(Value::as_array)
         .into_iter()
-        .map(|phone| crate::normalize_phone_for_match(phone))
-        .filter(|phone| !phone.is_empty())
-        .collect::<Vec<_>>();
+        .flatten()
+    {
+        let normalized = crate::normalize_phone_for_match(phone.as_str().unwrap_or(""));
+        if !normalized.is_empty() && !remote_phones.contains(&normalized) {
+            remote_phones.push(normalized);
+        }
+    }
+    let local_phones = [
+        &local.phone,
+        &local.mobile_phone,
+        &local.private_phone,
+        &local.second_private_phone,
+    ]
+    .into_iter()
+    .map(|phone| crate::normalize_phone_for_match(phone))
+    .filter(|phone| !phone.is_empty())
+    .collect::<Vec<_>>();
     local_phones.is_empty()
         || remote_phones.is_empty()
         || local_phones
@@ -3100,7 +3189,7 @@ pub async fn flush_m365_contact_outbox(
     let mut links = HashMap::<String, HashMap<i64, String>>::new();
     for source in &export_sources {
         let url = format!(
-            "{}?$select=id,givenName,surname,displayName,emailAddresses,businessPhones,mobilePhone,businessAddress,personalNotes,lastModifiedDateTime&$top=100",
+            "{}?$select=id,givenName,surname,displayName,emailAddresses,businessPhones,mobilePhone,homePhones,companyName,businessAddress,personalNotes,lastModifiedDateTime&$top=100",
             source.resource_path
         );
         remote_contacts.insert(
@@ -3472,8 +3561,13 @@ fn contact_input_from_contact(contact: &crate::Contact) -> crate::ContactInput {
         last_name: contact.last_name.clone(),
         display_name: contact.display_name.clone(),
         email: contact.email.clone(),
+        private_email: contact.private_email.clone(),
+        second_private_email: contact.second_private_email.clone(),
         phone: contact.phone.clone(),
         mobile_phone: contact.mobile_phone.clone(),
+        private_phone: contact.private_phone.clone(),
+        second_private_phone: contact.second_private_phone.clone(),
+        company: contact.company.clone(),
         street: contact.street.clone(),
         postal_code: contact.postal_code.clone(),
         city: contact.city.clone(),
@@ -4416,8 +4510,13 @@ mod tests {
             last_name: String::new(),
             display_name: name.to_string(),
             email: email.to_string(),
+            private_email: String::new(),
+            second_private_email: String::new(),
             phone: phone.to_string(),
             mobile_phone: String::new(),
+            private_phone: String::new(),
+            second_private_phone: String::new(),
+            company: String::new(),
             street: String::new(),
             postal_code: String::new(),
             city: String::new(),
@@ -4440,6 +4539,25 @@ mod tests {
             "businessPhones": []
         });
         assert!(contact_identity_matches(&local, &remote));
+    }
+
+    #[test]
+    fn graph_contact_roundtrip_preserves_multiple_addresses_and_company() {
+        let mut local = contact_for_identity("Erika Muster", "arbeit@example.org", "+49 711 100");
+        local.private_email = "privat@example.org".to_string();
+        local.second_private_email = "zweite@example.org".to_string();
+        local.private_phone = "+49 711 200".to_string();
+        local.second_private_phone = "+49 711 300".to_string();
+        local.company = "Beispiel GmbH".to_string();
+
+        let payload = graph_contact_payload(&local);
+        let restored = remote_contact_input(&payload, None);
+        assert_eq!(restored.email, "arbeit@example.org");
+        assert_eq!(restored.private_email, "privat@example.org");
+        assert_eq!(restored.second_private_email, "zweite@example.org");
+        assert_eq!(restored.private_phone, "+49 711 200");
+        assert_eq!(restored.second_private_phone, "+49 711 300");
+        assert_eq!(restored.company, "Beispiel GmbH");
     }
 
     #[test]

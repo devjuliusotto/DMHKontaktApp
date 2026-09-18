@@ -4,12 +4,15 @@ import { CalendarDays, CheckSquare, FileSpreadsheet, Plus, Square, UsersRound, X
 import type { CSSProperties } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { StatusMessage } from "../components/StatusMessage";
+import { ActionResultDialog, type ActionResult } from "../components/ActionResultDialog";
 import { t } from "../i18n";
 import { importContacts, importOutlookStore, listGroups, mergeCalendarEvents, saveGroup } from "../services/db";
 import type { CalendarEvent } from "../types/calendar";
 import type { Group } from "../types/contact";
-import { calendarColorFromCategory, calendarColorOptions, calendarColorValue, defaultCalendarColor, mergeImportedCalendarCategories, parseCalendarFile } from "../utils/calendar";
-import { parseCsvBytes, parseXlsx, type ImportPreview } from "../utils/importers";
+import { contactEmails } from "../utils/contact";
+import { calendarColorFromCategory, calendarColorOptions, calendarColorValue, defaultCalendarColor, mergeImportedCalendarCategories } from "../utils/calendar";
+import { type ImportPreview } from "../utils/importers";
+import { parseCalendarFileInWorker, parseContactFileInWorker } from "../utils/importParserWorker";
 
 type ImportMode = "contacts" | "calendar";
 
@@ -30,14 +33,15 @@ export function ImportPage({ embedded = false, initialMode }: ImportPageProps) {
   const [groups, setGroups] = useState<Group[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState<number | "">("");
   const [message, setMessage] = useState("");
+  const [actionResult, setActionResult] = useState<ActionResult | null>(null);
   const [showGroupCard, setShowGroupCard] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
   const [calendarCategory, setCalendarCategory] = useState(defaultImportCategory);
   const [calendarColor, setCalendarColor] = useState(defaultCalendarColor);
 
   const selectedCount = preview?.contacts.filter((contact) => contact.selected).length ?? 0;
-  const contactsWithEmail = useMemo(() => preview?.contacts.filter((contact) => contact.email.trim()) ?? [], [preview]);
-  const contactsWithoutEmail = useMemo(() => preview?.contacts.filter((contact) => !contact.email.trim()) ?? [], [preview]);
+  const contactsWithEmail = useMemo(() => preview?.contacts.filter((contact) => contactEmails(contact).length > 0) ?? [], [preview]);
+  const contactsWithoutEmail = useMemo(() => preview?.contacts.filter((contact) => contactEmails(contact).length === 0) ?? [], [preview]);
   const canConfirm = Boolean((preview && selectedCount > 0 && !preview.emailColumnMissing) || pendingEvents.length > 0);
 
   useEffect(() => {
@@ -59,6 +63,7 @@ export function ImportPage({ embedded = false, initialMode }: ImportPageProps) {
 
   const chooseMode = (nextMode: ImportMode) => {
     resetImport();
+    setActionResult(null);
     setMode(nextMode);
     setMessage(nextMode === "contacts" ? "Wählen Sie eine Kontaktdatei aus." : "Wählen Sie eine Kalenderdatei oder Outlook-Datendatei aus.");
   };
@@ -69,7 +74,7 @@ export function ImportPage({ embedded = false, initialMode }: ImportPageProps) {
     rows: [],
     contacts,
     logs: [],
-    emailColumnMissing: contacts.length > 0 && contacts.every((contact) => !contact.email.trim())
+    emailColumnMissing: contacts.length > 0 && contacts.every((contact) => contactEmails(contact).length === 0)
   });
 
   const chooseFile = async () => {
@@ -104,13 +109,15 @@ export function ImportPage({ embedded = false, initialMode }: ImportPageProps) {
 
       const bytes = await readFile(path);
       if (mode === "calendar") {
-        const importedEvents = parseCalendarFile(bytes, path).map(normalizeCalendarEvent);
+        setMessage("Kalenderdatei wird im Hintergrund verarbeitet …");
+        const importedEvents = (await parseCalendarFileInWorker(bytes, path)).map(normalizeCalendarEvent);
         setPendingEvents(importedEvents);
         setMessage(importedEvents.length ? `${eventsLabel(importedEvents.length)} gefunden. Bitte bestätigen.` : "Keine Kalendertermine gefunden.");
         return;
       }
 
-      const result = lower.endsWith(".xlsx") ? await parseXlsx(bytes) : parseCsvBytes(bytes);
+      setMessage("Kontaktdatei wird im Hintergrund verarbeitet …");
+      const result = await parseContactFileInWorker(bytes, lower.endsWith(".xlsx"));
       setPreview(result);
       setMessage(
         result.emailColumnMissing
@@ -189,21 +196,26 @@ export function ImportPage({ embedded = false, initialMode }: ImportPageProps) {
         skippedContactDuplicates = result.skippedDuplicates;
       }
 
-      setMessage(
-        `${contactsLabel(importedContacts)} und ${eventsLabel(calendarResult.imported)} importiert.`
-        + (skippedContactDuplicates > 0
-          ? ` ${contactsLabel(skippedContactDuplicates)} mit in allen Feldern exakt gleichem Inhalt wurden ausgelassen.`
-          : "")
-        + (calendarResult.skipped > 0
-          ? ` ${eventsLabel(calendarResult.skipped)} mit gleicher ID oder exakt gleichen Feldern wurden sicher ausgelassen.`
-          : "")
-        + (calendarResult.categories > 0
-          ? ` ${calendarResult.categories} Kategorie(n) mit Farbe wurden übernommen.`
-          : "")
-      );
       resetImport();
+      setMessage("");
+      setActionResult({
+        title: "Import abgeschlossen",
+        summary: `${contactsLabel(importedContacts)} und ${eventsLabel(calendarResult.imported)} wurden importiert.`,
+        tone: "success",
+        details: [
+          skippedContactDuplicates > 0 ? `${contactsLabel(skippedContactDuplicates)} mit exakt gleichem Inhalt wurden sicher ausgelassen.` : "Keine exakt gleichen Kontaktkopien wurden zusätzlich angelegt.",
+          calendarResult.skipped > 0 ? `${eventsLabel(calendarResult.skipped)} mit gleicher ID oder exakt gleichen Feldern wurden sicher ausgelassen.` : "Keine exakt gleichen Kalenderkopien wurden zusätzlich angelegt.",
+          calendarResult.categories > 0 ? `${calendarResult.categories} Kategorie(n) mit Farbe wurden übernommen.` : "Es mussten keine zusätzlichen Kategorien angelegt werden."
+        ]
+      });
     } catch (error) {
-      setMessage(`Import fehlgeschlagen: ${error}`);
+      setMessage("");
+      setActionResult({
+        title: "Import fehlgeschlagen",
+        summary: String(error),
+        tone: "error",
+        details: ["Bereits vorhandene Daten wurden nicht gelöscht.", "Sie können den Import nach der Prüfung erneut starten."]
+      });
     }
   };
 
@@ -222,7 +234,8 @@ export function ImportPage({ embedded = false, initialMode }: ImportPageProps) {
           </div>
         </header>
       )}
-      <StatusMessage message={message} />
+      <StatusMessage message={actionResult ? "" : message} />
+      <ActionResultDialog result={actionResult} onClose={() => setActionResult(null)} />
 
       {!mode && (
         <section className="import-choice-grid" aria-label="Importart auswählen">
@@ -375,7 +388,7 @@ export function ImportPage({ embedded = false, initialMode }: ImportPageProps) {
                     <tr key={`${contact.email}-${index}`}>
                       <td><input type="checkbox" checked={contact.selected} onChange={() => toggleOne(originalIndex)} /></td>
                       <td>{contact.displayName || `${contact.firstName} ${contact.lastName}`}</td>
-                      <td>{contact.email}</td>
+                      <td>{contactEmails(contact)[0] ?? "-"}</td>
                       <td>{contact.phone || contact.mobilePhone}</td>
                       <td>{contact.city}</td>
                     </tr>

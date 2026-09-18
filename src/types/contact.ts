@@ -13,8 +13,13 @@ export interface Contact {
   lastName: string;
   displayName: string;
   email: string;
+  privateEmail: string;
+  secondPrivateEmail: string;
   phone: string;
   mobilePhone: string;
+  privatePhone: string;
+  secondPrivatePhone: string;
+  company: string;
   street: string;
   postalCode: string;
   city: string;
@@ -33,8 +38,13 @@ export interface ContactInput {
   lastName: string;
   displayName: string;
   email: string;
+  privateEmail: string;
+  secondPrivateEmail: string;
   phone: string;
   mobilePhone: string;
+  privatePhone: string;
+  secondPrivatePhone: string;
+  company: string;
   street: string;
   postalCode: string;
   city: string;
@@ -197,6 +207,12 @@ export interface DeleteAllContactsResult {
   groups: number;
 }
 
+export interface ContactOverviewCounts {
+  total: number;
+  ungrouped: number;
+  groups: Record<number, number>;
+}
+
 export interface ContactDuplicateCleanupItem {
   id: number;
   displayName: string;
@@ -225,4 +241,48 @@ export interface RecoveryRestoreResult {
   contacts: number;
   groups: number;
   calendarEvents: number;
+}
+
+export type RecoveryArchiveSource = "closing" | "background";
+
+export interface RecoveryPreviewItem {
+  kind: "contact" | "calendar";
+  id: string;
+  title: string;
+  detail: string;
+  destination: "contacts" | "calendar" | "trash";
+  groups: string[];
+}
+
+export interface RecoveryGroupPreview {
+  name: string;
+  contacts: number;
+  willBeCreated: boolean;
+}
+
+export interface RecoveryArchivePreview {
+  source: RecoveryArchiveSource;
+  sourceLabel: string;
+  createdAt: string;
+  activeContacts: number;
+  trashContacts: number;
+  activeCalendarEvents: number;
+  trashCalendarEvents: number;
+  groupsToCreate: number;
+  totalItems: number;
+  matchingItems: number;
+  offset: number;
+  hasMore: boolean;
+  items: RecoveryPreviewItem[];
+  groups: RecoveryGroupPreview[];
+}
+
+export interface RecoveryArchiveRestoreResult {
+  source: RecoveryArchiveSource;
+  restoredAt: string;
+  activeContacts: number;
+  trashContacts: number;
+  activeCalendarEvents: number;
+  trashCalendarEvents: number;
+  groups: number;
 }

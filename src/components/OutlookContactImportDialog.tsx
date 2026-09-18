@@ -36,7 +36,7 @@ import type {
 } from "../types/contact";
 import { contactExactContentKey } from "../utils/contactDuplicates";
 import { cleanImportedContactName } from "../utils/contactImportCleanup";
-import { parseCsvBytes } from "../utils/importers";
+import { parseContactFileInWorker } from "../utils/importParserWorker";
 
 interface OutlookContactImportDialogProps {
   open: boolean;
@@ -184,7 +184,7 @@ export function OutlookContactImportDialog({ open: isOpen, cleanImportedNames, o
       setBusy("scan");
       await waitForNextPaint();
       const bytes = await readFile(path);
-      const parsed = parseCsvBytes(bytes);
+      const parsed = await parseContactFileInWorker(bytes, false);
       const existing = await listContacts();
       const fileName = path.split(/[\\/]/).pop() || "Outlook-Kontakte.csv";
       const contacts = cleanImportedNames
@@ -509,15 +509,24 @@ interface CsvFingerprintIndex {
   phones: Map<string, string>;
 }
 
+function contactEmailValues(contact: Contact | ContactInput): string[] {
+  return Array.from(new Set([contact.email, contact.privateEmail, contact.secondPrivateEmail]
+    .map((email) => email.trim().toLocaleLowerCase("de")).filter(Boolean)));
+}
+
+function contactPhoneValues(contact: Contact | ContactInput): string[] {
+  return Array.from(new Set([contact.phone, contact.mobilePhone, contact.privatePhone, contact.secondPrivatePhone]
+    .map(normalizePhone).filter(Boolean)));
+}
+
 function addCsvFingerprint(index: CsvFingerprintIndex, contact: Contact | ContactInput) {
   const label = contactName(contact);
-  const email = contact.email.trim().toLocaleLowerCase("de");
   index.exactContacts.set(contactExactContentKey(contact), label);
-  if (email && !index.emails.has(email)) index.emails.set(email, label);
+  for (const email of contactEmailValues(contact)) if (!index.emails.has(email)) index.emails.set(email, label);
   const normalizedName = label.trim().replace(/\s+/g, " ").toLocaleLowerCase("de");
   if (normalizedName && !index.names.has(normalizedName)) index.names.set(normalizedName, label);
   if (normalizedName) index.contactsByName.set(normalizedName, [...(index.contactsByName.get(normalizedName) ?? []), contact]);
-  for (const phone of [normalizePhone(contact.phone), normalizePhone(contact.mobilePhone)].filter(Boolean)) {
+  for (const phone of contactPhoneValues(contact)) {
     if (!index.phones.has(phone)) index.phones.set(phone, label);
   }
 }
@@ -545,9 +554,10 @@ function createCsvPreview(
 
   rows.forEach(({ selected: _selected, ...contact }, index) => {
     const displayName = contactName(contact);
-    const email = contact.email.trim().toLocaleLowerCase("de");
-    const phones = [normalizePhone(contact.phone), normalizePhone(contact.mobilePhone)].filter(Boolean);
-    const exactKey = contactExactContentKey({ ...contact, displayName, email });
+    const emails = contactEmailValues(contact);
+    const email = emails[0] ?? "";
+    const phones = contactPhoneValues(contact);
+    const exactKey = contactExactContentKey({ ...contact, displayName });
     if (!displayName && !email && phones.length === 0) {
       skippedInvalid += 1;
       return;
@@ -556,20 +566,20 @@ function createCsvPreview(
     let status: OutlookContactPreviewStatus = "new";
     let reason = "Neuer Kontakt";
     let existingName: string | null = null;
-    const emailMatch = email ? fingerprints.emails.get(email) : undefined;
+    const emailMatch = emails.map((candidate) => fingerprints.emails.get(candidate)).find(Boolean);
     const phoneMatch = phones.length ? phones.map((phone) => fingerprints.phones.get(phone)).find(Boolean) : undefined;
     const normalizedName = displayName.trim().replace(/\s+/g, " ").toLocaleLowerCase("de");
     const sameNameContacts = normalizedName ? fingerprints.contactsByName.get(normalizedName) ?? [] : [];
     const nameMatch = normalizedName ? fingerprints.names.get(normalizedName) : undefined;
     const complementaryMatch = sameNameContacts.filter((candidate) => {
-      const candidateEmail = candidate.email.trim();
-      const candidatePhones = [normalizePhone(candidate.phone), normalizePhone(candidate.mobilePhone)].filter(Boolean);
-      const exactlyOneEmail = Boolean(candidateEmail) !== Boolean(email);
+      const candidateEmails = contactEmailValues(candidate);
+      const candidatePhones = contactPhoneValues(candidate);
+      const exactlyOneEmail = (candidateEmails.length > 0) !== (emails.length > 0);
       const phoneIsComplementary = (candidatePhones.length > 0 && phones.length === 0)
         || (candidatePhones.length === 0 && phones.length > 0);
       return exactlyOneEmail && phoneIsComplementary;
     });
-    const distinctSameNameEmails = new Set(sameNameContacts.map((candidate) => candidate.email.trim().toLocaleLowerCase("de")).filter(Boolean));
+    const distinctSameNameEmails = new Set(sameNameContacts.flatMap(contactEmailValues));
     const complementaryIsUnambiguous = complementaryMatch.length === 1
       && (email
         ? distinctSameNameEmails.size === 0 || (distinctSameNameEmails.size === 1 && distinctSameNameEmails.has(email))
@@ -618,8 +628,8 @@ function createCsvPreview(
       existingName,
       defaultSelected: status !== "duplicate_exact"
     });
-    contactMap.set(id, { ...contact, email });
-    addCsvFingerprint(fingerprints, { ...contact, displayName, email });
+    contactMap.set(id, contact);
+    addCsvFingerprint(fingerprints, { ...contact, displayName });
   });
 
   return {

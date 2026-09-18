@@ -2,11 +2,12 @@ import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, ChevronsUpDown, Copy
 import type { PointerEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
 import type { Contact } from "../types/contact";
-import { displayName } from "../utils/contact";
+import { displayName, primaryContactEmail } from "../utils/contact";
 import { t } from "../i18n";
 
 interface ContactTableProps {
   contacts: Contact[];
+  paginationKey: string;
   onEdit: (contact: Contact) => void;
   onDelete: (contact: Contact) => void;
   onCopyEmail: (email: string) => void;
@@ -26,6 +27,7 @@ const contactsPerPage = 100;
 
 export function ContactTable({
   contacts,
+  paginationKey,
   onEdit,
   onDelete,
   onCopyEmail,
@@ -47,8 +49,8 @@ export function ContactTable({
     return contacts
       .map((contact, originalIndex) => ({ contact, originalIndex }))
       .sort((left, right) => {
-        const leftValue = sort.key === "name" ? displayName(left.contact).trim() : left.contact.email.trim();
-        const rightValue = sort.key === "name" ? displayName(right.contact).trim() : right.contact.email.trim();
+        const leftValue = sort.key === "name" ? displayName(left.contact).trim() : primaryContactEmail(left.contact);
+        const rightValue = sort.key === "name" ? displayName(right.contact).trim() : primaryContactEmail(right.contact);
         const leftMissing = leftValue.length === 0;
         const rightMissing = rightValue.length === 0;
 
@@ -70,7 +72,7 @@ export function ContactTable({
 
   useEffect(() => {
     setPage(1);
-  }, [contacts, sort]);
+  }, [paginationKey, sort]);
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
@@ -148,6 +150,7 @@ export function ContactTable({
           <tbody>
             {visibleContacts.map((contact) => {
               const isMultiSelected = Boolean(contact.id && selectedContactIds.has(contact.id));
+              const preferredEmail = primaryContactEmail(contact);
               return (
                 <tr
                   key={contact.id}
@@ -189,11 +192,11 @@ export function ContactTable({
                       </span>
                     </div>
                   </td>
-                  <td className="contact-value" title={contact.email}>
+                  <td className="contact-value" title={preferredEmail}>
                     <div className="contact-email-content">
-                      <span>{contact.email || "-"}</span>
-                      {contact.email && (
-                        <button title="E-Mail kopieren" type="button" onClick={() => onCopyEmail(contact.email)}>
+                      <span>{preferredEmail || "-"}</span>
+                      {preferredEmail && (
+                        <button title="E-Mail kopieren" type="button" onClick={() => onCopyEmail(preferredEmail)}>
                           <Copy size={16} />
                         </button>
                       )}
@@ -204,8 +207,8 @@ export function ContactTable({
                       <button title={t.editContact} type="button" onClick={() => onEdit(contact)} disabled={selectionMode}>
                         <Edit size={16} />
                       </button>
-                      {contact.email && (
-                        <button title="E-Mail-Anwendung auswählen" type="button" onClick={() => onEmail(contact.email)} disabled={selectionMode}>
+                      {preferredEmail && (
+                        <button title="E-Mail-Anwendung auswählen" type="button" onClick={() => onEmail(preferredEmail)} disabled={selectionMode}>
                           <Mail size={16} />
                         </button>
                       )}

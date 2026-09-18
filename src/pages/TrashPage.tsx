@@ -364,7 +364,7 @@ export function TrashPage() {
           <p>Gelöschte Elemente wiederherstellen oder endgültig entfernen.</p>
         </div>
       </header>
-      <StatusMessage message={message} />
+      <StatusMessage message={actionResult ? "" : message} />
       <ActionResultDialog result={actionResult} onClose={() => setActionResult(null)} />
       <nav className="trash-category-grid" aria-label="Bereiche im Papierkorb">
         <button className={category === "calendar" ? "active" : ""} type="button" onClick={() => selectCategory("calendar")}>
