@@ -58,6 +58,7 @@ const browserPreviewStatus: VaultStatus = {
 
 const edvPages = new Set<Page>(["settings", "appearance", "feature-development", "backup", "synchronizations", "m365", "recovery"]);
 const advancedCalendarStorageKey = "dmh.calendar.advanced.v1";
+type NavigationBlocker = (continueNavigation: () => void) => boolean;
 
 function readAdvancedCalendarPreference(): boolean {
   return localStorage.getItem(advancedCalendarStorageKey) === "true";
@@ -81,6 +82,7 @@ export default function App() {
   const documentSyncPromise = useRef<Promise<void> | null>(null);
   const calendarSyncPromise = useRef<Promise<void> | null>(null);
   const queuedCalendarSyncTrigger = useRef<"open" | "change" | "poll" | null>(null);
+  const navigationBlockerRef = useRef<NavigationBlocker | null>(null);
   const closing = useRef(false);
   const settingsAreaOpen = page === "settings" || page === "appearance" || page === "feature-development" || page === "backup" || page === "synchronizations" || page === "m365" || page === "recovery";
   const compactSidebar = settingsAreaOpen || (page === "calendar" && advancedCalendar);
@@ -124,12 +126,20 @@ export default function App() {
     else if (nextPage === "import" || nextPage === "export" || nextPage === "feature-development") setSettingsSection("advanced");
   };
 
+  const registerNavigationBlocker = useCallback((blocker: NavigationBlocker | null) => {
+    navigationBlockerRef.current = blocker;
+  }, []);
+
   const navigate = (nextPage: Page, nextSection?: SettingsSection) => {
-    if (edvPages.has(nextPage) && !edvUnlocked) {
-      setPendingEdvNavigation({ page: nextPage, section: nextSection });
-      return;
-    }
-    applyNavigation(nextPage, nextSection);
+    const continueNavigation = () => {
+      if (edvPages.has(nextPage) && !edvUnlocked) {
+        setPendingEdvNavigation({ page: nextPage, section: nextSection });
+        return;
+      }
+      applyNavigation(nextPage, nextSection);
+    };
+    if (page === "contacts" && nextPage !== "contacts" && navigationBlockerRef.current?.(continueNavigation)) return;
+    continueNavigation();
   };
 
   const unlockEdvTools = () => {
@@ -357,7 +367,9 @@ export default function App() {
         {settingsAreaOpen && <SettingsSubtabs activePage={page} activeSection={settingsSection} onNavigate={navigate} />}
         <main className="content">
           {page === "welcome" && <WelcomePage onNavigate={navigate} />}
-          {page === "contacts" && !hiddenDataSections.includes("contacts") && <ContactsPage onNavigate={navigate} />}
+          {page === "contacts" && !hiddenDataSections.includes("contacts") && (
+            <ContactsPage onNavigate={navigate} onRegisterNavigationBlocker={registerNavigationBlocker} />
+          )}
           {page === "calendar" && !hiddenDataSections.includes("calendar") && (
             <CalendarPage advancedMode={advancedCalendar} onAdvancedModeChange={changeAdvancedCalendar} onNavigate={navigate} />
           )}

@@ -42,6 +42,21 @@ function dateTimeValue(date: string, time: string) {
   return `${date}T${time || "00:00"}`;
 }
 
+function addDateDays(value: string, days: number): string {
+  const [year, month, day] = value.split("-").map(Number);
+  if (!year || !month || !day) return value;
+  const date = new Date(year, month - 1, day, 12);
+  date.setDate(date.getDate() + days);
+  return [date.getFullYear(), String(date.getMonth() + 1).padStart(2, "0"), String(date.getDate()).padStart(2, "0")].join("-");
+}
+
+function dateSpanDays(startDate: string, exclusiveEndDate: string): number {
+  const start = new Date(`${startDate}T12:00:00`);
+  const end = new Date(`${exclusiveEndDate}T12:00:00`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return 1;
+  return Math.max(1, Math.round((end.getTime() - start.getTime()) / 86_400_000));
+}
+
 function eventMinutes(value: string): number {
   const date = parseCalendarDate(value);
   return date ? date.getHours() * 60 + date.getMinutes() : 0;
@@ -67,6 +82,7 @@ export function CalendarEventForm({ value, isNew, categories, events, onChange, 
   const recurrencePreset = !recurrence ? "none" : recurrence.frequency === "monthly" && recurrence.interval === 6 ? "semiannual" : recurrence.frequency;
   const starts = timeParts(value.startsAt);
   const ends = timeParts(value.endsAt);
+  const allDayInclusiveEndDate = value.isAllDay ? addDateDays(ends.date, -1) : ends.date;
   const validRange = Boolean(value.startsAt && value.endsAt && new Date(value.endsAt).getTime() > new Date(value.startsAt).getTime());
 
   const startDate = () => {
@@ -111,9 +127,57 @@ export function CalendarEventForm({ value, isNew, categories, events, onChange, 
     onChange({ ...value, startsAt: nextStart, endsAt: localEnd });
   };
 
-  const plannerEvents = useMemo(() => events
-    .filter((event) => event.id !== value.id && event.startsAt.slice(0, 10) === starts.date)
-    .sort((left, right) => left.startsAt.localeCompare(right.startsAt)), [events, starts.date, value.id]);
+  const toggleAllDay = (checked: boolean) => {
+    const startDate = starts.date || new Date().toISOString().slice(0, 10);
+    if (checked) {
+      const currentEndDate = ends.date || startDate;
+      const span = dateSpanDays(startDate, currentEndDate) + (currentEndDate > startDate ? 1 : 0);
+      onChange({
+        ...value,
+        isAllDay: true,
+        startsAt: dateTimeValue(startDate, "00:00"),
+        endsAt: dateTimeValue(addDateDays(startDate, span), "00:00")
+      });
+      return;
+    }
+    const finalDate = allDayInclusiveEndDate < startDate ? startDate : allDayInclusiveEndDate;
+    onChange({
+      ...value,
+      isAllDay: false,
+      startsAt: dateTimeValue(startDate, "09:00"),
+      endsAt: dateTimeValue(finalDate, "10:00")
+    });
+  };
+
+  const updateAllDayStart = (nextDate: string) => {
+    const span = dateSpanDays(starts.date, ends.date);
+    onChange({
+      ...value,
+      startsAt: dateTimeValue(nextDate, "00:00"),
+      endsAt: dateTimeValue(addDateDays(nextDate, span), "00:00")
+    });
+  };
+
+  const updateAllDayEnd = (inclusiveEndDate: string) => {
+    const safeEndDate = inclusiveEndDate < starts.date ? starts.date : inclusiveEndDate;
+    onChange({ ...value, endsAt: dateTimeValue(addDateDays(safeEndDate, 1), "00:00") });
+  };
+
+  const plannerEvents = useMemo(() => {
+    const plannerStart = parseCalendarDate(`${starts.date}T00:00:00`);
+    const plannerEnd = plannerStart ? new Date(plannerStart.getFullYear(), plannerStart.getMonth(), plannerStart.getDate() + 1) : null;
+    return events
+      .filter((event) => {
+        if (event.id === value.id) return false;
+        if (!event.isAllDay || !plannerStart || !plannerEnd) return event.startsAt.slice(0, 10) === starts.date;
+        const eventStart = parseCalendarDate(event.startsAt);
+        const eventEnd = parseCalendarDate(event.endsAt);
+        return Boolean(eventStart && eventEnd && eventStart < plannerEnd && eventEnd > plannerStart);
+      })
+      .sort((left, right) => left.startsAt.localeCompare(right.startsAt));
+  }, [events, starts.date, value.id]);
+  const plannerAllDayEvents = plannerEvents.filter((event) => event.isAllDay);
+  const plannerTimedEvents = plannerEvents.filter((event) => !event.isAllDay);
 
   const addAgenda = () => {
     if (!value.description.trim()) update("description", "Agenda\n• ");
@@ -146,7 +210,24 @@ export function CalendarEventForm({ value, isNew, categories, events, onChange, 
           <div className="calendar-meeting-field title-field"><CalendarClock size={20} /><input value={value.title} onChange={(event) => update("title", event.target.value)} placeholder="Titel hinzufügen" autoFocus /></div>
           <div className="calendar-meeting-field attendee-field"><Users size={20} /><input value={requiredAttendeesText} onChange={(event) => { setRequiredAttendeesText(event.target.value); updateMeeting({ requiredAttendees: attendeeValues(event.target.value) }); }} placeholder="Erforderliche Teilnehmer einladen" /><button type="button" onClick={() => setOptionalVisible((visible) => !visible)}>{optionalVisible ? "Optional ausblenden" : "+ Optional"}</button></div>
           {optionalVisible && <div className="calendar-meeting-field attendee-field optional"><UserPlus size={20} /><input value={optionalAttendeesText} onChange={(event) => { setOptionalAttendeesText(event.target.value); updateMeeting({ optionalAttendees: attendeeValues(event.target.value) }); }} placeholder="Optionale Teilnehmer einladen" /></div>}
-          <div className="calendar-meeting-field calendar-date-field"><Clock3 size={20} /><div className="calendar-date-controls"><input aria-label="Startdatum" type="date" value={starts.date} onChange={(event) => updateStart(dateTimeValue(event.target.value, starts.time))} /><input aria-label="Startzeit" type="time" value={starts.time} onChange={(event) => updateStart(dateTimeValue(starts.date, event.target.value))} /><span>bis</span><input aria-label="Enddatum" type="date" value={ends.date} onChange={(event) => update("endsAt", dateTimeValue(event.target.value, ends.time))} /><input aria-label="Endzeit" type="time" value={ends.time} onChange={(event) => update("endsAt", dateTimeValue(ends.date, event.target.value))} /></div><button className={plannerVisible ? "active" : ""} type="button" onClick={() => setPlannerVisible((visible) => !visible)}><CalendarClock size={16} /> Planer</button></div>
+          <div className="calendar-meeting-field calendar-date-field">
+            <Clock3 size={20} />
+            <div className="calendar-date-editor">
+              <div className={value.isAllDay ? "calendar-date-controls all-day" : "calendar-date-controls"}>
+                <input aria-label="Startdatum" type="date" value={starts.date} onChange={(event) => value.isAllDay ? updateAllDayStart(event.target.value) : updateStart(dateTimeValue(event.target.value, starts.time))} />
+                {!value.isAllDay && <input aria-label="Startzeit" type="time" value={starts.time} onChange={(event) => updateStart(dateTimeValue(starts.date, event.target.value))} />}
+                <span>bis</span>
+                <input aria-label="Enddatum" type="date" min={starts.date} value={value.isAllDay ? allDayInclusiveEndDate : ends.date} onChange={(event) => value.isAllDay ? updateAllDayEnd(event.target.value) : update("endsAt", dateTimeValue(event.target.value, ends.time))} />
+                {!value.isAllDay && <input aria-label="Endzeit" type="time" value={ends.time} onChange={(event) => update("endsAt", dateTimeValue(ends.date, event.target.value))} />}
+              </div>
+              <label className="calendar-all-day-option">
+                <input type="checkbox" checked={Boolean(value.isAllDay)} onChange={(event) => toggleAllDay(event.target.checked)} />
+                <span>Ganztägig</span>
+                <small>Der Termin erscheint oberhalb der Stundenansicht.</small>
+              </label>
+            </div>
+            <button className={plannerVisible ? "active" : ""} type="button" onClick={() => setPlannerVisible((visible) => !visible)}><CalendarClock size={16} /> Planer</button>
+          </div>
           {!validRange && <p className="calendar-meeting-validation">Das Ende muss nach dem Beginn liegen.</p>}
           <div className="calendar-meeting-field"><MapPin size={20} /><input value={value.location} onChange={(event) => update("location", event.target.value)} placeholder="Raum oder Ort hinzufügen" /></div>
           <div className="calendar-meeting-field online-field"><Video size={20} /><label className="switch"><input id={`online-meeting-${value.id}`} type="checkbox" checked={meeting.isOnlineMeeting} onChange={(event) => updateMeeting({ isOnlineMeeting: event.target.checked })} /><span /></label><span className="online-meeting-copy"><label className="online-meeting-label" htmlFor={`online-meeting-${value.id}`}>Teams-Besprechung</label>{meeting.isOnlineMeeting && !meeting.onlineMeetingUrl && <small>Der Link wird bei der Microsoft-365-Synchronisierung erstellt.</small>}</span>{meeting.onlineMeetingUrl && <a href={meeting.onlineMeetingUrl} target="_blank" rel="noreferrer"><ExternalLink size={15} /> Beitreten</a>}</div>
@@ -167,10 +248,15 @@ export function CalendarEventForm({ value, isNew, categories, events, onChange, 
 
         {plannerVisible && <aside className="calendar-meeting-planner" aria-label="Tagesübersicht">
           <header><CalendarClock size={18} /><div><strong>{starts.date ? new Intl.DateTimeFormat("de-DE", { weekday: "short", day: "2-digit", month: "short", year: "numeric" }).format(new Date(`${starts.date}T12:00`)) : "Tagesübersicht"}</strong><span>{plannerEvents.length ? `${plannerEvents.length} weitere Termine` : "Keine weiteren Termine"}</span></div></header>
+          {(plannerAllDayEvents.length > 0 || value.isAllDay) && <div className="calendar-planner-all-day" aria-label="Ganztägige Termine">
+            <strong>Ganztägig</strong>
+            {plannerAllDayEvents.map((event) => <span key={event.id}>{event.title || "Ohne Titel"}</span>)}
+            {value.isAllDay && <span className="draft">{value.title || "Neues ganztägiges Ereignis"}</span>}
+          </div>}
           <div className="calendar-planner-timeline">
             {Array.from({ length: 18 }, (_, index) => index + 6).map((hour) => <div className="calendar-planner-hour" key={hour}><time>{hour}</time></div>)}
-            {plannerEvents.map((event) => { const start = eventMinutes(event.startsAt); const duration = eventDurationMinutes(event); return <div className="calendar-planner-event" key={event.id} style={{ top: `${((start - 360) / 60) * 44}px`, height: `${Math.max(24, duration / 60 * 44)}px` }}><strong>{event.title}</strong><span>{timeParts(event.startsAt).time}–{timeParts(event.endsAt).time}</span></div>; })}
-            <div className="calendar-planner-event draft" style={{ top: `${((eventMinutes(value.startsAt) - 360) / 60) * 44}px`, height: `${Math.max(24, eventDurationMinutes(value) / 60 * 44)}px` }}><strong>{value.title || "Neue Besprechung"}</strong><span>{starts.time}–{ends.time}</span></div>
+            {plannerTimedEvents.map((event) => { const start = eventMinutes(event.startsAt); const duration = eventDurationMinutes(event); return <div className="calendar-planner-event" key={event.id} style={{ top: `${((start - 360) / 60) * 44}px`, height: `${Math.max(24, duration / 60 * 44)}px` }}><strong>{event.title}</strong><span>{timeParts(event.startsAt).time}–{timeParts(event.endsAt).time}</span></div>; })}
+            {!value.isAllDay && <div className="calendar-planner-event draft" style={{ top: `${((eventMinutes(value.startsAt) - 360) / 60) * 44}px`, height: `${Math.max(24, eventDurationMinutes(value) / 60 * 44)}px` }}><strong>{value.title || "Neue Besprechung"}</strong><span>{starts.time}–{ends.time}</span></div>}
           </div>
         </aside>}
       </div>

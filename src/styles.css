@@ -1729,6 +1729,12 @@ textarea {
   width: 46px;
 }
 
+.contact-form-avatar.avatar-1 { background: #dfe0ff; color: #34359a; }
+.contact-form-avatar.avatar-2 { background: #d9eefb; color: #245f84; }
+.contact-form-avatar.avatar-3 { background: #d9f1df; color: #286a3e; }
+.contact-form-avatar.avatar-4 { background: #ffebc7; color: #825a11; }
+.contact-form-avatar.avatar-5 { background: #e8ddff; color: #56329a; }
+
 .contact-form-close {
   border: 0;
   min-height: 38px;
@@ -1774,6 +1780,29 @@ textarea {
   font-size: 0.88rem;
   gap: 0.4rem;
   margin: 0 0 0.55rem;
+}
+
+.contact-form-group h3 {
+  justify-content: space-between;
+}
+
+.contact-form-group h3 > span {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.4rem;
+}
+
+.contact-form-editable-badge {
+  align-items: center;
+  background: #e2f6ec;
+  border-radius: 999px;
+  color: #13734a;
+  display: inline-flex;
+  font-size: 0.7rem;
+  font-weight: 750;
+  gap: 0.3rem;
+  padding: 0.3rem 0.55rem;
+  white-space: nowrap;
 }
 
 .contact-form-person-grid {
@@ -2811,8 +2840,10 @@ td input[type="checkbox"] {
   --contacts-small-font-size: 13px;
   --contacts-title-font-size: 22px;
   font-size: var(--contacts-font-size);
-  gap: 0.45rem;
-  padding-bottom: 4.5rem;
+  background: color-mix(in srgb, var(--surface-alt) 72%, #eef1f5);
+  border-radius: 14px;
+  gap: 0.7rem;
+  padding: 0.65rem;
 }
 
 .contacts-page.contacts-font-14 {
@@ -2837,24 +2868,6 @@ td input[type="checkbox"] {
   --contacts-font-size: 20px;
   --contacts-small-font-size: 17px;
   --contacts-title-font-size: 28px;
-}
-
-.contacts-section-header {
-  align-items: center;
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  gap: 0.45rem;
-  min-height: 44px;
-  width: 100%;
-}
-
-.contacts-section-header > strong {
-  color: var(--text);
-  font-size: 0.88rem;
-}
-
-.contacts-section-header > span {
-  color: var(--muted);
 }
 
 .contacts-tabs {
@@ -3107,23 +3120,23 @@ td input[type="checkbox"] {
   align-items: stretch;
   display: grid;
   gap: 0;
-  grid-template-columns: minmax(180px, var(--groups-pane, 25%)) 8px minmax(300px, var(--contacts-pane, 40%)) 8px minmax(320px, 1fr);
+  grid-template-columns: minmax(190px, var(--groups-pane, 25%)) 12px minmax(300px, var(--contacts-pane, 34%)) 12px minmax(320px, 1fr);
   min-width: 0;
 }
 
 .contact-pane-divider {
   align-self: stretch;
   cursor: col-resize;
-  min-width: 8px;
+  min-width: 12px;
   outline: none;
   position: relative;
   touch-action: none;
 }
 
 .contact-pane-divider::before {
-  background: var(--border);
+  background: transparent;
   content: "";
-  inset: 0 3px;
+  inset: 0 5px;
   position: absolute;
   transition: background 140ms ease, inset 140ms ease;
 }
@@ -3131,7 +3144,7 @@ td input[type="checkbox"] {
 .contact-pane-divider:hover::before,
 .contact-pane-divider:focus-visible::before {
   background: var(--primary);
-  inset: 0 2px;
+  inset: 0 4px;
 }
 
 body.resizing-contact-panes {
@@ -3149,9 +3162,9 @@ body.resizing-contact-panes {
 
 .contacts-page .groups-panel {
   background: var(--surface);
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(42, 35, 39, 0.055);
   padding: 1rem;
 }
 
@@ -3163,9 +3176,12 @@ body.resizing-contact-panes {
 .group-folder-pane .groups-panel-heading {
   align-items: center;
   border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: minmax(0, 1fr) auto;
   margin: 0;
-  min-height: 52px;
-  padding: 0.45rem 0.55rem 0.45rem 0.75rem;
+  min-height: 58px;
+  padding: 0.65rem 0.75rem;
 }
 
 .group-folder-pane .groups-panel-heading > div {
@@ -3176,24 +3192,25 @@ body.resizing-contact-panes {
 }
 
 .group-folder-pane .groups-panel-heading h3 {
-  font-size: 1.05rem;
+  font-size: 1.12rem;
   margin: 0;
 }
 
 .group-new-button {
-  background: var(--surface);
-  border-color: color-mix(in srgb, var(--primary) 34%, var(--border));
+  background: var(--primary);
+  border-color: var(--primary);
   border-radius: 7px;
-  color: var(--primary-dark);
+  color: #ffffff;
+  font-size: 0.82rem;
   font-weight: 750;
   min-height: 40px;
-  padding: 0.4rem 0.65rem;
+  padding: 0.4rem 0.7rem;
   white-space: nowrap;
 }
 
 .group-new-button:hover {
-  background: var(--soft);
-  border-color: var(--primary);
+  background: var(--primary-dark);
+  border-color: var(--primary-dark);
 }
 
 .group-list-search {
@@ -3201,7 +3218,6 @@ body.resizing-contact-panes {
   border-bottom: 1px solid var(--border);
   color: var(--muted);
   display: flex;
-  gap: 0.5rem;
   padding: 0.55rem 0.65rem;
   position: relative;
 }
@@ -3211,8 +3227,8 @@ body.resizing-contact-panes {
   border: 1px solid var(--border);
   border-radius: 7px;
   font: inherit;
-  min-height: 38px;
-  padding: 0.45rem 0.65rem 0.45rem 2.2rem;
+  min-height: 40px;
+  padding: 0.45rem 0.65rem 0.45rem 2.25rem;
   width: 100%;
 }
 
@@ -3524,7 +3540,7 @@ body.resizing-contact-panes {
 
 .group-list-empty {
   color: var(--muted);
-  font-size: 0.8rem;
+  font-size: 0.82rem;
   margin: 0;
   padding: 1rem 0.7rem;
   text-align: center;
@@ -3974,20 +3990,50 @@ body.resizing-contact-panes {
 }
 
 .contacts-directory-pane .group-contacts-header {
-  align-items: stretch;
-  grid-template-columns: 1fr;
-  min-height: 0;
+  align-items: center;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 116px;
+  padding: 0.75rem 0.8rem;
+  position: relative;
+  z-index: 2;
 }
 
 .contacts-directory-pane .group-contact-search {
-  grid-column: 1;
+  grid-column: 1 / -1;
   grid-row: auto;
   justify-self: stretch;
   max-width: none;
 }
 
 .contacts-directory-pane .group-contact-actions {
-  justify-content: flex-start;
+  grid-column: 2;
+  grid-row: 1;
+  justify-content: flex-end;
+}
+
+.contacts-directory-pane .group-contact-actions .more-menu {
+  max-height: min(70vh, 620px);
+  min-width: 270px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  right: 0;
+}
+
+.contacts-directory-pane .group-contact-actions .more-menu button {
+  min-width: 0;
+  white-space: normal;
+}
+
+.contacts-directory-pane {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(42, 35, 39, 0.055);
+  gap: 0;
+  overflow: hidden;
 }
 
 .group-contacts-header {
@@ -4017,12 +4063,6 @@ body.resizing-contact-panes {
   white-space: nowrap;
 }
 
-.group-contacts-title p {
-  color: var(--muted);
-  font-size: var(--contacts-small-font-size);
-  margin: 0.2rem 0 0;
-}
-
 .group-contact-search {
   justify-self: center;
   max-width: 430px;
@@ -4038,12 +4078,17 @@ body.resizing-contact-panes {
   white-space: nowrap;
 }
 
+.contacts-directory-pane .group-contact-actions button {
+  min-height: 38px;
+}
+
 .group-selection-toolbar {
   align-items: center;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
   display: flex;
+  flex: 0 0 auto;
   gap: 0.55rem;
   min-height: 52px;
   padding: 0.45rem 0.6rem;
@@ -4058,11 +4103,13 @@ body.resizing-contact-panes {
   border: 0;
   border-radius: 0;
   display: grid;
-  flex: 1 1 auto;
+  flex: 1 1 0;
   grid-template-rows: minmax(0, 1fr) auto;
   min-height: 0;
   overflow: hidden;
   padding: 0;
+  position: relative;
+  z-index: 1;
 }
 
 .contact-compact-list {
@@ -4081,10 +4128,12 @@ body.resizing-contact-panes {
   display: grid;
   gap: 0.65rem;
   grid-template-columns: auto minmax(0, 1fr) 40px;
-  min-height: 58px;
+  min-height: 56px;
   outline: none;
-  padding: 0.38rem 0.4rem 0.38rem 0.65rem;
+  padding: 0.35rem 0.5rem 0.35rem 0.7rem;
   position: relative;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .contact-compact-row:hover,
@@ -4094,7 +4143,7 @@ body.resizing-contact-panes {
 
 .contact-compact-row.selected,
 .contact-compact-row.multi-selected {
-  background: var(--soft);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--soft) 88%, var(--surface)), color-mix(in srgb, var(--soft) 62%, var(--surface)));
   box-shadow: inset 4px 0 0 var(--primary);
 }
 
@@ -4144,7 +4193,7 @@ body.resizing-contact-panes {
   color: var(--accent);
   min-height: 40px;
   min-width: 40px;
-  opacity: 0;
+  opacity: 0.72;
   padding: 0;
 }
 
@@ -4168,12 +4217,12 @@ body.resizing-contact-panes {
   border-radius: 7px;
   box-shadow: 0 12px 28px rgba(138, 4, 63, 0.16);
   display: grid;
+  max-width: calc(100vw - 16px);
   min-width: 170px;
   padding: 0.3rem;
-  position: absolute;
-  right: 0;
-  top: calc(100% + 2px);
-  z-index: 20;
+  position: fixed;
+  width: 190px;
+  z-index: 160;
 }
 
 .contact-row-menu button {
@@ -4263,8 +4312,9 @@ body.resizing-contact-panes {
 
 .contact-inspector {
   background: var(--surface);
-  border: 0;
-  border-radius: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(42, 35, 39, 0.055);
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   min-height: 520px;
@@ -4477,27 +4527,90 @@ body.resizing-contact-panes {
 }
 
 .contact-inspector.editing {
-  display: block;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .contact-inspector .contact-form {
   border: 0;
-  border-radius: 0;
+  border-radius: 12px;
   height: 100%;
   max-height: none;
+  min-height: 0;
 }
 
 .contact-inspector .contact-form-header {
-  padding: 0.75rem 0.85rem;
+  min-height: 86px;
+  padding: 0.85rem 1rem;
 }
 
-.contact-inspector .contact-form-header p,
+.group-folder-row.all-contacts-folder {
+  border-bottom-color: var(--border);
+  border-radius: 5px 5px 2px 2px;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  margin-bottom: 0.35rem;
+  padding-bottom: 0.5rem;
+}
+
 .contact-inspector .contact-form-footer > span {
-  display: none;
+  display: flex;
+}
+
+.contact-inspector .contact-form.embedded .contact-form-header {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.contact-inspector .contact-form-header h2,
+.contact-inspector .contact-form-header p {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
 }
 
 .contact-inspector .contact-form-body {
-  padding: 0.65rem;
+  background: color-mix(in srgb, var(--surface-alt) 54%, var(--surface));
+  display: grid;
+  gap: 0.65rem;
+  min-height: 0;
+  overscroll-behavior: contain;
+  padding: 0.75rem;
+  scrollbar-gutter: stable;
+}
+
+.contact-inspector .contact-form-avatar {
+  font-size: 1rem;
+  font-weight: 850;
+  height: 58px;
+  width: 58px;
+}
+
+.contact-inspector .contact-form-header h2 {
+  font-size: 1.28rem;
+}
+
+.contact-inspector .contact-form-group,
+.contact-inspector .contact-form-groups {
+  background: var(--surface);
+  border-color: color-mix(in srgb, var(--border) 78%, #d9dee7);
+  border-radius: 10px;
+  box-shadow: 0 2px 7px rgba(42, 35, 39, 0.035);
+  padding: 0.8rem;
+}
+
+.contact-inspector .contact-form-contact-grid,
+.contact-inspector .contact-form-detail-grid,
+.contact-inspector .contact-form-notes {
+  gap: 0.65rem;
+  margin-top: 0;
+}
+
+.contact-inspector .contact-form input:not([type="checkbox"]),
+.contact-inspector .contact-form textarea,
+.contact-inspector .contact-form-channel-kind {
+  background: #ffffff;
+  border-color: #ccd4df;
+  min-height: 40px;
 }
 
 .contact-inspector .contact-form-person-grid,
@@ -4519,7 +4632,37 @@ body.resizing-contact-panes {
 }
 
 .contact-inspector .contact-form-footer {
-  justify-content: flex-end;
+  align-items: center;
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: 1fr;
+  justify-content: stretch;
+  padding: 0.7rem 0.8rem;
+  position: relative;
+  z-index: 1;
+}
+
+.contact-inspector .contact-form-footer > span {
+  justify-self: end;
+  text-align: right;
+}
+
+.contact-inspector .contact-form-footer .button-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  width: 100%;
+}
+
+.contact-inspector .contact-form-footer .button-row button {
+  min-width: 0;
+  padding-left: 0.45rem;
+  padding-right: 0.45rem;
+  width: 100%;
+}
+
+.contact-inspector .contact-form-unsaved {
+  color: #b56500;
+  font-weight: 700;
 }
 
 .group-context-menu {
@@ -4662,10 +4805,6 @@ body.resizing-contact-panes {
     padding-bottom: 0;
   }
 
-  .contacts-page.groups-tab-active .contacts-tabs {
-    align-self: flex-start;
-  }
-
   .admin-test-root .contacts-page.groups-tab-active {
     height: calc(100dvh - 40px - 2rem);
   }
@@ -4701,7 +4840,7 @@ body.resizing-contact-panes {
 
   .contacts-page.groups-tab-active .contacts-list-panel {
     display: grid;
-    flex: 1 1 auto;
+    flex: 1 1 0;
     grid-template-rows: minmax(0, 1fr) auto;
     height: auto;
     min-height: 0;
@@ -4899,8 +5038,10 @@ table {
   display: flex;
   gap: 0.55rem;
   justify-content: flex-end;
-  margin-top: 0.45rem;
-  padding-top: 0.45rem;
+  flex: 0 0 auto;
+  margin: 0;
+  min-height: 46px;
+  padding: 0.4rem 0.6rem;
 }
 
 .contact-table-pagination span {
@@ -5209,6 +5350,73 @@ table {
   margin: min(12vh, 6rem) 0;
   max-width: 580px;
   padding: 1.5rem;
+}
+
+.unsaved-contact-dialog {
+  margin: min(16vh, 7rem) 0;
+  max-width: 590px;
+  overflow: hidden;
+  padding: 0;
+}
+
+.unsaved-contact-dialog .panel-heading {
+  display: grid;
+  gap: 0.85rem;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  margin: 0;
+  padding: 1.15rem 1.2rem;
+}
+
+.unsaved-contact-dialog .panel-heading h3,
+.unsaved-contact-dialog .panel-heading p {
+  margin: 0;
+}
+
+.unsaved-contact-dialog .panel-heading h3 {
+  font-size: 1.22rem;
+}
+
+.unsaved-contact-dialog .panel-heading p {
+  color: var(--muted);
+  line-height: 1.45;
+  margin-top: 0.2rem;
+}
+
+.unsaved-contact-icon {
+  align-items: center;
+  background: var(--warning-surface, #fff3d6);
+  border-radius: 12px;
+  color: var(--warning-text, #7a4b00);
+  display: inline-flex;
+  height: 52px;
+  justify-content: center;
+  width: 52px;
+}
+
+.unsaved-contact-explanation {
+  border-top: 1px solid var(--border);
+  font-size: 1.02rem;
+  line-height: 1.55;
+  margin: 0;
+  padding: 1rem 1.2rem;
+}
+
+.unsaved-contact-actions {
+  align-items: center;
+  background: var(--surface-muted);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+  justify-content: flex-end;
+  padding: 0.9rem 1.2rem;
+}
+
+.unsaved-contact-actions button {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.5rem;
+  min-height: 46px;
 }
 
 .action-result-heading {
@@ -6082,6 +6290,14 @@ table {
   font-weight: 800;
 }
 
+.calendar-event-all-day-label {
+  color: color-mix(in srgb, var(--event-border, var(--primary)) 82%, var(--text));
+  font-size: 0.62rem;
+  font-weight: 850;
+  margin-right: 0.18rem;
+  text-transform: uppercase;
+}
+
 .calendar-day-events small {
   color: var(--accent);
   font-size: 0.7rem;
@@ -6281,6 +6497,102 @@ table {
   background: var(--primary);
   border-radius: 50%;
   color: #fff;
+}
+
+.calendar-all-day-strip {
+  --all-day-row-height: 31px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  grid-auto-rows: var(--all-day-row-height);
+  grid-template-columns: 64px repeat(var(--calendar-days, 7), minmax(118px, 1fr));
+  grid-template-rows: repeat(var(--all-day-rows, 1), var(--all-day-row-height));
+  min-height: calc(var(--all-day-rows, 1) * var(--all-day-row-height) + 6px);
+  min-width: 930px;
+  padding: 3px 0;
+  position: sticky;
+  top: 62px;
+  z-index: 7;
+}
+
+.calendar-week-schedule.workweek .calendar-all-day-strip {
+  min-width: 665px;
+}
+
+.calendar-day-schedule .calendar-all-day-strip {
+  grid-template-columns: 64px minmax(0, 1fr);
+  min-width: 0;
+}
+
+.calendar-all-day-label {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 0.66rem;
+  gap: 0.3rem;
+  grid-column: 1;
+  grid-row: 1 / -1;
+  justify-content: center;
+  padding: 0.25rem;
+  text-align: center;
+}
+
+.calendar-all-day-label small {
+  background: var(--surface-alt);
+  border-radius: 999px;
+  color: var(--primary-dark);
+  font-size: 0.62rem;
+  font-weight: 800;
+  padding: 0.12rem 0.3rem;
+}
+
+.calendar-all-day-cell {
+  border-left: 1px solid var(--border);
+  grid-row: 1 / -1;
+  min-width: 0;
+}
+
+.calendar-all-day-event {
+  align-items: center;
+  align-self: stretch;
+  background: var(--event-bg, var(--soft));
+  border: 1px solid color-mix(in srgb, var(--event-border, var(--primary)) 60%, transparent);
+  border-left: 4px solid var(--event-border, var(--primary));
+  border-radius: 5px;
+  color: var(--text);
+  display: flex;
+  gap: 0.4rem;
+  margin: 2px 4px;
+  min-height: 27px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0.18rem 0.42rem;
+  position: relative;
+  text-align: left;
+  z-index: 1;
+}
+
+.calendar-all-day-event:hover,
+.calendar-all-day-event:focus-visible {
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--event-border, var(--primary)) 22%, transparent);
+  filter: brightness(0.98);
+}
+
+.calendar-all-day-event span,
+.calendar-all-day-event small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.calendar-all-day-event span {
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
+.calendar-all-day-event small {
+  color: var(--muted);
+  font-size: 0.66rem;
 }
 
 .calendar-week-timeline {
@@ -6741,6 +7053,16 @@ table {
   grid-template-columns: minmax(125px, 1fr) 94px auto minmax(125px, 1fr) 94px;
 }
 
+.calendar-date-editor {
+  display: grid;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.calendar-date-controls.all-day {
+  grid-template-columns: minmax(145px, 1fr) auto minmax(145px, 1fr);
+}
+
 .calendar-date-controls input {
   background: var(--surface-alt);
   border: 1px solid var(--border);
@@ -6752,6 +7074,32 @@ table {
   color: var(--muted);
   font-size: 0.82rem;
   text-align: center;
+}
+
+.calendar-all-day-option {
+  align-items: center;
+  cursor: pointer;
+  display: grid;
+  gap: 0.15rem 0.5rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  justify-self: start;
+}
+
+.calendar-all-day-option input {
+  accent-color: var(--primary);
+  grid-row: 1 / span 2;
+  height: 18px;
+  width: 18px;
+}
+
+.calendar-all-day-option span {
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.calendar-all-day-option small {
+  color: var(--muted);
+  font-size: 0.7rem;
 }
 
 .calendar-meeting-validation {
@@ -6919,6 +7267,40 @@ table {
   font-size: 0.75rem;
 }
 
+.calendar-planner-all-day {
+  background: color-mix(in srgb, var(--surface-alt) 70%, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: grid;
+  gap: 0.28rem;
+  margin-bottom: 0.5rem;
+  padding: 0.5rem;
+}
+
+.calendar-planner-all-day > strong {
+  color: var(--muted);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+}
+
+.calendar-planner-all-day > span {
+  background: var(--surface);
+  border-left: 3px solid var(--muted);
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  overflow: hidden;
+  padding: 0.3rem 0.4rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.calendar-planner-all-day > span.draft {
+  background: color-mix(in srgb, var(--primary) 14%, var(--surface));
+  border-left-color: var(--primary);
+  color: var(--primary-dark);
+}
+
 .calendar-planner-timeline {
   background: var(--surface-alt);
   border: 1px solid var(--border);
@@ -6980,6 +7362,10 @@ table {
 
   .calendar-date-controls {
     grid-template-columns: minmax(112px, 1fr) 88px;
+  }
+
+  .calendar-date-controls.all-day {
+    grid-template-columns: minmax(112px, 1fr) minmax(112px, 1fr);
   }
 
   .calendar-date-controls > span {
@@ -7705,6 +8091,8 @@ table {
 
 .contacts-table tbody tr {
   cursor: grab;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .contacts-table.drag-disabled tbody tr {
@@ -7888,36 +8276,6 @@ table {
   line-height: calc(var(--contacts-font-size) + 7px);
 }
 
-.contacts-font-control {
-  align-items: center;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  bottom: 1rem;
-  box-shadow: 0 6px 18px rgba(50, 30, 38, 0.16);
-  display: flex;
-  font-size: 16px;
-  gap: 0.25rem;
-  left: calc(290px + 1.2rem);
-  padding: 0.25rem;
-  position: fixed;
-  z-index: 12;
-}
-
-.contacts-font-control button {
-  border-width: 1px;
-  height: 42px;
-  min-height: 42px;
-  min-width: 42px;
-  padding: 0;
-  width: 42px;
-}
-
-.contacts-font-control button:not(:disabled):hover {
-  background: var(--soft);
-  color: var(--primary-dark);
-}
-
 @media (max-width: 1400px) {
   .app-shell {
     grid-template-columns: 240px minmax(0, 1fr);
@@ -7944,9 +8302,6 @@ table {
     max-width: none;
   }
 
-  .contacts-font-control {
-    left: calc(240px + 1rem);
-  }
 }
 
 @media (max-width: 1150px) {
@@ -7997,10 +8352,6 @@ table {
 
   .content {
     padding: 1rem;
-  }
-
-  .contacts-font-control {
-    left: 1rem;
   }
 
   .contacts-commandbar,
@@ -8088,11 +8439,6 @@ table {
   .content,
   .sidebar {
     padding: 0.75rem;
-  }
-
-  .contacts-font-control {
-    bottom: 0.75rem;
-    left: 0.75rem;
   }
 
   .nav-list {

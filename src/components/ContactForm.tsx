@@ -1,4 +1,4 @@
-import { Info, Mail, MapPin, Phone, Plus, Save, Search, StickyNote, Trash2, UserRound, UsersRound, X } from "lucide-react";
+import { CircleAlert, Info, Mail, MapPin, Pencil, Phone, Plus, Save, Search, StickyNote, Trash2, UserRound, UsersRound, X } from "lucide-react";
 import { useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import type { ContactInput, Group } from "../types/contact";
@@ -9,6 +9,8 @@ interface ContactFormProps {
   value: ContactInput;
   groups: Group[];
   automaticDisplayName: boolean;
+  hasUnsavedChanges?: boolean;
+  embedded?: boolean;
   onChange: Dispatch<SetStateAction<ContactInput | null>>;
   onAutomaticDisplayNameChange: (enabled: boolean) => void;
   onSubmit: () => void;
@@ -40,7 +42,13 @@ function composedContactName(firstName: string, lastName: string): string {
   return `${firstName} ${lastName}`.replace(/\s+/g, " ").trim();
 }
 
-export function ContactForm({ value, groups, automaticDisplayName, onChange, onAutomaticDisplayNameChange, onSubmit, onCancel }: ContactFormProps) {
+function contactInitials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0 || name === "Noch nicht festgelegt") return "?";
+  return (parts.length > 1 ? `${parts[0][0]}${parts[parts.length - 1][0]}` : parts[0].slice(0, 2)).toUpperCase();
+}
+
+export function ContactForm({ value, groups, automaticDisplayName, hasUnsavedChanges = false, embedded = false, onChange, onAutomaticDisplayNameChange, onSubmit, onCancel }: ContactFormProps) {
   const [groupSearch, setGroupSearch] = useState("");
   const [visibleEmailKeys, setVisibleEmailKeys] = useState<ContactValueKey[]>(() => initiallyVisibleChannels(emailFields, value));
   const [visiblePhoneKeys, setVisiblePhoneKeys] = useState<ContactValueKey[]>(() => initiallyVisibleChannels(phoneFields, value));
@@ -51,6 +59,11 @@ export function ContactForm({ value, groups, automaticDisplayName, onChange, onA
     || [value.firstName, value.lastName].filter(Boolean).join(" ").trim()
     || value.company.trim()
     || "Noch nicht festgelegt";
+  const headerDetail = value.email.trim()
+    || value.privateEmail.trim()
+    || value.secondPrivateEmail.trim()
+    || value.company.trim()
+    || "Kontaktdaten direkt bearbeiten";
   const normalizedGroupSearch = groupSearch.trim().toLocaleLowerCase("de-DE");
   const visibleGroups = normalizedGroupSearch
     ? groups.filter((group) => group.name.toLocaleLowerCase("de-DE").includes(normalizedGroupSearch))
@@ -157,30 +170,37 @@ export function ContactForm({ value, groups, automaticDisplayName, onChange, onA
 
   return (
     <form
-      className="form-panel contact-form"
+      className={embedded ? "form-panel contact-form embedded" : "form-panel contact-form"}
       onSubmit={(event) => {
         event.preventDefault();
         if (emailOk) onSubmit();
       }}
     >
       <header className="contact-form-header">
-        <span className="contact-form-avatar" aria-hidden="true"><UserRound size={24} /></span>
+        <span className={`contact-form-avatar avatar-${(value.id ?? 0) % 6}`} aria-hidden="true">
+          {embedded ? contactInitials(shownDisplayName) : <UserRound size={24} />}
+        </span>
         <div>
-          <h2>{value.id ? t.editContact : t.newContact}</h2>
-          <p>Kontaktdaten bearbeiten und verwalten</p>
+          <h2>{embedded && value.id ? shownDisplayName : value.id ? t.editContact : t.newContact}</h2>
+          <p>{embedded ? headerDetail : "Kontaktdaten bearbeiten und verwalten"}</p>
         </div>
-        <button className="icon-only contact-form-close" type="button" onClick={onCancel} aria-label={t.cancel} title={t.cancel}>
-          <X size={22} />
-        </button>
+        {!embedded && (
+          <button className="icon-only contact-form-close" type="button" onClick={onCancel} aria-label={t.cancel} title={t.cancel}>
+            <X size={22} />
+          </button>
+        )}
       </header>
 
       <div className="contact-form-body">
         <section className="contact-form-group contact-form-person">
-          <h3><UserRound size={17} aria-hidden="true" />Person</h3>
+          <h3>
+            <span><UserRound size={17} aria-hidden="true" />{embedded ? "Kontaktdaten" : "Person"}</span>
+            {embedded && <small className="contact-form-editable-badge"><Pencil size={14} aria-hidden="true" />Direkt bearbeitbar</small>}
+          </h3>
           <div className="contact-form-person-grid">
             <label className="field">
               <span>Vorname</span>
-              <input autoFocus value={value.firstName} onChange={(event) => updateNamePart("firstName", event.target.value)} />
+              <input autoFocus={!embedded} value={value.firstName} onChange={(event) => updateNamePart("firstName", event.target.value)} />
             </label>
             <label className="field">
               <span>Nachname</span>
@@ -306,9 +326,13 @@ export function ContactForm({ value, groups, automaticDisplayName, onChange, onA
       </div>
 
       <footer className="contact-form-footer">
-        <span><Info size={19} aria-hidden="true" />Alle Änderungen werden erst beim Speichern übernommen.</span>
+        {embedded && hasUnsavedChanges ? (
+          <span className="contact-form-unsaved"><CircleAlert size={17} aria-hidden="true" />Änderungen noch nicht gespeichert</span>
+        ) : (
+          <span><Info size={19} aria-hidden="true" />Alle Änderungen werden erst beim Speichern übernommen.</span>
+        )}
         <div className="button-row">
-          <button type="button" onClick={onCancel}>{t.cancel}</button>
+          <button type="button" onClick={onCancel}>{embedded ? "Änderungen verwerfen" : t.cancel}</button>
           <button className="primary" type="submit" disabled={!emailOk}>
             <Save size={18} aria-hidden="true" />{t.save}
           </button>

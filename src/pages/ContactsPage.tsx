@@ -1,15 +1,14 @@
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { Building2, Download, Ellipsis, Folder, FolderOpen, FolderPlus, Info, ListChecks, Mail, MapPin, Minus, Pencil, Phone, Plus, RefreshCw, Search, ShieldCheck, StickyNote, Trash2, Upload, UserPlus, UserRound, UsersRound, X } from "lucide-react";
+import { Download, Ellipsis, Folder, FolderOpen, FolderPlus, Info, ListChecks, Mail, Minus, Pencil, Plus, RefreshCw, Search, ShieldCheck, Trash2, Upload, UserPlus, X } from "lucide-react";
 import { type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ContactForm } from "../components/ContactForm";
+import { ContactEditorPane } from "../components/ContactEditorPane";
 import { ContactTable } from "../components/ContactTable";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ContactReconciliationDialog } from "../components/ContactReconciliationDialog";
-import { EasyImportDialog } from "../components/EasyImportDialog";
-import { EmptyImportState } from "../components/EmptyImportState";
 import { ActionResultDialog, type ActionResult } from "../components/ActionResultDialog";
 import { Microsoft365SyncDialog } from "../components/Microsoft365SyncDialog";
 import { StatusMessage } from "../components/StatusMessage";
+import { UnsavedContactChangesDialog } from "../components/UnsavedContactChangesDialog";
 import type { Page } from "../components/Sidebar";
 import { t } from "../i18n";
 import {
@@ -37,9 +36,11 @@ import { collectedAddressesDeletedAtSettingKey, collectedAddressesHiddenSettingK
 import { findContactDuplicateGroups, type ContactDuplicateGroup } from "../utils/contactDuplicates";
 import { deletionConfirmationSettingKey } from "../utils/settings";
 import { calendarChangedEventName, m365DataUpdatedEventName } from "../utils/automaticCalendarSync";
+import { isValidEmail } from "../utils/validation";
 
-type ContactsTab = "all" | "groups";
-type GroupSelection = "ungrouped" | number;
+type GroupSelection = "all" | "ungrouped" | number;
+type GroupDropTarget = Exclude<GroupSelection, "all">;
+type NavigationBlocker = (continueNavigation: () => void) => boolean;
 type EmailApp = "outlook-classic" | "outlook-new";
 type EmailDraft = {
   kind: "single" | "group";
@@ -70,10 +71,10 @@ type DeleteRequest =
 const blankGroup: Group = { name: "", description: "", createdAt: "", updatedAt: "" };
 const emailAppSettingKey = "default_email_app";
 const contactsFontSizeStorageKey = "dmh.contacts.fontSize";
-const contactPaneLayoutStorageKey = "dmh.contacts.paneLayout";
+const contactPaneLayoutStorageKey = "dmh.contacts.paneLayout.v2";
 const contactsFontSizes = [14, 16, 18, 20] as const;
+const allContactsFolderName = "Alle Kontakte";
 const ungroupedGroupName = "Gesammelte Adressen";
-const emptySelection = new Set<number>();
 
 function initialContactsFontSizeIndex(): number {
   const savedSize = Number(localStorage.getItem(contactsFontSizeStorageKey));
@@ -112,14 +113,14 @@ function initialContactPaneLayout(): ContactPaneLayout {
   try {
     const saved = JSON.parse(localStorage.getItem(contactPaneLayoutStorageKey) ?? "null") as Partial<ContactPaneLayout> | null;
     if (saved && typeof saved.groups === "number" && typeof saved.contacts === "number") {
-      const groups = Math.min(35, Math.max(18, saved.groups));
-      const contacts = Math.min(52, Math.max(30, saved.contacts));
-      if (groups + contacts <= 75) return { groups, contacts };
+      const groups = Math.min(32, Math.max(20, saved.groups));
+      const contacts = Math.min(42, Math.max(30, saved.contacts));
+      if (groups + contacts <= 68) return { groups, contacts };
     }
   } catch {
     // Invalid local preference falls back to the balanced default.
   }
-  return { groups: 25, contacts: 40 };
+  return { groups: 25, contacts: 34 };
 }
 
 function formatGroupDate(value: string): string {
@@ -129,34 +130,32 @@ function formatGroupDate(value: string): string {
   return new Intl.DateTimeFormat("de-DE", { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
 
-function contactInitials(contact: Contact): string {
-  const source = displayName(contact).trim();
-  if (!source) return "?";
-  const parts = source.split(/\s+/).filter(Boolean);
-  return (parts.length > 1 ? `${parts[0][0]}${parts[parts.length - 1][0]}` : source.slice(0, 2)).toUpperCase();
+function contactDraftSignature(value: ContactInput, automaticDisplayName: boolean): string {
+  return JSON.stringify({
+    ...value,
+    groupIds: [...value.groupIds].sort((left, right) => left - right),
+    automaticDisplayName
+  });
 }
 
 interface ContactsPageProps {
   onNavigate: (page: Page) => void;
+  onRegisterNavigationBlocker: (blocker: NavigationBlocker | null) => void;
 }
 
-export function ContactsPage({ onNavigate }: ContactsPageProps) {
+export function ContactsPage({ onNavigate, onRegisterNavigationBlocker }: ContactsPageProps) {
   const notifyLocalM365Change = () => window.dispatchEvent(new Event(calendarChangedEventName));
-  const [tab, setTab] = useState<ContactsTab>("all");
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [totalContactCount, setTotalContactCount] = useState<number | null>(null);
-  const [easyImportOpen, setEasyImportOpen] = useState(false);
   const [reconciliationOpen, setReconciliationOpen] = useState(false);
   const [groups, setGroups] = useState<Group[]>([]);
   const [groupContactCounts, setGroupContactCounts] = useState<Record<number, number>>({});
   const [ungroupedContactCount, setUngroupedContactCount] = useState(0);
   const [ungroupedGroupHidden, setUngroupedGroupHidden] = useState(false);
-  const [allSearch, setAllSearch] = useState("");
   const [groupSearch, setGroupSearch] = useState("");
   const [groupListSearch, setGroupListSearch] = useState("");
-  const [debouncedAllSearch, setDebouncedAllSearch] = useState("");
   const [debouncedGroupSearch, setDebouncedGroupSearch] = useState("");
-  const [groupSelection, setGroupSelection] = useState<GroupSelection>("ungrouped");
+  const [groupSelection, setGroupSelection] = useState<GroupSelection>("all");
   const [editing, setEditing] = useState<ContactInput | null>(null);
   const [automaticDisplayName, setAutomaticDisplayName] = useState(true);
   const [groupForm, setGroupForm] = useState<Group>(blankGroup);
@@ -179,7 +178,6 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
   const [deleteRequest, setDeleteRequest] = useState<DeleteRequest | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [emailDraft, setEmailDraft] = useState<EmailDraft | null>(null);
-  const [contactInspectorMenuOpen, setContactInspectorMenuOpen] = useState(false);
   const [selectedEmailApp, setSelectedEmailApp] = useState<EmailApp>("outlook-classic");
   const [rememberEmailApp, setRememberEmailApp] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
@@ -187,7 +185,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
   const [selectedGroupContactId, setSelectedGroupContactId] = useState<number | undefined>();
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [draggedContactIds, setDraggedContactIds] = useState<number[]>([]);
-  const [dragOverGroupKey, setDragOverGroupKey] = useState<GroupSelection | null>(null);
+  const [dragOverGroupKey, setDragOverGroupKey] = useState<GroupDropTarget | null>(null);
   const [dragPreview, setDragPreview] = useState<DragPreview | null>(null);
   const [groupContextMenu, setGroupContextMenu] = useState<GroupContextMenu | null>(null);
   const [groupProperties, setGroupProperties] = useState<GroupContextTarget | null>(null);
@@ -198,11 +196,15 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
   const [bulkAddSelectedIds, setBulkAddSelectedIds] = useState<Set<number>>(() => new Set());
   const [contactsFontSizeIndex, setContactsFontSizeIndex] = useState(initialContactsFontSizeIndex);
   const [contactPaneLayout, setContactPaneLayout] = useState<ContactPaneLayout>(initialContactPaneLayout);
+  const [unsavedChangesOpen, setUnsavedChangesOpen] = useState(false);
+  const [unsavedSaveBusy, setUnsavedSaveBusy] = useState(false);
   const draggedContactIdsRef = useRef<number[]>([]);
-  const dragOverGroupKeyRef = useRef<GroupSelection | null>(null);
+  const dragOverGroupKeyRef = useRef<GroupDropTarget | null>(null);
   const groupsRef = useRef<Group[]>([]);
   const contactsWorkspaceRef = useRef<HTMLElement>(null);
   const contactPaneResizeRef = useRef<ContactPaneResize | null>(null);
+  const contactDraftBaselineRef = useRef("");
+  const pendingContactActionRef = useRef<(() => void) | null>(null);
 
   const selectedGroup = useMemo(
     () => (typeof groupSelection === "number" ? groups.find((group) => group.id === groupSelection) : undefined),
@@ -214,6 +216,8 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
     if (!normalizedGroupListSearch) return groups;
     return groups.filter((group) => group.name.toLocaleLowerCase("de").includes(normalizedGroupListSearch));
   }, [groups, normalizedGroupListSearch]);
+  const showAllContactsFolder = !normalizedGroupListSearch
+    || allContactsFolderName.toLocaleLowerCase("de").includes(normalizedGroupListSearch);
   const showUngroupedGroup = !ungroupedGroupHidden
     && (!normalizedGroupListSearch || ungroupedGroupName.toLocaleLowerCase("de").includes(normalizedGroupListSearch));
   const visibleContactIds = useMemo(
@@ -224,12 +228,11 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
     () => visibleContactIds.filter((contactId) => selectedContactIds.has(contactId)),
     [selectedContactIds, visibleContactIds]
   );
+  const selectionActive = selectionMode || selectedContactIds.size > 0;
   const allVisibleContactsSelected = visibleContactIds.length > 0 && selectedVisibleContactIds.length === visibleContactIds.length;
-  const selectedGroupContact = useMemo(
-    () => contacts.find((contact) => contact.id === selectedGroupContactId),
-    [contacts, selectedGroupContactId]
-  );
   const contactsFontSize = contactsFontSizes[contactsFontSizeIndex];
+  const hasUnsavedContactChanges = editing !== null
+    && contactDraftSignature(editing, automaticDisplayName) !== contactDraftBaselineRef.current;
   const duplicateCandidateCount = useMemo(
     () => new Set(duplicateGroups.flatMap((group) => group.contacts.map((contact) => contact.id))).size,
     [duplicateGroups]
@@ -244,21 +247,43 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
   };
 
   useEffect(() => {
-    const timer = window.setTimeout(() => setDebouncedAllSearch(allSearch), 300);
-    return () => window.clearTimeout(timer);
-  }, [allSearch]);
-
-  useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedGroupSearch(groupSearch), 300);
     return () => window.clearTimeout(timer);
   }, [groupSearch]);
 
   useEffect(() => {
-    if (tab !== "groups" || editing) return;
-    setSelectedGroupContactId((current) => contacts.some((contact) => contact.id === current)
-      ? current
-      : contacts.find((contact) => contact.id)?.id);
-  }, [contacts, editing, tab]);
+    if (editing || contacts.length === 0) return;
+    const contact = contacts.find((row) => row.id === selectedGroupContactId)
+      ?? contacts.find((row) => row.id);
+    if (!contact) return;
+    const contactInput = toContactInput(contact);
+    const usesAutomaticDisplayName = contactUsesAutomaticDisplayName(contactInput);
+    contactDraftBaselineRef.current = contactDraftSignature(contactInput, usesAutomaticDisplayName);
+    setSelectedGroupContactId(contact.id);
+    setAutomaticDisplayName(usesAutomaticDisplayName);
+    setEditing(contactInput);
+  }, [contacts, editing, selectedGroupContactId]);
+
+  useEffect(() => {
+    const blocker: NavigationBlocker = (continueNavigation) => {
+      if (!hasUnsavedContactChanges) return false;
+      pendingContactActionRef.current = continueNavigation;
+      setUnsavedChangesOpen(true);
+      return true;
+    };
+    onRegisterNavigationBlocker(blocker);
+    return () => onRegisterNavigationBlocker(null);
+  }, [hasUnsavedContactChanges, onRegisterNavigationBlocker]);
+
+  useEffect(() => {
+    if (!hasUnsavedContactChanges) return;
+    const warnBeforeBrowserExit = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeBrowserExit);
+    return () => window.removeEventListener("beforeunload", warnBeforeBrowserExit);
+  }, [hasUnsavedContactChanges]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedBulkAddSearch(bulkAddSearch), 300);
@@ -281,27 +306,13 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
     };
   }, [groupContextMenu]);
 
-  useEffect(() => {
-    if (!contactInspectorMenuOpen) return;
-    const closeMenu = () => setContactInspectorMenuOpen(false);
-    const closeMenuWithKeyboard = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeMenu();
-    };
-    window.addEventListener("pointerdown", closeMenu);
-    window.addEventListener("keydown", closeMenuWithKeyboard);
-    return () => {
-      window.removeEventListener("pointerdown", closeMenu);
-      window.removeEventListener("keydown", closeMenuWithKeyboard);
-    };
-  }, [contactInspectorMenuOpen]);
-
   useEffect(() => () => {
     document.body.classList.remove("resizing-contact-panes");
   }, []);
 
   const refresh = useCallback(async () => {
-    const rowsPromise = tab === "all"
-      ? listContacts(debouncedAllSearch)
+    const rowsPromise = groupSelection === "all"
+      ? listContacts(debouncedGroupSearch)
       : groupSelection === "ungrouped"
         ? listContacts(debouncedGroupSearch)
         : listContacts(debouncedGroupSearch, groupSelection);
@@ -312,18 +323,13 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
     setGroupContactCounts(overview.groups);
     setUngroupedContactCount(overview.ungrouped);
 
-    if (tab === "all") {
-      setContacts(rows);
-      return;
-    }
-
     if (groupSelection === "ungrouped") {
       setContacts(rows.filter((contact) => contact.groups.length === 0));
       return;
     }
 
     setContacts(rows);
-  }, [debouncedAllSearch, debouncedGroupSearch, groupSelection, tab]);
+  }, [debouncedGroupSearch, groupSelection]);
 
   useEffect(() => {
     refresh().catch((error) => {
@@ -376,20 +382,34 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
       });
   }, [bulkAddGroup, debouncedBulkAddSearch]);
 
-  const startNew = () => {
-    setContactInspectorMenuOpen(false);
-    setAutomaticDisplayName(true);
-    setEditing({
-      ...emptyContact,
-      groupIds: tab === "groups" && typeof groupSelection === "number" ? [groupSelection] : []
-    });
+  const requestContactAction = (action: () => void) => {
+    if (!hasUnsavedContactChanges) {
+      action();
+      return;
+    }
+    pendingContactActionRef.current = action;
+    setUnsavedChangesOpen(true);
   };
+
+  const openNewContact = () => {
+    const draft = {
+      ...emptyContact,
+      groupIds: typeof groupSelection === "number" ? [groupSelection] : []
+    };
+    contactDraftBaselineRef.current = contactDraftSignature(draft, true);
+    setSelectedGroupContactId(undefined);
+    setAutomaticDisplayName(true);
+    setEditing(draft);
+  };
+
+  const startNew = () => requestContactAction(openNewContact);
 
   const startEditing = (contact: Contact) => {
     const contactInput = toContactInput(contact);
-    setContactInspectorMenuOpen(false);
+    const usesAutomaticDisplayName = contactUsesAutomaticDisplayName(contactInput);
+    contactDraftBaselineRef.current = contactDraftSignature(contactInput, usesAutomaticDisplayName);
     setSelectedGroupContactId(contact.id);
-    setAutomaticDisplayName(contactUsesAutomaticDisplayName(contactInput));
+    setAutomaticDisplayName(usesAutomaticDisplayName);
     setEditing(contactInput);
   };
 
@@ -423,7 +443,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
 
   const openDuplicateContact = (contact: Contact) => {
     setDuplicateReviewOpen(false);
-    startEditing(contact);
+    requestContactAction(() => startEditing(contact));
   };
 
   const cleanContactDuplicates = async () => {
@@ -497,7 +517,6 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
       setGroupForm(blankGroup);
       setGroupCreateOpen(false);
       setGroupSelection(groupId);
-      setTab("groups");
       setActionResult({ title: "Gruppe erstellt", summary: `„${name}“ steht jetzt bereit.`, tone: "success" });
       await refresh();
       notifyLocalM365Change();
@@ -545,20 +564,63 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
     }
   };
 
-  const submit = async () => {
-    if (!editing) return;
+  const submit = async (showSuccess = true): Promise<boolean> => {
+    if (!editing) return false;
+    if (![editing.email, editing.privateEmail, editing.secondPrivateEmail].every(isValidEmail)) {
+      setActionResult({
+        title: "Kontakt nicht gespeichert",
+        summary: "Bitte prüfen Sie zuerst die markierten E-Mail-Adressen.",
+        tone: "error"
+      });
+      return false;
+    }
     try {
       const contactId = await saveContact(editing);
       saveAutomaticDisplayNamePreference(contactId, automaticDisplayName);
+      const savedDraft = { ...editing, id: contactId };
+      contactDraftBaselineRef.current = contactDraftSignature(savedDraft, automaticDisplayName);
       setSelectedGroupContactId(contactId);
-      setEditing(null);
-      setActionResult({ title: "Kontakt gespeichert", summary: `„${displayName(editing)}“ wurde lokal gespeichert.`, tone: "success" });
+      setEditing(savedDraft);
+      if (showSuccess) {
+        setActionResult({ title: "Kontakt gespeichert", summary: `„${displayName(editing)}“ wurde lokal gespeichert.`, tone: "success" });
+      }
       await refresh();
       setSelectedGroupContactId(contactId);
       notifyLocalM365Change();
+      return true;
     } catch (error) {
       setActionResult({ title: "Kontakt nicht gespeichert", summary: `Der Kontakt wurde nicht verändert: ${error}`, tone: "error" });
+      return false;
     }
+  };
+
+  const continuePendingContactAction = () => {
+    const action = pendingContactActionRef.current;
+    pendingContactActionRef.current = null;
+    setUnsavedChangesOpen(false);
+    action?.();
+  };
+
+  const saveAndContinue = async () => {
+    setUnsavedSaveBusy(true);
+    const saved = await submit(false);
+    setUnsavedSaveBusy(false);
+    if (saved) {
+      continuePendingContactAction();
+      return;
+    }
+    pendingContactActionRef.current = null;
+    setUnsavedChangesOpen(false);
+  };
+
+  const discardAndContinue = () => {
+    contactDraftBaselineRef.current = "";
+    continuePendingContactAction();
+  };
+
+  const keepEditing = () => {
+    pendingContactActionRef.current = null;
+    setUnsavedChangesOpen(false);
   };
 
   const deleteContactNow = async (contact: Contact) => {
@@ -566,6 +628,13 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
     try {
       await deleteContact(contact.id);
       setContacts((current) => current.filter((currentContact) => currentContact.id !== contact.id));
+      if (selectedGroupContactId === contact.id) {
+        contactDraftBaselineRef.current = "";
+        pendingContactActionRef.current = null;
+        setUnsavedChangesOpen(false);
+        setSelectedGroupContactId(undefined);
+        setEditing(null);
+      }
       setTotalContactCount((current) => current === null ? current : Math.max(0, current - 1));
       if (contact.groups.length === 0) {
         setUngroupedContactCount((current) => Math.max(0, current - 1));
@@ -599,7 +668,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
     if (!group.id) return;
     try {
       await deleteGroup(group.id);
-      if (groupSelection === group.id) setGroupSelection("ungrouped");
+      if (groupSelection === group.id) setGroupSelection("all");
       setActionResult({ title: "Gruppe in den Papierkorb verschoben", summary: `„${group.name}“ kann im Papierkorb wiederhergestellt werden.`, tone: "success" });
       await refresh();
       notifyLocalM365Change();
@@ -621,7 +690,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
       setUngroupedGroupHidden(true);
       const nextGroupId = groups.find((group) => group.id)?.id;
       if (nextGroupId) setGroupSelection(nextGroupId);
-      else setTab("all");
+      else setGroupSelection("all");
       setActionResult({ title: "Gruppe in den Papierkorb verschoben", summary: `„${ungroupedGroupName}“ kann im Papierkorb wiederhergestellt werden.`, tone: "success" });
       await refresh();
       notifyLocalM365Change();
@@ -645,8 +714,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
       const result = await deleteAllContacts();
       setTestMenuOpen(false);
       setUngroupedGroupHidden(true);
-      setGroupSelection("ungrouped");
-      setTab("all");
+      setGroupSelection("all");
       setActionResult({
         title: "Kontakte und Gruppen in den Papierkorb verschoben",
         summary: `${result.contacts} ${result.contacts === 1 ? "Kontakt" : "Kontakte"} und ${result.groups} ${result.groups === 1 ? "Gruppe wurden" : "Gruppen wurden"} nicht endgültig gelöscht und können wiederhergestellt werden.`,
@@ -673,6 +741,13 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
     setBulkDeleting(true);
     try {
       const deleted = await deleteContacts(contactIds);
+      if (editing?.id && contactIds.includes(editing.id)) {
+        contactDraftBaselineRef.current = "";
+        pendingContactActionRef.current = null;
+        setUnsavedChangesOpen(false);
+        setSelectedGroupContactId(undefined);
+        setEditing(null);
+      }
       setSelectedContactIds(new Set());
       setSelectionMode(false);
       setActionResult({
@@ -720,35 +795,29 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
     setMessageType("success");
   };
 
-  const toggleSelectionMode = () => {
-    setSelectionMode((enabled) => {
-      if (enabled) setSelectedContactIds(new Set());
-      return !enabled;
-    });
-  };
-
-  const startSelectionMode = () => {
-    setSelectedContactIds(new Set());
+  const beginSelectionMode = () => {
     setSelectionMode(true);
-    setTestMenuOpen(false);
   };
 
-  const changeTab = (nextTab: ContactsTab) => {
-    setTab(nextTab);
-    setEditing(null);
+  const finishSelection = () => {
     setSelectionMode(false);
     setSelectedContactIds(new Set());
-    setTestMenuOpen(false);
   };
 
-  const toggleContactSelection = (contact: Contact) => {
-    if (!contact.id) return;
+  const updateContactSelection = (contactIds: number[], operation: "replace" | "add" | "toggle") => {
     setSelectedContactIds((current) => {
-      const next = new Set(current);
-      if (next.has(contact.id!)) next.delete(contact.id!);
-      else next.add(contact.id!);
+      const next = operation === "replace" ? new Set<number>() : new Set(current);
+      for (const contactId of contactIds) {
+        if (operation === "toggle" && next.has(contactId)) next.delete(contactId);
+        else next.add(contactId);
+      }
       return next;
     });
+  };
+
+  const clearContactSelection = () => {
+    setSelectionMode(false);
+    setSelectedContactIds(new Set());
   };
 
   const toggleSelectAllVisible = () => {
@@ -812,7 +881,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
 
   const startContactDrag = (contact: Contact, position: { x: number; y: number }) => {
     if (!contact.id) return;
-    const contactIds = selectionMode && selectedContactIds.has(contact.id)
+    const contactIds = selectedContactIds.has(contact.id)
       ? selectedVisibleContactIds
       : [contact.id];
     draggedContactIdsRef.current = contactIds;
@@ -832,7 +901,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
     setDragPreview(null);
   };
 
-  const moveContactsToSelection = async (contactIds: number[], target: GroupSelection) => {
+  const moveContactsToSelection = async (contactIds: number[], target: GroupDropTarget) => {
     if (contactIds.length === 0) return;
     try {
       if (target === "ungrouped") {
@@ -864,7 +933,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
 
   useEffect(() => {
     if (draggedContactIds.length === 0) return;
-    const findGroupFromPoint = (event: PointerEvent): GroupSelection | undefined => {
+    const findGroupFromPoint = (event: PointerEvent): GroupDropTarget | undefined => {
       const target = document.elementFromPoint(event.clientX, event.clientY);
       const groupElement = target?.closest<HTMLElement>("[data-group-key]");
       const groupKey = groupElement?.dataset.groupKey;
@@ -897,29 +966,44 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
     };
   }, [draggedContactIds]);
 
-  const pointerOverGroup = (target: GroupSelection) => {
+  const pointerOverGroup = (target: GroupDropTarget) => {
     if (draggedContactIdsRef.current.length === 0) return;
     dragOverGroupKeyRef.current = target;
     setDragOverGroupKey(target);
   };
 
   const selectContactForInspector = (contact: Contact) => {
-    setSelectedGroupContactId(contact.id);
-    setContactInspectorMenuOpen(false);
-    setEditing(null);
+    if (editing?.id === contact.id) return;
+    requestContactAction(() => startEditing(contact));
   };
 
-  const selectGroupForDirectory = (selection: GroupSelection) => {
+  const resetContactEditor = () => {
+    if (!editing?.id) {
+      contactDraftBaselineRef.current = "";
+      setEditing(null);
+      return;
+    }
+    const storedContact = contacts.find((contact) => contact.id === editing.id);
+    if (storedContact) startEditing(storedContact);
+  };
+
+  const openDirectory = (selection: GroupSelection) => {
+    contactDraftBaselineRef.current = "";
+    clearContactSelection();
     setEditing(null);
-    setContactInspectorMenuOpen(false);
     setSelectedGroupContactId(undefined);
     setGroupSelection(selection);
   };
 
+  const selectGroupForDirectory = (selection: GroupSelection) => {
+    if (selection === groupSelection) return;
+    requestContactAction(() => openDirectory(selection));
+  };
+
   const normalizePaneLayout = (layout: ContactPaneLayout): ContactPaneLayout => {
-    const groups = Math.min(35, Math.max(18, layout.groups));
-    const contacts = Math.min(52, Math.max(30, layout.contacts));
-    return groups + contacts > 75 ? { groups, contacts: 75 - groups } : { groups, contacts };
+    const groups = Math.min(32, Math.max(20, layout.groups));
+    const contacts = Math.min(42, Math.max(30, layout.contacts));
+    return groups + contacts > 68 ? { groups, contacts: 68 - groups } : { groups, contacts };
   };
 
   const writePaneLayout = (layout: ContactPaneLayout) => {
@@ -984,8 +1068,6 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
   const openGroupContextMenu = (event: ReactMouseEvent, target: GroupContextTarget | null) => {
     event.preventDefault();
     event.stopPropagation();
-    if (target?.kind === "ungrouped") selectGroupForDirectory("ungrouped");
-    if (target?.kind === "group") selectGroupForDirectory(target.group.id ?? "ungrouped");
     setGroupContextMenu({ x: event.clientX, y: event.clientY, target });
   };
 
@@ -1001,21 +1083,6 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
       : 0;
   const contextMenuTarget = groupContextMenu?.target ?? null;
   const contextMenuGroup = contextMenuTarget?.kind === "group" ? contextMenuTarget.group : null;
-  const inspectorEmails = selectedGroupContact ? [
-    { label: "Geschäftlich", value: selectedGroupContact.email },
-    { label: "Privat", value: selectedGroupContact.privateEmail },
-    { label: "Privat 2", value: selectedGroupContact.secondPrivateEmail }
-  ].filter((entry) => entry.value.trim()) : [];
-  const inspectorPhones = selectedGroupContact ? [
-    { label: "Geschäftlich", value: selectedGroupContact.phone },
-    { label: "Mobil", value: selectedGroupContact.mobilePhone },
-    { label: "Privat", value: selectedGroupContact.privatePhone },
-    { label: "Privat 2", value: selectedGroupContact.secondPrivatePhone }
-  ].filter((entry) => entry.value.trim()) : [];
-  const inspectorAddress = selectedGroupContact
-    ? [selectedGroupContact.street, [selectedGroupContact.postalCode, selectedGroupContact.city].filter(Boolean).join(" "), selectedGroupContact.country].filter(Boolean)
-    : [];
-
   const closeBulkAdd = () => {
     setBulkAddGroup(null);
     setBulkAddSearch("");
@@ -1039,81 +1106,16 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
   };
 
   return (
-    <div className={`${draggedContactIds.length === 0 ? "page contacts-page" : "page contacts-page dragging-contact"} contacts-font-${contactsFontSize}${tab === "groups" ? " groups-tab-active" : ""}`}>
-      <header className="contacts-section-header">
-        <strong>Kontakte</strong>
-        <span aria-hidden="true">›</span>
-        <div className="contacts-tabs" role="tablist" aria-label="Kontaktbereiche">
-          <button className={tab === "all" ? "active" : ""} type="button" role="tab" aria-selected={tab === "all"} onClick={() => changeTab("all")}>
-            Alle Kontakte
-          </button>
-          <button className={tab === "groups" ? "active" : ""} type="button" role="tab" aria-selected={tab === "groups"} onClick={() => changeTab("groups")}>
-            Gruppen verwalten
-          </button>
-        </div>
-      </header>
-
-      {tab === "all" && <header className="contacts-commandbar">
-        <div className="contacts-title">
-          <h2>{tab === "all" ? "Alle Kontakte" : "Gruppen verwalten"}</h2>
-        </div>
-        <label className="search-field">
-          <Search size={20} />
-          <input
-            value={allSearch}
-            onChange={(event) => setAllSearch(event.target.value)}
-            placeholder={t.search}
-          />
-        </label>
-        <div className="button-row contacts-actions">
-          {selectionMode && (
-            <>
-              <button className="primary" type="button" onClick={toggleSelectionMode} disabled={bulkDeleting}>Fertig</button>
-              <button type="button" onClick={toggleSelectAllVisible} disabled={bulkDeleting || visibleContactIds.length === 0}>
-                {allVisibleContactsSelected ? "Auswahl aufheben" : "Alle auswählen"}
-              </button>
-              <button
-                className="danger-button"
-                type="button"
-                onClick={removeSelectedContacts}
-                disabled={bulkDeleting || selectedVisibleContactIds.length === 0}
-              >
-                <Trash2 size={19} />
-                {bulkDeleting
-                  ? "Wird gelöscht …"
-                  : `Ausgewählte löschen (${selectedVisibleContactIds.length})`}
-              </button>
-              <span className="selection-count">{selectedVisibleContactIds.length} ausgewählt</span>
-            </>
-          )}
-          <button className="primary" type="button" onClick={startNew}>
-            <Plus size={20} /> {t.newContact}
-          </button>
-          <div className="more-menu-wrap">
-            <button className="icon-only" type="button" aria-label="Weitere Optionen" onClick={() => setTestMenuOpen((open) => !open)}>
-              <Ellipsis size={20} />
-            </button>
-            {testMenuOpen && (
-              <div className="more-menu" role="menu">
-                <button type="button" onClick={() => { setTestMenuOpen(false); setM365SyncDialogOpen(true); }}><RefreshCw size={18} /> Microsoft 365 / Exchange verwalten</button>
-                <span className="calendar-actions-separator" />
-                <button type="button" onClick={() => { setTestMenuOpen(false); onNavigate("import"); }}><Upload size={18} /> Kontakte importieren</button>
-                <button type="button" onClick={() => { setTestMenuOpen(false); onNavigate("export"); }}><Download size={18} /> Kontakte exportieren</button>
-                <button type="button" onClick={() => { setTestMenuOpen(false); setReconciliationOpen(true); }}><RefreshCw size={18} /> Kontakte erneut abgleichen</button>
-                <button type="button" onClick={() => void reviewContactDuplicates()} disabled={duplicateCheckBusy}>
-                  <ListChecks size={18} /> {duplicateCheckBusy ? "Duplikate werden geprüft …" : "Duplikate prüfen"}
-                </button>
-                {!selectionMode && <button type="button" onClick={startSelectionMode}>Auswählen</button>}
-                <span className="calendar-actions-separator" />
-                <button className="danger" type="button" onClick={removeAllContacts}><Trash2 size={18} /> Alle Kontakte löschen</button>
-              </div>
-            )}
-          </div>
-        </div>
-      </header>}
-
+    <div className={`${draggedContactIds.length === 0 ? "page contacts-page" : "page contacts-page dragging-contact"} contacts-font-${contactsFontSize} groups-tab-active`}>
       <StatusMessage message={actionResult ? "" : message} type={messageType} />
       <ActionResultDialog result={actionResult} onClose={() => setActionResult(null)} />
+      <UnsavedContactChangesDialog
+        open={unsavedChangesOpen}
+        busy={unsavedSaveBusy}
+        onSave={() => void saveAndContinue()}
+        onDiscard={discardAndContinue}
+        onContinueEditing={keepEditing}
+      />
       {m365SyncDialogOpen && <Microsoft365SyncDialog context="contacts" onClose={() => setM365SyncDialogOpen(false)} />}
 
       {duplicateReviewOpen && (
@@ -1258,22 +1260,6 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
         </div>
       )}
 
-      {editing && tab !== "groups" && (
-        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={editing.id ? t.editContact : t.newContact}>
-          <div className="modal-card contact-editor-dialog">
-            <ContactForm
-              value={editing}
-              groups={groups}
-              automaticDisplayName={automaticDisplayName}
-              onChange={setEditing}
-              onAutomaticDisplayNameChange={setAutomaticDisplayName}
-              onSubmit={submit}
-              onCancel={() => setEditing(null)}
-            />
-          </div>
-        </div>
-      )}
-
       {groupCreateOpen && (
         <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="group-create-title">
           <form className="form-panel modal-card group-rename-dialog" onSubmit={submitGroup}>
@@ -1335,24 +1321,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
         </div>
       )}
 
-      {tab === "all" && totalContactCount === 0 ? (
-        <EmptyImportState kind="contacts" onEasyImport={() => setEasyImportOpen(true)} onManualImport={() => onNavigate("contact-import")} />
-      ) : tab === "all" ? (
-        <ContactTable
-          contacts={contacts}
-          paginationKey={`all:${allSearch}`}
-          onEdit={startEditing}
-          onDelete={remove}
-          onCopyEmail={copyEmail}
-          onEmail={chooseEmailApp}
-          selectionMode={selectionMode}
-          selectedContactIds={selectionMode ? selectedContactIds : emptySelection}
-          onToggleSelection={toggleContactSelection}
-          onPointerDragStart={startContactDrag}
-          dragEnabled={false}
-        />
-      ) : (
-        <section
+      <section
           className="contacts-workspace"
           ref={contactsWorkspaceRef}
           style={{
@@ -1363,7 +1332,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
           <aside className="groups-panel group-folder-pane" onContextMenu={(event) => openGroupContextMenu(event, null)}>
             <div className="groups-panel-heading">
               <h3>Gruppen</h3>
-              <button className="group-new-button" type="button" onClick={openGroupCreate}>
+              <button className="group-new-button primary" type="button" onClick={openGroupCreate}>
                 <Plus size={17} /> Neue Gruppe
               </button>
             </div>
@@ -1377,6 +1346,21 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
               />
             </label>
             <div className="group-list" role="tree" aria-label="Kontaktgruppen" onContextMenu={(event) => openGroupContextMenu(event, null)}>
+              {showAllContactsFolder && <div
+                className={["group-folder-row", "all-contacts-folder", groupSelection === "all" ? "active" : ""].filter(Boolean).join(" ")}
+                role="treeitem"
+                tabIndex={0}
+                aria-selected={groupSelection === "all"}
+                onClick={() => selectGroupForDirectory("all")}
+                onContextMenu={(event) => event.stopPropagation()}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") selectGroupForDirectory("all");
+                }}
+              >
+                {groupSelection === "all" ? <FolderOpen size={18} aria-hidden="true" /> : <Folder size={18} aria-hidden="true" />}
+                <span className="group-folder-name" title={allContactsFolderName}>{allContactsFolderName}</span>
+                <span className="group-folder-count" aria-label={`${totalContactCount ?? 0} Kontakte`}>{totalContactCount ?? 0}</span>
+              </div>}
               {showUngroupedGroup && <div
                 className={["group-folder-row", groupSelection === "ungrouped" ? "active" : "", dragOverGroupKey === "ungrouped" ? "drag-over" : ""].filter(Boolean).join(" ")}
                 data-group-key="ungrouped"
@@ -1427,7 +1411,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
                   </div>
                 );
               })}
-              {!showUngroupedGroup && visibleGroups.length === 0 && (
+              {!showAllContactsFolder && !showUngroupedGroup && visibleGroups.length === 0 && (
                 <p className="group-list-empty">Keine Gruppe gefunden.</p>
               )}
             </div>
@@ -1438,8 +1422,8 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
             role="separator"
             aria-label="Breite der Gruppenliste ändern"
             aria-orientation="vertical"
-            aria-valuemin={18}
-            aria-valuemax={35}
+            aria-valuemin={20}
+            aria-valuemax={32}
             aria-valuenow={Math.round(contactPaneLayout.groups)}
             tabIndex={0}
             onPointerDown={(event) => beginPaneResize("groups", event)}
@@ -1458,23 +1442,21 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
             <header className="group-contacts-header">
               <div className="group-contacts-title">
                 <div><h2>Kontakte</h2><span>{contacts.length} Kontakte</span></div>
-                <p>{selectedGroup ? `Kontakte in „${selectedGroup.name}“ verwalten.` : `Kontakte in „${ungroupedGroupName}“ verwalten.`}</p>
               </div>
               <label className="search-field group-contact-search">
                 <Search size={20} />
                 <input value={groupSearch} onChange={(event) => setGroupSearch(event.target.value)} placeholder="Kontakte durchsuchen..." />
               </label>
               <div className="button-row group-contact-actions">
-                {!selectionMode && <button type="button" onClick={toggleSelectionMode} disabled={bulkDeleting}>Auswählen</button>}
-                <button className="primary" type="button" onClick={startNew}>
-                  <Plus size={20} /> {t.newContact}
-                </button>
                 <div className="more-menu-wrap">
                   <button className="icon-only" type="button" aria-label="Weitere Optionen" onClick={() => setTestMenuOpen((open) => !open)}>
                     <Ellipsis size={20} />
                   </button>
                   {testMenuOpen && (
                     <div className="more-menu" role="menu">
+                      <button type="button" onClick={() => { setTestMenuOpen(false); startNew(); }}><Plus size={18} /> {t.newContact}</button>
+                      {!selectionActive && <button type="button" onClick={() => { setTestMenuOpen(false); beginSelectionMode(); }} disabled={bulkDeleting}><ListChecks size={18} /> Kontakte auswählen</button>}
+                      <span className="calendar-actions-separator" />
                       <button type="button" onClick={() => { setTestMenuOpen(false); setM365SyncDialogOpen(true); }}><RefreshCw size={18} /> Microsoft 365 / Exchange verwalten</button>
                       <span className="calendar-actions-separator" />
                       <button type="button" onClick={() => { setTestMenuOpen(false); onNavigate("import"); }}><Upload size={18} /> Kontakte importieren</button>
@@ -1484,13 +1466,16 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
                         <ListChecks size={18} /> {duplicateCheckBusy ? "Duplikate werden geprüft …" : "Duplikate prüfen"}
                       </button>
                       <span className="calendar-actions-separator" />
+                      <button type="button" onClick={() => changeContactsFontSize(-1)} disabled={contactsFontSizeIndex === 0}><Minus size={18} /> Schrift kleiner</button>
+                      <button type="button" onClick={() => changeContactsFontSize(1)} disabled={contactsFontSizeIndex === contactsFontSizes.length - 1}><Plus size={18} /> Schrift größer</button>
+                      <span className="calendar-actions-separator" />
                       <button className="danger" type="button" onClick={removeAllContacts}><Trash2 size={18} /> Alle Kontakte löschen</button>
                     </div>
                   )}
                 </div>
               </div>
             </header>
-            {selectionMode && (
+            {selectionActive && (
               <div className="group-selection-toolbar">
                 <strong>{selectedVisibleContactIds.length} Kontakte ausgewählt</strong>
                 <button type="button" onClick={toggleSelectAllVisible} disabled={bulkDeleting || visibleContactIds.length === 0}>
@@ -1499,19 +1484,21 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
                 <button className="danger-button" type="button" onClick={removeSelectedContacts} disabled={bulkDeleting || selectedVisibleContactIds.length === 0}>
                   <Trash2 size={17} /> {bulkDeleting ? "Wird gelöscht …" : "Löschen"}
                 </button>
-                <button className="primary" type="button" onClick={toggleSelectionMode} disabled={bulkDeleting}>Fertig</button>
+                <button className="primary" type="button" onClick={finishSelection} disabled={bulkDeleting}>Fertig</button>
               </div>
             )}
             <ContactTable
               contacts={contacts}
-              paginationKey={`groups:${groupSelection}:${groupSearch}`}
+              paginationKey={`directory:${groupSelection}:${groupSearch}`}
               onEdit={startEditing}
               onDelete={remove}
               onCopyEmail={copyEmail}
               onEmail={chooseEmailApp}
               selectionMode={selectionMode}
+              selectionActive={selectionActive}
               selectedContactIds={selectedContactIds}
-              onToggleSelection={toggleContactSelection}
+              onSelectionChange={updateContactSelection}
+              onClearSelection={clearContactSelection}
               onPointerDragStart={startContactDrag}
               dragEnabled
               managementView
@@ -1526,7 +1513,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
             aria-label="Breite der Kontaktliste ändern"
             aria-orientation="vertical"
             aria-valuemin={30}
-            aria-valuemax={52}
+            aria-valuemax={42}
             aria-valuenow={Math.round(contactPaneLayout.contacts)}
             tabIndex={0}
             onPointerDown={(event) => beginPaneResize("contacts", event)}
@@ -1541,121 +1528,18 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
             }}
           />
 
-          <aside className={editing ? "contact-inspector editing" : selectedGroupContact ? "contact-inspector" : "contact-inspector empty"} aria-label="Kontaktdetails">
-            {editing ? (
-              <ContactForm
-                value={editing}
-                groups={groups}
-                automaticDisplayName={automaticDisplayName}
-                onChange={setEditing}
-                onAutomaticDisplayNameChange={setAutomaticDisplayName}
-                onSubmit={submit}
-                onCancel={() => setEditing(null)}
-              />
-            ) : selectedGroupContact ? (
-              <>
-                <header className="contact-inspector-header">
-                  <span className={`contact-inspector-avatar avatar-${(selectedGroupContact.id ?? 0) % 6}`} aria-hidden="true">
-                    {contactInitials(selectedGroupContact)}
-                  </span>
-                  <div>
-                    <h2>{displayName(selectedGroupContact)}</h2>
-                    <p>{primaryContactEmail(selectedGroupContact) || selectedGroupContact.company || "Keine E-Mail-Adresse"}</p>
-                  </div>
-                  <div className="more-menu-wrap contact-inspector-more">
-                    <button
-                      className="icon-only"
-                      type="button"
-                      aria-label="Weitere Kontaktaktionen"
-                      aria-expanded={contactInspectorMenuOpen}
-                      onClick={() => setContactInspectorMenuOpen((open) => !open)}
-                    >
-                      <Ellipsis size={20} />
-                    </button>
-                    {contactInspectorMenuOpen && (
-                      <div className="more-menu" role="menu" onPointerDown={(event) => event.stopPropagation()}>
-                        {primaryContactEmail(selectedGroupContact) && (
-                          <button type="button" role="menuitem" onClick={() => { setContactInspectorMenuOpen(false); void copyEmail(primaryContactEmail(selectedGroupContact)); }}>
-                            E-Mail kopieren
-                          </button>
-                        )}
-                        <button className="danger" type="button" role="menuitem" onClick={() => { setContactInspectorMenuOpen(false); remove(selectedGroupContact); }}>
-                          <Trash2 size={17} /> Kontakt löschen
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </header>
-                <div className="contact-inspector-toolbar">
-                  {primaryContactEmail(selectedGroupContact) && (
-                    <button type="button" onClick={() => chooseEmailApp(primaryContactEmail(selectedGroupContact))}>
-                      <Mail size={17} /> Nachricht
-                    </button>
-                  )}
-                  <button className="primary" type="button" onClick={() => startEditing(selectedGroupContact)}>
-                    <Pencil size={17} /> Bearbeiten
-                  </button>
-                </div>
-                <div className="contact-inspector-body">
-                  {(selectedGroupContact.company || selectedGroupContact.shortInfo) && (
-                    <section className="contact-inspector-section">
-                      <h3><Building2 size={17} />Allgemein</h3>
-                      {selectedGroupContact.company && <div><span>Unternehmen</span><strong>{selectedGroupContact.company}</strong></div>}
-                      {selectedGroupContact.shortInfo && <div><span>Kurzinfo</span><strong>{selectedGroupContact.shortInfo}</strong></div>}
-                    </section>
-                  )}
-                  {inspectorEmails.length > 0 && (
-                    <section className="contact-inspector-section">
-                      <h3><Mail size={17} />E-Mail-Adressen</h3>
-                      {inspectorEmails.map((entry) => (
-                        <div key={`${entry.label}:${entry.value}`}>
-                          <span>{entry.label}</span>
-                          <button className="contact-inspector-link" type="button" onClick={() => chooseEmailApp(entry.value)}>{entry.value}</button>
-                        </div>
-                      ))}
-                    </section>
-                  )}
-                  {inspectorPhones.length > 0 && (
-                    <section className="contact-inspector-section">
-                      <h3><Phone size={17} />Telefonnummern</h3>
-                      {inspectorPhones.map((entry) => (
-                        <div key={`${entry.label}:${entry.value}`}><span>{entry.label}</span><strong>{entry.value}</strong></div>
-                      ))}
-                    </section>
-                  )}
-                  {inspectorAddress.length > 0 && (
-                    <section className="contact-inspector-section">
-                      <h3><MapPin size={17} />Adresse</h3>
-                      <address>{inspectorAddress.map((line) => <span key={line}>{line}</span>)}</address>
-                    </section>
-                  )}
-                  {selectedGroupContact.groups.length > 0 && (
-                    <section className="contact-inspector-section">
-                      <h3><UsersRound size={17} />Gruppen</h3>
-                      <div className="contact-inspector-tags">
-                        {selectedGroupContact.groups.map((group) => <span key={group.id ?? group.name}>{group.name}</span>)}
-                      </div>
-                    </section>
-                  )}
-                  {selectedGroupContact.notes && (
-                    <section className="contact-inspector-section">
-                      <h3><StickyNote size={17} />Notizen</h3>
-                      <p>{selectedGroupContact.notes}</p>
-                    </section>
-                  )}
-                </div>
-              </>
-            ) : (
-              <div className="contact-inspector-empty">
-                <span><UserRound size={28} /></span>
-                <h3>Kontakt auswählen</h3>
-                <p>Wählen Sie links einen Kontakt aus, um seine Angaben hier anzuzeigen und zu bearbeiten.</p>
-                <button className="primary" type="button" onClick={startNew}><Plus size={17} /> Neuer Kontakt</button>
-              </div>
-            )}
-          </aside>
+          <ContactEditorPane
+            editing={editing}
+            groups={groups}
+            automaticDisplayName={automaticDisplayName}
+            hasUnsavedChanges={hasUnsavedContactChanges}
+            onChange={setEditing}
+            onAutomaticDisplayNameChange={setAutomaticDisplayName}
+            onSubmit={submit}
+            onReset={resetContactEditor}
+            onNew={startNew}
+          />
         </section>
-      )}
 
       {groupContextMenu && (
         <div
@@ -1779,17 +1663,6 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
         onConfirm={() => void confirmDeleteRequest()}
       />
 
-      <EasyImportDialog
-        kind="contacts"
-        open={easyImportOpen}
-        onClose={() => setEasyImportOpen(false)}
-        onImported={async (result) => {
-          await refresh();
-          setMessage(result.detail);
-          setMessageType("success");
-        }}
-      />
-
       <ContactReconciliationDialog
         open={reconciliationOpen}
         onClose={() => setReconciliationOpen(false)}
@@ -1801,26 +1674,6 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
         }}
       />
 
-      {totalContactCount !== 0 && <div className="contacts-font-control" role="group" aria-label="Schriftgröße der Kontakte">
-        <button
-          type="button"
-          onClick={() => changeContactsFontSize(-1)}
-          disabled={contactsFontSizeIndex === 0}
-          aria-label="Schrift verkleinern"
-          title="Schrift verkleinern"
-        >
-          <Minus size={22} aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          onClick={() => changeContactsFontSize(1)}
-          disabled={contactsFontSizeIndex === contactsFontSizes.length - 1}
-          aria-label="Schrift vergrößern"
-          title="Schrift vergrößern"
-        >
-          <Plus size={22} aria-hidden="true" />
-        </button>
-      </div>}
     </div>
   );
 }

@@ -120,11 +120,13 @@ function eventEndDate(event: CalendarEvent): Date | null {
 }
 
 function eventTime(event: CalendarEvent): string {
+  if (event.isAllDay) return "Ganztägig";
   const date = eventDate(event);
   return date ? new Intl.DateTimeFormat("de-DE", { hour: "2-digit", minute: "2-digit" }).format(date) : "";
 }
 
 function eventTimeRange(event: CalendarEvent): string {
+  if (event.isAllDay) return "Ganztägig";
   const starts = eventDate(event);
   const ends = eventEndDate(event);
   if (!starts) return "";
@@ -149,6 +151,7 @@ function blankEvent(date = new Date()): CalendarEvent {
     title: "",
     startsAt: toLocalDateTime(starts.toISOString()),
     endsAt: toLocalDateTime(ends.toISOString()),
+    isAllDay: false,
     location: "",
     description: "",
     color: defaultCalendarColor,
@@ -258,6 +261,7 @@ function weekEventLayouts(day: Date, dayEvents: CalendarEvent[]): WeekEventLayou
   const dayStart = startOfDay(day);
   const dayEnd = addDays(dayStart, 1);
   const segments = dayEvents.flatMap((event) => {
+    if (event.isAllDay) return [];
     const starts = eventDate(event);
     const ends = eventEndDate(event);
     if (!starts || !ends || ends <= dayStart || starts >= dayEnd) return [];
@@ -297,9 +301,74 @@ function weekEventLayouts(day: Date, dayEvents: CalendarEvent[]): WeekEventLayou
   return result;
 }
 
+interface AllDayEventLayout {
+  event: CalendarEvent;
+  startIndex: number;
+  span: number;
+  lane: number;
+}
+
+function eventOverlapsDay(event: CalendarEvent, day: Date): boolean {
+  const starts = eventDate(event);
+  const ends = eventEndDate(event);
+  const dayStart = startOfDay(day);
+  const dayEnd = addDays(dayStart, 1);
+  return Boolean(starts && ends && starts < dayEnd && ends > dayStart);
+}
+
+function allDayEventLayouts(days: Date[], events: CalendarEvent[]): AllDayEventLayout[] {
+  const segments = events.flatMap((event) => {
+    if (!event.isAllDay) return [];
+    const includedDays = days.flatMap((day, index) => eventOverlapsDay(event, day) ? [index] : []);
+    if (includedDays.length === 0) return [];
+    const startIndex = includedDays[0];
+    const lastIndex = includedDays[includedDays.length - 1];
+    return [{ event, startIndex, span: lastIndex - startIndex + 1 }];
+  }).sort((left, right) => left.startIndex - right.startIndex || right.span - left.span || left.event.title.localeCompare(right.event.title, "de"));
+
+  const laneEnds: number[] = [];
+  return segments.map((segment) => {
+    let lane = laneEnds.findIndex((endIndex) => endIndex <= segment.startIndex);
+    if (lane < 0) lane = laneEnds.length;
+    laneEnds[lane] = segment.startIndex + segment.span;
+    return { ...segment, lane };
+  });
+}
+
+function AllDayEventStrip({ days, events, onOpen }: { days: Date[]; events: CalendarEvent[]; onOpen: (event: CalendarEvent) => void }) {
+  const layouts = allDayEventLayouts(days, events);
+  const visibleLayouts = layouts.filter((layout) => layout.lane < 4);
+  const hiddenEvents = layouts.length - visibleLayouts.length;
+  const rows = Math.max(1, visibleLayouts.reduce((maximum, layout) => Math.max(maximum, layout.lane + 1), 0));
+  return (
+    <div
+      className="calendar-all-day-strip"
+      style={{ "--calendar-days": days.length, "--all-day-rows": rows } as CSSProperties}
+      aria-label="Ganztägige Ereignisse"
+    >
+      <div className="calendar-all-day-label"><CalendarDays size={15} aria-hidden="true" /><span>Ganztägig</span>{hiddenEvents > 0 && <small>+{hiddenEvents}</small>}</div>
+      {days.map((day, index) => <div className="calendar-all-day-cell" style={{ gridColumn: index + 2 }} key={dateInputValue(day)} />)}
+      {visibleLayouts.map((layout) => (
+        <button
+          className="calendar-all-day-event"
+          style={{ ...calendarColorStyle(layout.event.color), gridColumn: `${layout.startIndex + 2} / span ${layout.span}`, gridRow: layout.lane + 1 } as CSSProperties}
+          type="button"
+          title={`${layout.event.title || "Ohne Titel"}${layout.event.location ? `\n${layout.event.location}` : ""}`}
+          onClick={() => onOpen(layout.event)}
+          key={`${layout.event.id}-${layout.startIndex}`}
+        >
+          <span>{layout.event.title || "Ohne Titel"}</span>
+          {layout.event.location && <small>{layout.event.location}</small>}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function normalizeEvent(event: CalendarEvent): CalendarEvent {
   return {
     ...event,
+    isAllDay: event.isAllDay ?? false,
     color: calendarColorValue(event.color),
     category: event.category ?? "",
     meeting: {
@@ -524,7 +593,7 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
   }), [sortedEvents, weekDays]);
 
   const dayLayouts = useMemo(
-    () => weekEventLayouts(cursor, sortedEvents),
+    () => weekEventLayouts(cursor, sortedEvents.filter((event) => !event.isAllDay)),
     [cursor, sortedEvents]
   );
 
@@ -543,6 +612,7 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
   }, [advancedMode, advancedSettings.hourHeight, cursor, view, weekDays]);
 
   const eventsForDay = (day: Date) => sortedEvents.filter((event) => {
+    if (event.isAllDay) return eventOverlapsDay(event, day);
     const date = eventDate(event);
     return date ? sameDay(date, day) : false;
   });
@@ -960,7 +1030,10 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
       openNewEvent(monthDays[firstIndex]);
       return;
     }
-    openNewEventRange(startOfDay(monthDays[firstIndex]), startOfDay(addDays(monthDays[lastIndex], 1)));
+    const starts = startOfDay(monthDays[firstIndex]);
+    const ends = startOfDay(addDays(monthDays[lastIndex], 1));
+    setEditingEvent({ ...blankEvent(starts), startsAt: toLocalDateTime(starts.toISOString()), endsAt: toLocalDateTime(ends.toISOString()), isAllDay: true });
+    setEditingIsNew(true);
   };
 
   const openEvent = (event: CalendarEvent) => {
@@ -1295,7 +1368,7 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
                       onPointerMove={(pointerEvent) => canDrag && updateEventPointerDrag(pointerEvent)}
                       onPointerUp={(pointerEvent) => canDrag && finishEventPointerDrag(pointerEvent)}
                       onPointerCancel={(pointerEvent) => canDrag && cancelEventPointerDrag(pointerEvent)}
-                    ><time>{eventTime(event)}</time> {event.title}</button>;
+                    >{event.isAllDay ? <span className="calendar-event-all-day-label">Ganztägig</span> : <time>{eventTime(event)}</time>} {event.title}</button>;
                   })}
                   {dayEvents.length > 3 && <small>+ {dayEvents.length - 3} weitere</small>}
                 </div>
@@ -1317,6 +1390,7 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
                 </button>
               ))}
             </div>
+            <AllDayEventStrip days={weekDays} events={sortedEvents} onOpen={openEvent} />
             <div
               className="calendar-week-timeline"
               style={{ "--calendar-days": weekDays.length, "--calendar-hour-height": `${advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight}px`, "--calendar-half-hour-height": `${(advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight) / 2}px`, height: `${(advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight) * 24}px` } as CSSProperties}
@@ -1403,6 +1477,7 @@ export function CalendarPage({ advancedMode, onAdvancedModeChange, onNavigate }:
                 <small>{new Intl.DateTimeFormat("de-DE", { month: "long", year: "numeric" }).format(cursor)}</small>
               </div>
             </div>
+            <AllDayEventStrip days={[cursor]} events={sortedEvents} onOpen={openEvent} />
             <div
               className="calendar-day-timeline"
               style={{ "--calendar-hour-height": `${advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight}px`, "--calendar-half-hour-height": `${(advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight) / 2}px`, height: `${(advancedMode ? advancedSettings.hourHeight : compactCalendarHourHeight) * 24}px` } as CSSProperties}

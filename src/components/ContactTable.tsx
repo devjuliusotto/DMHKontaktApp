@@ -1,6 +1,7 @@
 import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, ChevronsUpDown, Copy, Edit, Ellipsis, Mail, Trash2 } from "lucide-react";
-import type { PointerEvent } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent, PointerEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { Contact } from "../types/contact";
 import { displayName, primaryContactEmail } from "../utils/contact";
 import { t } from "../i18n";
@@ -13,8 +14,10 @@ interface ContactTableProps {
   onCopyEmail: (email: string) => void;
   onEmail: (email: string) => void;
   selectionMode: boolean;
+  selectionActive: boolean;
   selectedContactIds: Set<number>;
-  onToggleSelection: (contact: Contact) => void;
+  onSelectionChange: (contactIds: number[], operation: "replace" | "add" | "toggle") => void;
+  onClearSelection: () => void;
   onPointerDragStart: (contact: Contact, position: { x: number; y: number }) => void;
   dragEnabled?: boolean;
   managementView?: boolean;
@@ -24,6 +27,7 @@ interface ContactTableProps {
 
 type ContactSortKey = "name" | "email";
 type SortDirection = "asc" | "desc";
+type ContactRowMenuPosition = { left: number; top: number };
 
 const contactCollator = new Intl.Collator("de", { numeric: true, sensitivity: "base" });
 const contactsPerPage = 100;
@@ -43,8 +47,10 @@ export function ContactTable({
   onCopyEmail,
   onEmail,
   selectionMode,
+  selectionActive,
   selectedContactIds,
-  onToggleSelection,
+  onSelectionChange,
+  onClearSelection,
   onPointerDragStart,
   dragEnabled = true,
   managementView = false,
@@ -52,8 +58,10 @@ export function ContactTable({
   onSelect
 }: ContactTableProps) {
   const tableWrapRef = useRef<HTMLDivElement>(null);
+  const selectionAnchorIdRef = useRef<number | undefined>();
   const [selectedContactId, setSelectedContactId] = useState<number | undefined>();
   const [openActionsContactId, setOpenActionsContactId] = useState<number | undefined>();
+  const [actionMenuPosition, setActionMenuPosition] = useState<ContactRowMenuPosition | null>(null);
   const [sort, setSort] = useState<{ key: ContactSortKey; direction: SortDirection }>({
     key: "name",
     direction: "asc"
@@ -88,6 +96,7 @@ export function ContactTable({
 
   useEffect(() => {
     setPage(1);
+    selectionAnchorIdRef.current = undefined;
   }, [paginationKey, sort]);
 
   useEffect(() => {
@@ -100,17 +109,51 @@ export function ContactTable({
 
   useEffect(() => {
     if (openActionsContactId === undefined) return;
-    const closeMenu = () => setOpenActionsContactId(undefined);
+    const closeMenu = () => {
+      setOpenActionsContactId(undefined);
+      setActionMenuPosition(null);
+    };
     const closeMenuWithKeyboard = (event: KeyboardEvent) => {
       if (event.key === "Escape") closeMenu();
     };
+    const contactList = tableWrapRef.current;
     window.addEventListener("pointerdown", closeMenu);
     window.addEventListener("keydown", closeMenuWithKeyboard);
+    window.addEventListener("resize", closeMenu);
+    contactList?.addEventListener("scroll", closeMenu, { passive: true });
     return () => {
       window.removeEventListener("pointerdown", closeMenu);
       window.removeEventListener("keydown", closeMenuWithKeyboard);
+      window.removeEventListener("resize", closeMenu);
+      contactList?.removeEventListener("scroll", closeMenu);
     };
   }, [openActionsContactId]);
+
+  const toggleContactActions = (contactId: number, button: HTMLButtonElement, itemCount: number) => {
+    if (openActionsContactId === contactId) {
+      setOpenActionsContactId(undefined);
+      setActionMenuPosition(null);
+      return;
+    }
+
+    const buttonRect = button.getBoundingClientRect();
+    const viewportMargin = 8;
+    const menuGap = 4;
+    const menuWidth = 190;
+    const estimatedMenuHeight = itemCount * 40 + 12;
+    const maxLeft = Math.max(viewportMargin, window.innerWidth - menuWidth - viewportMargin);
+    const left = Math.min(
+      maxLeft,
+      Math.max(viewportMargin, buttonRect.right - menuWidth)
+    );
+    const belowTop = buttonRect.bottom + menuGap;
+    const top = belowTop + estimatedMenuHeight <= window.innerHeight - viewportMargin
+      ? belowTop
+      : Math.max(viewportMargin, buttonRect.top - estimatedMenuHeight - menuGap);
+
+    setActionMenuPosition({ left, top });
+    setOpenActionsContactId(contactId);
+  };
 
   const toggleSort = (key: ContactSortKey) => {
     setSort((current) => ({
@@ -130,19 +173,42 @@ export function ContactTable({
     if (!dragEnabled || event.button !== 0 || !contact.id) return;
     const target = event.target as HTMLElement;
     if (target.closest("button")) return;
+    if (event.ctrlKey || event.metaKey || event.shiftKey) return;
     if (selectionMode && !selectedContactIds.has(contact.id)) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
-    setSelectedContactId(contact.id);
-    onSelect?.(contact);
     onPointerDragStart(contact, { x: event.clientX, y: event.clientY });
   };
 
-  const selectRow = (contact: Contact) => {
-    if (selectionMode) {
-      onToggleSelection(contact);
+  const selectRow = (
+    contact: Contact,
+    modifiers: Pick<MouseEvent<HTMLElement> | ReactKeyboardEvent<HTMLElement>, "ctrlKey" | "metaKey" | "shiftKey">
+  ) => {
+    if (!contact.id) return;
+    const additiveModifier = modifiers.ctrlKey || modifiers.metaKey;
+
+    if (modifiers.shiftKey) {
+      const anchorId = selectionAnchorIdRef.current ?? currentSelectedContactId ?? contact.id;
+      const anchorIndex = sortedContacts.findIndex((entry) => entry.id === anchorId);
+      const contactIndex = sortedContacts.findIndex((entry) => entry.id === contact.id);
+      const rangeIds = anchorIndex >= 0 && contactIndex >= 0
+        ? sortedContacts
+          .slice(Math.min(anchorIndex, contactIndex), Math.max(anchorIndex, contactIndex) + 1)
+          .flatMap((entry) => entry.id ? [entry.id] : [])
+        : [contact.id];
+      setSelectedContactId(contact.id);
+      onSelectionChange(rangeIds, additiveModifier ? "add" : "replace");
       return;
     }
+
+    selectionAnchorIdRef.current = contact.id;
+    if (additiveModifier || selectionMode) {
+      setSelectedContactId(contact.id);
+      onSelectionChange([contact.id], "toggle");
+      return;
+    }
+
+    onClearSelection();
     setSelectedContactId(contact.id);
     onSelect?.(contact);
   };
@@ -170,28 +236,24 @@ export function ContactTable({
             const actionsOpen = openActionsContactId === contact.id;
             return (
               <div
-                className={["contact-compact-row", isActive ? "selected" : "", isMultiSelected ? "multi-selected" : "", selectionMode ? "selection-mode" : ""].filter(Boolean).join(" ")}
+                className={["contact-compact-row", isActive ? "selected" : "", isMultiSelected ? "multi-selected" : "", selectionActive ? "selection-mode" : ""].filter(Boolean).join(" ")}
                 key={contact.id}
                 role="option"
                 aria-selected={isActive || isMultiSelected}
                 tabIndex={0}
-                onClick={() => selectRow(contact)}
-                onDoubleClick={() => {
-                  if (!selectionMode) onEdit(contact);
-                }}
+                onClick={(event) => selectRow(contact, event)}
                 onFocus={() => {
                   setSelectedContactId(contact.id);
-                  onSelect?.(contact);
                 }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" || event.key === " ") {
                     event.preventDefault();
-                    selectRow(contact);
+                    selectRow(contact, event);
                   }
                 }}
                 onPointerDown={(event) => startPointerDrag(event, contact)}
               >
-                {selectionMode ? (
+                {selectionActive ? (
                   <span className={isMultiSelected ? "selection-dot checked" : "selection-dot"} aria-hidden="true">
                     {isMultiSelected ? "✓" : ""}
                   </span>
@@ -204,27 +266,35 @@ export function ContactTable({
                   <strong title={displayName(contact)}>{displayName(contact)}</strong>
                   <small title={preferredEmail || contact.company}>{preferredEmail || contact.company || "Keine E-Mail-Adresse"}</small>
                 </span>
-                {!selectionMode && (
+                {!selectionActive && (
                   <span className="contact-row-actions">
                     <button
                       className="contact-row-menu-button"
                       type="button"
                       aria-label={`Aktionen für ${displayName(contact)}`}
                       aria-expanded={actionsOpen}
+                      aria-haspopup="menu"
+                      onPointerDown={(event) => event.stopPropagation()}
                       onClick={(event) => {
                         event.stopPropagation();
-                        setOpenActionsContactId((current) => current === contact.id ? undefined : contact.id);
+                        if (contact.id !== undefined) toggleContactActions(contact.id, event.currentTarget, preferredEmail ? 3 : 1);
                       }}
                     >
                       <Ellipsis size={18} />
                     </button>
-                    {actionsOpen && (
-                      <span className="contact-row-menu" role="menu" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
-                        <button type="button" role="menuitem" onClick={() => { setOpenActionsContactId(undefined); onEdit(contact); }}><Edit size={16} /> Bearbeiten</button>
-                        {preferredEmail && <button type="button" role="menuitem" onClick={() => { setOpenActionsContactId(undefined); onEmail(preferredEmail); }}><Mail size={16} /> Nachricht</button>}
-                        {preferredEmail && <button type="button" role="menuitem" onClick={() => { setOpenActionsContactId(undefined); onCopyEmail(preferredEmail); }}><Copy size={16} /> E-Mail kopieren</button>}
-                        <button className="danger" type="button" role="menuitem" onClick={() => { setOpenActionsContactId(undefined); onDelete(contact); }}><Trash2 size={16} /> Löschen</button>
-                      </span>
+                    {actionsOpen && actionMenuPosition && createPortal(
+                      <span
+                        className="contact-row-menu"
+                        role="menu"
+                        style={{ left: actionMenuPosition.left, top: actionMenuPosition.top }}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        {preferredEmail && <button type="button" role="menuitem" onClick={() => { setOpenActionsContactId(undefined); setActionMenuPosition(null); onEmail(preferredEmail); }}><Mail size={16} /> Nachricht</button>}
+                        {preferredEmail && <button type="button" role="menuitem" onClick={() => { setOpenActionsContactId(undefined); setActionMenuPosition(null); onCopyEmail(preferredEmail); }}><Copy size={16} /> E-Mail kopieren</button>}
+                        <button className="danger" type="button" role="menuitem" onClick={() => { setOpenActionsContactId(undefined); setActionMenuPosition(null); onDelete(contact); }}><Trash2 size={16} /> Löschen</button>
+                      </span>,
+                      document.body
                     )}
                   </span>
                 )}
@@ -285,22 +355,21 @@ export function ContactTable({
                   className={[
                     currentSelectedContactId === contact.id ? "selected" : "",
                     isMultiSelected ? "multi-selected" : "",
-                    selectionMode ? "selection-mode" : ""
+                    selectionActive ? "selection-mode" : ""
                   ].filter(Boolean).join(" ")}
                   tabIndex={0}
-                  onClick={() => selectRow(contact)}
+                  onClick={(event) => selectRow(contact, event)}
                   onDoubleClick={() => {
-                    if (!selectionMode) onEdit(contact);
+                    if (!selectionActive) onEdit(contact);
                   }}
                   onFocus={() => {
                     setSelectedContactId(contact.id);
-                    onSelect?.(contact);
                   }}
                   onPointerDown={(event) => startPointerDrag(event, contact)}
                 >
                   <td className="contact-primary" title={displayName(contact)}>
                     <div className="contact-name-content">
-                      {selectionMode && (
+                      {selectionActive && (
                         <span className={isMultiSelected ? "selection-dot checked" : "selection-dot"} aria-hidden="true">
                           {isMultiSelected ? "✓" : ""}
                         </span>
@@ -328,15 +397,15 @@ export function ContactTable({
                   </td>
                   {!managementView && <td>
                     <div className="inline-actions">
-                      <button title={t.editContact} type="button" onClick={() => onEdit(contact)} disabled={selectionMode}>
+                      <button title={t.editContact} type="button" onClick={() => onEdit(contact)} disabled={selectionActive}>
                         <Edit size={16} />
                       </button>
                       {preferredEmail && (
-                        <button title="E-Mail-Anwendung auswählen" type="button" onClick={() => onEmail(preferredEmail)} disabled={selectionMode}>
+                        <button title="E-Mail-Anwendung auswählen" type="button" onClick={() => onEmail(preferredEmail)} disabled={selectionActive}>
                           <Mail size={16} />
                         </button>
                       )}
-                      <button title={t.deleteContact} type="button" onClick={() => onDelete(contact)} disabled={selectionMode}>
+                      <button title={t.deleteContact} type="button" onClick={() => onDelete(contact)} disabled={selectionActive}>
                         <Trash2 size={16} />
                       </button>
                     </div>

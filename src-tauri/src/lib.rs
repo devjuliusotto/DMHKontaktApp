@@ -331,6 +331,8 @@ pub struct CalendarEvent {
     pub title: String,
     pub starts_at: String,
     pub ends_at: String,
+    #[serde(default)]
+    pub is_all_day: bool,
     pub location: String,
     pub description: String,
     #[serde(default = "default_calendar_color")]
@@ -533,6 +535,8 @@ struct OutlookAppointmentRecord {
     starts_at: String,
     #[serde(default)]
     ends_at: String,
+    #[serde(default)]
+    is_all_day: bool,
     #[serde(default)]
     location: String,
     #[serde(default)]
@@ -8724,6 +8728,8 @@ function Add-Calendar-Record($item, $folder, $storeId, $storeName, $allowRecurre
     try { $globalAppointmentId = [string]$item.GlobalAppointmentID } catch {}
     try { $start = ([datetime]$item.Start).ToString('yyyy-MM-ddTHH:mm:ss') } catch {}
     try { $end = ([datetime]$item.End).ToString('yyyy-MM-ddTHH:mm:ss') } catch {}
+    $isAllDay = $false
+    try { $isAllDay = [bool]$item.AllDayEvent } catch {}
     try { $categories = [string]$item.Categories } catch {}
     $recurrenceData = if ($allowRecurrence) { Get-Recurrence-Data $item } else { $null }
     [string[]]$eventExcludedDates = @()
@@ -8737,6 +8743,7 @@ function Add-Calendar-Record($item, $folder, $storeId, $storeName, $allowRecurre
       title = [string]$item.Subject
       startsAt = $start
       endsAt = $end
+      isAllDay = $isAllDay
       location = [string]$item.Location
       description = [string]$item.Body
       category = $categories
@@ -9055,6 +9062,7 @@ fn read_outlook_classic_appointments_for_import(
             } else {
                 record.ends_at.trim().to_string()
             },
+            is_all_day: record.is_all_day,
             location: record.location,
             description: record.description,
             color: record.color,
@@ -9219,11 +9227,14 @@ function Read-Folders($folder) {{
         }}
         if ($messageClass -like 'IPM.Appointment*') {{
           $categories = [string]$item.Categories
+          $isAllDay = $false
+          try {{ $isAllDay = [bool]$item.AllDayEvent }} catch {{}}
           $events.Add([pscustomobject]@{{
             id = [string]$item.GlobalAppointmentID
             title = [string]$item.Subject
             startsAt = if ($item.Start) {{ ([datetime]$item.Start).ToString('o') }} else {{ '' }}
             endsAt = if ($item.End) {{ ([datetime]$item.End).ToString('o') }} else {{ '' }}
+            isAllDay = $isAllDay
             location = [string]$item.Location
             description = [string]$item.Body
             color = Get-Store-Calendar-Color $categories
@@ -9869,6 +9880,7 @@ mod tests {
                 title: format!("Termin {index}"),
                 starts_at: format!("2026-09-10T{:02}:{:02}:00", (index / 60) % 24, index % 60),
                 ends_at: "2026-09-10T10:30:00".to_string(),
+                is_all_day: false,
                 location: String::new(),
                 description: String::new(),
                 color: "#6b7280".to_string(),
@@ -10485,6 +10497,7 @@ mod tests {
                 title: title.to_string(),
                 starts_at: starts_at.to_string(),
                 ends_at: ends_at.to_string(),
+                is_all_day: false,
                 location: location.to_string(),
                 description: String::new(),
                 category: String::new(),
@@ -10599,6 +10612,7 @@ mod tests {
             title: "Besprechung".to_string(),
             starts_at: "2026-08-18T10:00:00".to_string(),
             ends_at: "2026-08-18T11:00:00".to_string(),
+            is_all_day: false,
             location: String::new(),
             description: "Vorherige Beschreibung".to_string(),
             color: "blue".to_string(),
@@ -10706,6 +10720,7 @@ mod tests {
             title: title.to_string(),
             starts_at: "2026-08-18T10:00:00".to_string(),
             ends_at: "2026-08-18T11:00:00".to_string(),
+            is_all_day: false,
             location: String::new(),
             description: String::new(),
             color: "blue".to_string(),
@@ -10868,6 +10883,7 @@ mod tests {
             title: id.to_string(),
             starts_at: "2026-01-01T10:00:00Z".to_string(),
             ends_at: "2026-01-01T11:00:00Z".to_string(),
+            is_all_day: false,
             location: String::new(),
             description: String::new(),
             color: "blue".to_string(),

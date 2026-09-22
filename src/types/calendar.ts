@@ -29,6 +29,7 @@ export interface CalendarEvent {
   title: string;
   startsAt: string;
   endsAt: string;
+  isAllDay?: boolean;
   location: string;
   description: string;
   color: string;

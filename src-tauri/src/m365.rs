@@ -1716,6 +1716,10 @@ fn remote_event_to_local(
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
+        is_all_day: value
+            .get("isAllDay")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         location: value
             .get("location")
             .and_then(|location| location.get("displayName"))
@@ -1819,6 +1823,7 @@ fn event_equivalent(
             == normalized_calendar_start(&remote_local.starts_at)
         && normalized_calendar_start(&local.ends_at)
             == normalized_calendar_start(&remote_local.ends_at)
+        && local.is_all_day == remote_local.is_all_day
         && local.location.trim() == remote_local.location.trim()
         && local.description.trim() == remote_local.description.trim()
         && local.category.trim() == remote_local.category.trim()
@@ -1847,6 +1852,7 @@ fn merge_event(
     if merged.ends_at.trim().is_empty() {
         merged.ends_at = remote_local.ends_at;
     }
+    merged.is_all_day = remote_local.is_all_day;
     if merged.location.trim().is_empty() {
         merged.location = remote_local.location;
     }
@@ -1896,6 +1902,7 @@ fn graph_event_payload(event: &crate::CalendarEvent) -> Value {
         "subject": event.title,
         "start": {"dateTime": event.starts_at, "timeZone": "W. Europe Standard Time"},
         "end": {"dateTime": event.ends_at, "timeZone": "W. Europe Standard Time"},
+        "isAllDay": event.is_all_day,
         "location": {"displayName": event.location},
         "body": {"contentType": "text", "content": html_to_plain_text(&event.description)},
         "categories": categories,
@@ -2679,7 +2686,7 @@ async fn build_m365_sync_plan(
             .filter(|source| calendar_source_is_enabled(request, &selected_calendars, source))
         {
             let direction = source_direction(request, &source.id);
-            let url = format!("{}/events?$select=id,subject,start,end,lastModifiedDateTime,location,body,categories,attendees,showAs,isReminderOn,reminderMinutesBeforeStart,sensitivity,isOnlineMeeting,onlineMeeting,onlineMeetingUrl,recurrence&$top=100", source.resource_path);
+            let url = format!("{}/events?$select=id,subject,start,end,isAllDay,lastModifiedDateTime,location,body,categories,attendees,showAs,isReminderOn,reminderMinutesBeforeStart,sensitivity,isOnlineMeeting,onlineMeeting,onlineMeetingUrl,recurrence&$top=100", source.resource_path);
             let mut values = graph_collection(access_token, &url).await?;
             for value in &mut values {
                 apply_m365_category_color(value, &master_category_colors);
@@ -3364,7 +3371,7 @@ async fn find_matching_exchange_event_for_outbox(
     let start = encode_graph_path_segment(event.starts_at.trim());
     let end = encode_graph_path_segment(event.ends_at.trim());
     let url = format!(
-        "{}/calendarView?startDateTime={start}&endDateTime={end}&$select=id,subject,start,end,lastModifiedDateTime,location,body,categories,attendees,showAs,isReminderOn,reminderMinutesBeforeStart,sensitivity,isOnlineMeeting,onlineMeeting,onlineMeetingUrl&$top=50",
+        "{}/calendarView?startDateTime={start}&endDateTime={end}&$select=id,subject,start,end,isAllDay,lastModifiedDateTime,location,body,categories,attendees,showAs,isReminderOn,reminderMinutesBeforeStart,sensitivity,isOnlineMeeting,onlineMeeting,onlineMeetingUrl&$top=50",
         source.resource_path
     );
     let values = graph_collection(access_token, &url).await?;
@@ -4661,6 +4668,7 @@ mod tests {
             title: "Besprechung".to_string(),
             starts_at: "2026-09-01T09:00:00".to_string(),
             ends_at: "2026-09-01T10:00:00".to_string(),
+            is_all_day: false,
             location: String::new(),
             description: String::new(),
             color: "blue".to_string(),
@@ -4911,6 +4919,31 @@ mod tests {
         assert_eq!(payload["reminderMinutesBeforeStart"], 30);
         assert_eq!(payload["sensitivity"], "private");
         assert_eq!(payload["onlineMeetingProvider"], "teamsForBusiness");
+    }
+
+    #[test]
+    fn preserves_all_day_events_in_calendar_sync() {
+        let source = calendar_source("calendar-a");
+        let imported = remote_event_to_local(
+            &json!({
+                "id": "all-day-event",
+                "subject": "Fortbildung",
+                "start": { "dateTime": "2026-09-22T00:00:00" },
+                "end": { "dateTime": "2026-09-23T00:00:00" },
+                "isAllDay": true
+            }),
+            &source,
+            None,
+        );
+
+        assert!(imported.is_all_day);
+        assert_eq!(imported.starts_at, "2026-09-22T00:00:00");
+        assert_eq!(imported.ends_at, "2026-09-23T00:00:00");
+
+        let payload = graph_event_payload(&imported);
+        assert_eq!(payload["isAllDay"], true);
+        assert_eq!(payload["start"]["dateTime"], "2026-09-22T00:00:00");
+        assert_eq!(payload["end"]["dateTime"], "2026-09-23T00:00:00");
     }
 
     #[test]

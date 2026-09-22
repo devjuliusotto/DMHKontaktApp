@@ -59,6 +59,7 @@ pub struct ThunderbirdCalendarEvent {
     pub title: String,
     pub starts_at: String,
     pub ends_at: String,
+    pub is_all_day: bool,
     pub location: String,
     pub description: String,
     pub color: String,
@@ -1407,6 +1408,7 @@ fn event_from_thunderbird_row(
         title,
         starts_at,
         ends_at,
+        is_all_day: all_day,
         location: combined_property(properties, row, "LOCATION"),
         description: combined_property(properties, row, "DESCRIPTION"),
         color: calendar_color_name(

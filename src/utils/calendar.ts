@@ -171,25 +171,36 @@ function excludedDateTime(dateValue: string, startsAt: string): string {
   return toIcsDate(date.toISOString());
 }
 
+function toIcsDateOnly(value: string): string {
+  return value.slice(0, 10).replace(/-/g, "");
+}
+
+function nextCalendarDay(value: string): string {
+  const date = parseCalendarDate(value);
+  if (!date) return value;
+  date.setDate(date.getDate() + 1);
+  return `${localDateKey(date)}T00:00:00`;
+}
+
 export function exportCalendarIcs(events: CalendarEvent[]): string {
   const entries = events.map((event) => {
     const recurrence = recurrenceToRrule(event.recurrence);
     const exclusions = (event.excludedDates ?? [])
-      .map((date) => excludedDateTime(date, event.startsAt))
+      .map((date) => event.isAllDay ? toIcsDateOnly(date) : excludedDateTime(date, event.startsAt))
       .filter(Boolean);
     return [
       "BEGIN:VEVENT",
       `UID:${escapeIcs(event.recurrenceMasterId ?? event.id)}`,
       `DTSTAMP:${toIcsDate(new Date().toISOString())}`,
-      `DTSTART:${toIcsDate(event.startsAt)}`,
-      `DTEND:${toIcsDate(event.endsAt || event.startsAt)}`,
+      event.isAllDay ? `DTSTART;VALUE=DATE:${toIcsDateOnly(event.startsAt)}` : `DTSTART:${toIcsDate(event.startsAt)}`,
+      event.isAllDay ? `DTEND;VALUE=DATE:${toIcsDateOnly(event.endsAt || nextCalendarDay(event.startsAt))}` : `DTEND:${toIcsDate(event.endsAt || event.startsAt)}`,
       `SUMMARY:${escapeIcs(event.title)}`,
       `LOCATION:${escapeIcs(event.location)}`,
       event.category ? `CATEGORIES:${escapeIcs(event.category)}` : "",
       `COLOR:${calendarColorOptions.find((color) => color.value === calendarColorValue(event.color))?.border ?? "#2563eb"}`,
       recurrence,
-      exclusions.length ? `EXDATE:${exclusions.join(",")}` : "",
-      event.recurrenceId ? `RECURRENCE-ID:${toIcsDate(event.recurrenceId)}` : "",
+      exclusions.length ? `${event.isAllDay ? "EXDATE;VALUE=DATE" : "EXDATE"}:${exclusions.join(",")}` : "",
+      event.recurrenceId ? (event.isAllDay ? `RECURRENCE-ID;VALUE=DATE:${toIcsDateOnly(event.recurrenceId)}` : `RECURRENCE-ID:${toIcsDate(event.recurrenceId)}`) : "",
       `DESCRIPTION:${escapeIcs(event.description)}`,
       "END:VEVENT"
     ].filter(Boolean).join("\r\n");
@@ -282,6 +293,13 @@ export function parseCalendarFile(bytes: Uint8Array, source: string): CalendarEv
 
   const parsed: ParsedCalendarEvent[] = blocks.map((block, index) => {
     const lines = block.split(/\r?\n/);
+    const startLine = propertyLines(lines, "DTSTART")[0] ?? "";
+    const endLine = propertyLines(lines, "DTEND")[0] ?? "";
+    const rawStart = propertyValue(startLine);
+    const rawEnd = propertyValue(endLine);
+    const isAllDay = /(?:^|;)VALUE=DATE(?:;|:)/i.test(startLine) || /^\d{8}$/.test(rawStart);
+    const parsedStart = parseIcsDate(rawStart);
+    const parsedEnd = parseIcsDate(rawEnd) || (isAllDay ? nextCalendarDay(parsedStart) : parsedStart);
     const uid = value(lines, "UID") || `${source}-${index}`;
     const category = value(lines, "CATEGORIES") || globalCategory;
     const explicitColor = value(lines, "COLOR") || value(lines, "X-APPLE-EVENT-COLOR") || value(lines, "X-OUTLOOK-COLOR") || globalColor;
@@ -295,8 +313,9 @@ export function parseCalendarFile(bytes: Uint8Array, source: string): CalendarEv
       uid,
       id: recurrenceId ? `${uid}::${recurrenceId}` : uid,
       title: value(lines, "SUMMARY") || "Ohne Titel",
-      startsAt: parseIcsDate(value(lines, "DTSTART")),
-      endsAt: parseIcsDate(value(lines, "DTEND")),
+      startsAt: parsedStart,
+      endsAt: parsedEnd,
+      isAllDay,
       location: value(lines, "LOCATION"),
       description: value(lines, "DESCRIPTION"),
       color: colorFromSource(explicitColor, category),

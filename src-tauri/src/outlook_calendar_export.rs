@@ -295,6 +295,7 @@ foreach ($local in $localEvents) {
     $item.Subject = if ([string]::IsNullOrWhiteSpace($title)) { 'Ohne Titel' } else { $title }
     $item.Start = $start
     $item.End = $end
+    $item.AllDayEvent = [bool](Get-Scalar $local.isAllDay)
     $item.Location = [string](Get-Scalar $local.location)
     $item.Body = [string](Get-Scalar $local.description)
     Ensure-Outlook-Category $local.category $local.color
@@ -344,6 +345,7 @@ mod tests {
             title: id.to_string(),
             starts_at: starts_at.to_string(),
             ends_at: "2026-09-01T11:00:00".to_string(),
+            is_all_day: false,
             location: String::new(),
             description: String::new(),
             color: "blue".to_string(),

@@ -17,8 +17,8 @@
   },
   "build": {
     "beforeBuildCommand": "npm run build:outlook-helper && npm run build",
-    "beforeDevCommand": "npm run prepare:outlook-helper && npm run dev",
-    "devUrl": "http://127.0.0.1:1420",
+    "beforeDevCommand": "npm run prepare:outlook-helper && npm run dev -- --port 4000",
+    "devUrl": "http://localhost:4000",
     "frontendDist": "../dist"
   },
   "bundle": {
