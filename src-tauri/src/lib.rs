@@ -3936,13 +3936,9 @@ fn delete_contact_internal(
     queue_for_exchange: bool,
 ) -> Result<(), String> {
     let conn = open_db(&app)?;
-    // User-initiated deletion gets an immediate recovery point. Exchange
-    // reconciliation can delete many contacts in one pass and is already
-    // covered by the startup/periodic backup; snapshotting the whole database
-    // once per remote contact would make large synchronizations unusable.
-    if queue_for_exchange {
-        checkpoint_before_destructive_change(&app, &conn)?;
-    }
+    // This is a reversible soft deletion: the full row remains in SQLite and
+    // can be restored from the trash. Avoid creating and compressing a complete
+    // recovery archive here; periodic safety backups also include deleted rows.
     let transaction = conn
         .unchecked_transaction()
         .map_err(|err| err.to_string())?;
@@ -5424,7 +5420,8 @@ fn move_contact_to_group(app: AppHandle, contact_id: i64, group_id: i64) -> Resu
         return Err("Gruppe wurde nicht gefunden oder ist gelöscht.".to_string());
     }
 
-    checkpoint_before_destructive_change(&app, &conn)?;
+    // Moving a contact only changes its group membership and is immediately
+    // reversible in the UI. Avoid a full recovery archive for every drag.
     let tx = conn.transaction().map_err(|err| err.to_string())?;
     tx.execute(
         "DELETE FROM contact_groups WHERE contact_id = ?",
@@ -5454,7 +5451,8 @@ fn clear_contact_groups(app: AppHandle, contact_id: i64) -> Result<(), String> {
         return Err("Kontakt wurde nicht gefunden oder ist gelöscht.".to_string());
     }
 
-    checkpoint_before_destructive_change(&app, &conn)?;
+    // Clearing group membership is a reversible metadata change; periodic
+    // safety backups are sufficient and keep drag-and-drop responsive.
     let transaction = conn
         .unchecked_transaction()
         .map_err(|err| err.to_string())?;

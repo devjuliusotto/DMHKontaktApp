@@ -40,6 +40,7 @@ import {
 } from "./utils/automaticCalendarSync";
 import { enableCompleteAutomaticMicrosoft365Sync } from "./utils/microsoft365SyncConfig";
 import { dataSectionVisibilityChangedEventName, readHiddenDataSections, type DataSection } from "./utils/dataSectionVisibility";
+import { readActivityCenterEnabled, saveActivityCenterEnabled } from "./utils/settings";
 
 const DataTransferPage = lazy(() =>
   import("./pages/DataTransferPage").then((module) => ({ default: module.DataTransferPage }))
@@ -68,6 +69,7 @@ export default function App() {
   const [hiddenDataSections, setHiddenDataSections] = useState<DataSection[]>(readHiddenDataSections);
   const [page, setPage] = useState<Page>("welcome");
   const [advancedCalendar, setAdvancedCalendar] = useState(readAdvancedCalendarPreference);
+  const [activityCenterEnabled, setActivityCenterEnabled] = useState(readActivityCenterEnabled);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [featureAvailability, setFeatureAvailability] = useState(readFeatureAvailability);
   const [vaultStatus, setVaultStatus] = useState<VaultStatus | null>(null);
@@ -86,6 +88,11 @@ export default function App() {
   const changeAdvancedCalendar = (enabled: boolean) => {
     localStorage.setItem(advancedCalendarStorageKey, String(enabled));
     setAdvancedCalendar(enabled);
+  };
+
+  const changeActivityCenter = (enabled: boolean) => {
+    saveActivityCenterEnabled(enabled);
+    setActivityCenterEnabled(enabled);
   };
 
   useEffect(() => {
@@ -367,7 +374,14 @@ export default function App() {
           {page === "m365" && <Microsoft365Page />}
           {page === "recovery" && <RecoveryPage />}
           {page === "trash" && <TrashPage />}
-          {page === "settings" && <SettingsPage section={settingsSection} onNavigate={navigate} />}
+          {page === "settings" && (
+            <SettingsPage
+              activityCenterEnabled={activityCenterEnabled}
+              onActivityCenterEnabledChange={changeActivityCenter}
+              section={settingsSection}
+              onNavigate={navigate}
+            />
+          )}
           {page === "appearance" && <AppearancePage />}
           {(page === "simple-import" || page === "import" || page === "contact-import" || page === "calendar-import" || page === "export") && (
             <Suspense fallback={<div className="page-loading"><LoaderCircle className="spin" size={28} /> Datenbereich wird geöffnet …</div>}>
@@ -382,7 +396,7 @@ export default function App() {
           {page === "synchronizations" && <SynchronizationsPage onNavigate={navigate} />}
         </main>
         <UpdateNotifier />
-        <ActivityCenter />
+        {activityCenterEnabled ? <ActivityCenter /> : null}
       </div>
       {pendingEdvNavigation && <EdvAccessDialog onCancel={() => setPendingEdvNavigation(null)} onUnlocked={unlockEdvTools} />}
     </div>

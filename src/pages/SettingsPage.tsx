@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { AlertCircle, AlertTriangle, CalendarDays, CheckCircle2, ChevronDown, Cloud, ContactRound, Database, Download, Eye, EyeOff, HeartPulse, Mail, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { AlertCircle, AlertTriangle, Bell, CalendarDays, CheckCircle2, ChevronDown, Cloud, ContactRound, Database, Download, Eye, EyeOff, HeartPulse, Mail, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { PrinterSettings } from "../components/PrinterSettings";
 import { StatusMessage } from "../components/StatusMessage";
 import { updateAvailableEvent } from "../components/UpdateNotifier";
@@ -23,6 +23,8 @@ import type { MailAccount, OutlookAccountCandidate } from "../types/mail";
 import { deletionConfirmationSettingKey } from "../utils/settings";
 
 interface SettingsPageProps {
+  activityCenterEnabled: boolean;
+  onActivityCenterEnabledChange: (enabled: boolean) => void;
   section?: SettingsSection;
   onNavigate?: (page: Page, section?: SettingsSection) => void;
 }
@@ -52,11 +54,17 @@ const settingsSearchItems: SettingsSearchItem[] = [
   { id: "appearance", label: "Erscheinungsbild öffnen", description: "Erscheinungsbild → Darstellung", keywords: "erscheinungsbild thema farbe dunkel hell akzent", page: "appearance", section: "appearance" },
   { id: "advanced", label: "Optionale Bereiche", description: "Erweitert → optionale Bereiche", keywords: "erweitert optional 2fa passwörter dokumente", page: "feature-development", section: "advanced" },
   { id: "update", label: "App-Aktualisierung", description: "Allgemein → Nach Updates suchen", keywords: "update aktualisierung neue version github", page: "settings", section: "general" },
+  { id: "activities", label: "Aktivitäten", description: "Allgemein → Bedienung", keywords: "aktivitäten verlauf protokoll benachrichtigungen einschalten ausschalten", page: "settings", section: "general", targetId: "settings-activity-center" },
   { id: "system-check", label: "Systemprüfung", description: "Allgemein → Migration prüfen", keywords: "prüfung diagnose migration kontakte kalender backup exchange", page: "settings", section: "general", targetId: "settings-system-check" },
   { id: "admin-tools", label: "Admin-Werkzeuge", description: "Erweitert → Wartung und Wiederherstellung", keywords: "admin zurücksetzen wiederherstellen wartung app löschen", page: "feature-development", section: "advanced", adminOnly: true }
 ];
 
-export function SettingsPage({ section = "general", onNavigate = () => undefined }: SettingsPageProps) {
+export function SettingsPage({
+  activityCenterEnabled,
+  onActivityCenterEnabledChange,
+  section = "general",
+  onNavigate = () => undefined
+}: SettingsPageProps) {
   const administrativeToolsVisible = true;
   const [accounts, setAccounts] = useState<MailAccount[]>([]);
   const [candidates, setCandidates] = useState<OutlookAccountCandidate[]>([]);
@@ -437,6 +445,26 @@ export function SettingsPage({ section = "general", onNavigate = () => undefined
                   onChange={(event) => void updateDeletionConfirmation(event.target.checked)}
                 />
                 <span>{confirmDeletions ? "Ein" : "Aus"}</span>
+              </label>
+            </article>
+            <article className="settings-overview-card settings-preference-card" id="settings-activity-center">
+              <span className="settings-overview-icon"><Bell size={27} aria-hidden="true" /></span>
+              <div>
+                <h3>Aktivitäten</h3>
+                <p>Zeigt wichtige Ergebnisse von Importen, Exporten, Löschungen und Synchronisierungen in einem Verlauf an.</p>
+              </div>
+              <label className="settings-toggle" title="Aktivitätsverlauf ein- oder ausschalten">
+                <input
+                  type="checkbox"
+                  checked={activityCenterEnabled}
+                  onChange={(event) => {
+                    const enabled = event.target.checked;
+                    onActivityCenterEnabledChange(enabled);
+                    setMessageType("success");
+                    setMessage(enabled ? "Aktivitäten wurden aktiviert." : "Aktivitäten wurden deaktiviert.");
+                  }}
+                />
+                <span>{activityCenterEnabled ? "Ein" : "Aus"}</span>
               </label>
             </article>
           </section>

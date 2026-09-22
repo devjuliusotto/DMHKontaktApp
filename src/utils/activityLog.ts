@@ -1,3 +1,5 @@
+import { readActivityCenterEnabled } from "./settings";
+
 export type ActivityTone = "success" | "info" | "error";
 
 export interface ActivityEntry {
@@ -64,6 +66,7 @@ function persistActivities(entries: ActivityEntry[]): void {
 }
 
 export function recordActivity(activity: NewActivity): void {
+  if (!readActivityCenterEnabled()) return;
   const summary = boundedText(activity.summary, 1_000);
   if (!summary) return;
   const entries = readActivities();

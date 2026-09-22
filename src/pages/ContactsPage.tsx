@@ -1,6 +1,6 @@
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { Download, Ellipsis, Inbox, ListChecks, Mail, Minus, Pencil, Plus, RefreshCw, Search, ShieldCheck, Trash2, Upload, UserPlus, UsersRound, X } from "lucide-react";
-import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Building2, Download, Ellipsis, Folder, FolderOpen, FolderPlus, Info, ListChecks, Mail, MapPin, Minus, Pencil, Phone, Plus, RefreshCw, Search, ShieldCheck, StickyNote, Trash2, Upload, UserPlus, UserRound, UsersRound, X } from "lucide-react";
+import { type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ContactForm } from "../components/ContactForm";
 import { ContactTable } from "../components/ContactTable";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -33,7 +33,7 @@ import {
   setAppSetting
 } from "../services/db";
 import type { Contact, ContactInput, Group } from "../types/contact";
-import { collectedAddressesDeletedAtSettingKey, collectedAddressesHiddenSettingKey, contactEmails, displayName, emptyContact, primaryContactEmail, toContactInput } from "../utils/contact";
+import { collectedAddressesDeletedAtSettingKey, collectedAddressesHiddenSettingKey, contactEmails, contactUsesAutomaticDisplayName, displayName, emptyContact, primaryContactEmail, saveAutomaticDisplayNamePreference, toContactInput } from "../utils/contact";
 import { findContactDuplicateGroups, type ContactDuplicateGroup } from "../utils/contactDuplicates";
 import { deletionConfirmationSettingKey } from "../utils/settings";
 import { calendarChangedEventName, m365DataUpdatedEventName } from "../utils/automaticCalendarSync";
@@ -52,6 +52,14 @@ type DragPreview = {
   x: number;
   y: number;
 };
+type GroupContextTarget =
+  | { kind: "ungrouped" }
+  | { kind: "group"; group: Group };
+type GroupContextMenu = {
+  x: number;
+  y: number;
+  target: GroupContextTarget | null;
+};
 type DeleteRequest =
   | { kind: "contact"; contact: Contact }
   | { kind: "group"; group: Group }
@@ -62,6 +70,7 @@ type DeleteRequest =
 const blankGroup: Group = { name: "", description: "", createdAt: "", updatedAt: "" };
 const emailAppSettingKey = "default_email_app";
 const contactsFontSizeStorageKey = "dmh.contacts.fontSize";
+const contactPaneLayoutStorageKey = "dmh.contacts.paneLayout";
 const contactsFontSizes = [14, 16, 18, 20] as const;
 const ungroupedGroupName = "Gesammelte Adressen";
 const emptySelection = new Set<number>();
@@ -90,6 +99,43 @@ function contactInGroup(contact: Contact, groupId: number) {
   return contact.groups.some((group) => group.id === groupId);
 }
 
+type ContactPaneLayout = { groups: number; contacts: number };
+type ContactPaneResize = {
+  pane: "groups" | "contacts";
+  width: number;
+  left: number;
+  layout: ContactPaneLayout;
+  nextLayout: ContactPaneLayout;
+};
+
+function initialContactPaneLayout(): ContactPaneLayout {
+  try {
+    const saved = JSON.parse(localStorage.getItem(contactPaneLayoutStorageKey) ?? "null") as Partial<ContactPaneLayout> | null;
+    if (saved && typeof saved.groups === "number" && typeof saved.contacts === "number") {
+      const groups = Math.min(35, Math.max(18, saved.groups));
+      const contacts = Math.min(52, Math.max(30, saved.contacts));
+      if (groups + contacts <= 75) return { groups, contacts };
+    }
+  } catch {
+    // Invalid local preference falls back to the balanced default.
+  }
+  return { groups: 25, contacts: 40 };
+}
+
+function formatGroupDate(value: string): string {
+  if (!value) return "–";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("de-DE", { dateStyle: "medium", timeStyle: "short" }).format(date);
+}
+
+function contactInitials(contact: Contact): string {
+  const source = displayName(contact).trim();
+  if (!source) return "?";
+  const parts = source.split(/\s+/).filter(Boolean);
+  return (parts.length > 1 ? `${parts[0][0]}${parts[parts.length - 1][0]}` : source.slice(0, 2)).toUpperCase();
+}
+
 interface ContactsPageProps {
   onNavigate: (page: Page) => void;
 }
@@ -107,10 +153,12 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
   const [ungroupedGroupHidden, setUngroupedGroupHidden] = useState(false);
   const [allSearch, setAllSearch] = useState("");
   const [groupSearch, setGroupSearch] = useState("");
+  const [groupListSearch, setGroupListSearch] = useState("");
   const [debouncedAllSearch, setDebouncedAllSearch] = useState("");
   const [debouncedGroupSearch, setDebouncedGroupSearch] = useState("");
   const [groupSelection, setGroupSelection] = useState<GroupSelection>("ungrouped");
   const [editing, setEditing] = useState<ContactInput | null>(null);
+  const [automaticDisplayName, setAutomaticDisplayName] = useState(true);
   const [groupForm, setGroupForm] = useState<Group>(blankGroup);
   const [groupCreateOpen, setGroupCreateOpen] = useState(false);
   const [groupCreateBusy, setGroupCreateBusy] = useState(false);
@@ -131,29 +179,43 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
   const [deleteRequest, setDeleteRequest] = useState<DeleteRequest | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [emailDraft, setEmailDraft] = useState<EmailDraft | null>(null);
+  const [contactInspectorMenuOpen, setContactInspectorMenuOpen] = useState(false);
   const [selectedEmailApp, setSelectedEmailApp] = useState<EmailApp>("outlook-classic");
   const [rememberEmailApp, setRememberEmailApp] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedContactIds, setSelectedContactIds] = useState<Set<number>>(() => new Set());
+  const [selectedGroupContactId, setSelectedGroupContactId] = useState<number | undefined>();
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [draggedContactIds, setDraggedContactIds] = useState<number[]>([]);
   const [dragOverGroupKey, setDragOverGroupKey] = useState<GroupSelection | null>(null);
   const [dragPreview, setDragPreview] = useState<DragPreview | null>(null);
+  const [groupContextMenu, setGroupContextMenu] = useState<GroupContextMenu | null>(null);
+  const [groupProperties, setGroupProperties] = useState<GroupContextTarget | null>(null);
   const [bulkAddGroup, setBulkAddGroup] = useState<Group | null>(null);
   const [bulkAddSearch, setBulkAddSearch] = useState("");
   const [debouncedBulkAddSearch, setDebouncedBulkAddSearch] = useState("");
   const [bulkAddContacts, setBulkAddContacts] = useState<Contact[]>([]);
   const [bulkAddSelectedIds, setBulkAddSelectedIds] = useState<Set<number>>(() => new Set());
   const [contactsFontSizeIndex, setContactsFontSizeIndex] = useState(initialContactsFontSizeIndex);
+  const [contactPaneLayout, setContactPaneLayout] = useState<ContactPaneLayout>(initialContactPaneLayout);
   const draggedContactIdsRef = useRef<number[]>([]);
+  const dragOverGroupKeyRef = useRef<GroupSelection | null>(null);
   const groupsRef = useRef<Group[]>([]);
+  const contactsWorkspaceRef = useRef<HTMLElement>(null);
+  const contactPaneResizeRef = useRef<ContactPaneResize | null>(null);
 
   const selectedGroup = useMemo(
     () => (typeof groupSelection === "number" ? groups.find((group) => group.id === groupSelection) : undefined),
     [groups, groupSelection]
   );
 
-  const currentSearch = tab === "all" ? allSearch : groupSearch;
+  const normalizedGroupListSearch = groupListSearch.trim().toLocaleLowerCase("de");
+  const visibleGroups = useMemo(() => {
+    if (!normalizedGroupListSearch) return groups;
+    return groups.filter((group) => group.name.toLocaleLowerCase("de").includes(normalizedGroupListSearch));
+  }, [groups, normalizedGroupListSearch]);
+  const showUngroupedGroup = !ungroupedGroupHidden
+    && (!normalizedGroupListSearch || ungroupedGroupName.toLocaleLowerCase("de").includes(normalizedGroupListSearch));
   const visibleContactIds = useMemo(
     () => contacts.map((contact) => contact.id).filter((id): id is number => Boolean(id)),
     [contacts]
@@ -163,6 +225,10 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
     [selectedContactIds, visibleContactIds]
   );
   const allVisibleContactsSelected = visibleContactIds.length > 0 && selectedVisibleContactIds.length === visibleContactIds.length;
+  const selectedGroupContact = useMemo(
+    () => contacts.find((contact) => contact.id === selectedGroupContactId),
+    [contacts, selectedGroupContactId]
+  );
   const contactsFontSize = contactsFontSizes[contactsFontSizeIndex];
   const duplicateCandidateCount = useMemo(
     () => new Set(duplicateGroups.flatMap((group) => group.contacts.map((contact) => contact.id))).size,
@@ -188,9 +254,50 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
   }, [groupSearch]);
 
   useEffect(() => {
+    if (tab !== "groups" || editing) return;
+    setSelectedGroupContactId((current) => contacts.some((contact) => contact.id === current)
+      ? current
+      : contacts.find((contact) => contact.id)?.id);
+  }, [contacts, editing, tab]);
+
+  useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedBulkAddSearch(bulkAddSearch), 300);
     return () => window.clearTimeout(timer);
   }, [bulkAddSearch]);
+
+  useEffect(() => {
+    if (!groupContextMenu) return;
+    const closeMenu = () => setGroupContextMenu(null);
+    const closeMenuWithKeyboard = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeMenu();
+    };
+    window.addEventListener("pointerdown", closeMenu);
+    window.addEventListener("blur", closeMenu);
+    window.addEventListener("keydown", closeMenuWithKeyboard);
+    return () => {
+      window.removeEventListener("pointerdown", closeMenu);
+      window.removeEventListener("blur", closeMenu);
+      window.removeEventListener("keydown", closeMenuWithKeyboard);
+    };
+  }, [groupContextMenu]);
+
+  useEffect(() => {
+    if (!contactInspectorMenuOpen) return;
+    const closeMenu = () => setContactInspectorMenuOpen(false);
+    const closeMenuWithKeyboard = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeMenu();
+    };
+    window.addEventListener("pointerdown", closeMenu);
+    window.addEventListener("keydown", closeMenuWithKeyboard);
+    return () => {
+      window.removeEventListener("pointerdown", closeMenu);
+      window.removeEventListener("keydown", closeMenuWithKeyboard);
+    };
+  }, [contactInspectorMenuOpen]);
+
+  useEffect(() => () => {
+    document.body.classList.remove("resizing-contact-panes");
+  }, []);
 
   const refresh = useCallback(async () => {
     const rowsPromise = tab === "all"
@@ -269,7 +376,22 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
       });
   }, [bulkAddGroup, debouncedBulkAddSearch]);
 
-  const startNew = () => setEditing({ ...emptyContact });
+  const startNew = () => {
+    setContactInspectorMenuOpen(false);
+    setAutomaticDisplayName(true);
+    setEditing({
+      ...emptyContact,
+      groupIds: tab === "groups" && typeof groupSelection === "number" ? [groupSelection] : []
+    });
+  };
+
+  const startEditing = (contact: Contact) => {
+    const contactInput = toContactInput(contact);
+    setContactInspectorMenuOpen(false);
+    setSelectedGroupContactId(contact.id);
+    setAutomaticDisplayName(contactUsesAutomaticDisplayName(contactInput));
+    setEditing(contactInput);
+  };
 
   const reviewContactDuplicates = async () => {
     setTestMenuOpen(false);
@@ -301,7 +423,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
 
   const openDuplicateContact = (contact: Contact) => {
     setDuplicateReviewOpen(false);
-    setEditing(toContactInput(contact));
+    startEditing(contact);
   };
 
   const cleanContactDuplicates = async () => {
@@ -426,10 +548,13 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
   const submit = async () => {
     if (!editing) return;
     try {
-      await saveContact(editing);
+      const contactId = await saveContact(editing);
+      saveAutomaticDisplayNamePreference(contactId, automaticDisplayName);
+      setSelectedGroupContactId(contactId);
       setEditing(null);
       setActionResult({ title: "Kontakt gespeichert", summary: `„${displayName(editing)}“ wurde lokal gespeichert.`, tone: "success" });
       await refresh();
+      setSelectedGroupContactId(contactId);
       notifyLocalM365Change();
     } catch (error) {
       setActionResult({ title: "Kontakt nicht gespeichert", summary: `Der Kontakt wurde nicht verändert: ${error}`, tone: "error" });
@@ -440,9 +565,25 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
     if (!contact.id) return;
     try {
       await deleteContact(contact.id);
+      setContacts((current) => current.filter((currentContact) => currentContact.id !== contact.id));
+      setTotalContactCount((current) => current === null ? current : Math.max(0, current - 1));
+      if (contact.groups.length === 0) {
+        setUngroupedContactCount((current) => Math.max(0, current - 1));
+      } else {
+        const affectedGroupIds = new Set(contact.groups.map((group) => group.id).filter((id): id is number => Boolean(id)));
+        setGroupContactCounts((current) => Object.fromEntries(
+          Object.entries(current).map(([groupId, count]) => [
+            groupId,
+            affectedGroupIds.has(Number(groupId)) ? Math.max(0, count - 1) : count
+          ])
+        ));
+      }
       setActionResult({ title: "Kontakt in den Papierkorb verschoben", summary: `„${displayName(contact)}“ kann im Papierkorb wiederhergestellt werden.`, tone: "success" });
-      await refresh();
       notifyLocalM365Change();
+      void refresh().catch((error) => {
+        setMessage(`Die Kontaktübersicht konnte nicht aktualisiert werden: ${error}`);
+        setMessageType("error");
+      });
     } catch (error) {
       setActionResult({ title: "Kontakt nicht gelöscht", summary: `Der Kontakt bleibt unverändert: ${error}`, tone: "error" });
     }
@@ -594,6 +735,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
 
   const changeTab = (nextTab: ContactsTab) => {
     setTab(nextTab);
+    setEditing(null);
     setSelectionMode(false);
     setSelectedContactIds(new Set());
     setTestMenuOpen(false);
@@ -684,6 +826,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
 
   const endContactDrag = () => {
     draggedContactIdsRef.current = [];
+    dragOverGroupKeyRef.current = null;
     setDraggedContactIds([]);
     setDragOverGroupKey(null);
     setDragPreview(null);
@@ -731,26 +874,105 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
     };
     const updatePointerTarget = (event: PointerEvent) => {
       const target = findGroupFromPoint(event);
+      dragOverGroupKeyRef.current = target ?? null;
       setDragOverGroupKey(target ?? null);
       setDragPreview((current) => current ? { ...current, x: event.clientX, y: event.clientY } : current);
     };
     const finishPointerDrag = (event: PointerEvent) => {
-      const contactIds = draggedContactIdsRef.current;
-      const target = findGroupFromPoint(event);
+      const contactIds = [...draggedContactIdsRef.current];
+      const target = findGroupFromPoint(event) ?? dragOverGroupKeyRef.current ?? undefined;
+      endContactDrag();
       if (contactIds.length > 0 && target !== undefined) void moveContactsToSelection(contactIds, target);
-      else endContactDrag();
     };
+    const cancelPointerDrag = () => endContactDrag();
     window.addEventListener("pointermove", updatePointerTarget);
     window.addEventListener("pointerup", finishPointerDrag);
+    window.addEventListener("pointercancel", cancelPointerDrag);
+    window.addEventListener("blur", cancelPointerDrag);
     return () => {
       window.removeEventListener("pointermove", updatePointerTarget);
       window.removeEventListener("pointerup", finishPointerDrag);
+      window.removeEventListener("pointercancel", cancelPointerDrag);
+      window.removeEventListener("blur", cancelPointerDrag);
     };
   }, [draggedContactIds]);
 
   const pointerOverGroup = (target: GroupSelection) => {
     if (draggedContactIdsRef.current.length === 0) return;
+    dragOverGroupKeyRef.current = target;
     setDragOverGroupKey(target);
+  };
+
+  const selectContactForInspector = (contact: Contact) => {
+    setSelectedGroupContactId(contact.id);
+    setContactInspectorMenuOpen(false);
+    setEditing(null);
+  };
+
+  const selectGroupForDirectory = (selection: GroupSelection) => {
+    setEditing(null);
+    setContactInspectorMenuOpen(false);
+    setSelectedGroupContactId(undefined);
+    setGroupSelection(selection);
+  };
+
+  const normalizePaneLayout = (layout: ContactPaneLayout): ContactPaneLayout => {
+    const groups = Math.min(35, Math.max(18, layout.groups));
+    const contacts = Math.min(52, Math.max(30, layout.contacts));
+    return groups + contacts > 75 ? { groups, contacts: 75 - groups } : { groups, contacts };
+  };
+
+  const writePaneLayout = (layout: ContactPaneLayout) => {
+    contactsWorkspaceRef.current?.style.setProperty("--groups-pane", `${layout.groups}%`);
+    contactsWorkspaceRef.current?.style.setProperty("--contacts-pane", `${layout.contacts}%`);
+  };
+
+  const beginPaneResize = (pane: "groups" | "contacts", event: ReactPointerEvent<HTMLDivElement>) => {
+    const workspace = contactsWorkspaceRef.current;
+    if (!workspace) return;
+    const bounds = workspace.getBoundingClientRect();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    contactPaneResizeRef.current = {
+      pane,
+      width: bounds.width,
+      left: bounds.left,
+      layout: contactPaneLayout,
+      nextLayout: contactPaneLayout
+    };
+    document.body.classList.add("resizing-contact-panes");
+  };
+
+  const resizeContactPanes = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const resize = contactPaneResizeRef.current;
+    if (!resize) return;
+    const pointerPercent = ((event.clientX - resize.left) / resize.width) * 100;
+    const nextLayout = resize.pane === "groups"
+      ? normalizePaneLayout({ groups: pointerPercent, contacts: resize.layout.contacts })
+      : normalizePaneLayout({ groups: resize.layout.groups, contacts: pointerPercent - resize.layout.groups });
+    resize.nextLayout = nextLayout;
+    writePaneLayout(nextLayout);
+  };
+
+  const finishPaneResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const resize = contactPaneResizeRef.current;
+    if (!resize) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    contactPaneResizeRef.current = null;
+    document.body.classList.remove("resizing-contact-panes");
+    setContactPaneLayout(resize.nextLayout);
+    localStorage.setItem(contactPaneLayoutStorageKey, JSON.stringify(resize.nextLayout));
+  };
+
+  const adjustPaneWithKeyboard = (pane: "groups" | "contacts", delta: number) => {
+    setContactPaneLayout((current) => {
+      const next = normalizePaneLayout({
+        groups: pane === "groups" ? current.groups + delta : current.groups,
+        contacts: pane === "contacts" ? current.contacts + delta : current.contacts
+      });
+      writePaneLayout(next);
+      localStorage.setItem(contactPaneLayoutStorageKey, JSON.stringify(next));
+      return next;
+    });
   };
 
   const openBulkAdd = (group: Group) => {
@@ -758,6 +980,41 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
     setBulkAddSearch("");
     setBulkAddSelectedIds(new Set());
   };
+
+  const openGroupContextMenu = (event: ReactMouseEvent, target: GroupContextTarget | null) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (target?.kind === "ungrouped") selectGroupForDirectory("ungrouped");
+    if (target?.kind === "group") selectGroupForDirectory(target.group.id ?? "ungrouped");
+    setGroupContextMenu({ x: event.clientX, y: event.clientY, target });
+  };
+
+  const runGroupMenuAction = (action: () => void) => {
+    setGroupContextMenu(null);
+    action();
+  };
+
+  const groupPropertiesContactCount = groupProperties?.kind === "ungrouped"
+    ? ungroupedContactCount
+    : groupProperties?.kind === "group" && groupProperties.group.id
+      ? (groupContactCounts[groupProperties.group.id] ?? 0)
+      : 0;
+  const contextMenuTarget = groupContextMenu?.target ?? null;
+  const contextMenuGroup = contextMenuTarget?.kind === "group" ? contextMenuTarget.group : null;
+  const inspectorEmails = selectedGroupContact ? [
+    { label: "Geschäftlich", value: selectedGroupContact.email },
+    { label: "Privat", value: selectedGroupContact.privateEmail },
+    { label: "Privat 2", value: selectedGroupContact.secondPrivateEmail }
+  ].filter((entry) => entry.value.trim()) : [];
+  const inspectorPhones = selectedGroupContact ? [
+    { label: "Geschäftlich", value: selectedGroupContact.phone },
+    { label: "Mobil", value: selectedGroupContact.mobilePhone },
+    { label: "Privat", value: selectedGroupContact.privatePhone },
+    { label: "Privat 2", value: selectedGroupContact.secondPrivatePhone }
+  ].filter((entry) => entry.value.trim()) : [];
+  const inspectorAddress = selectedGroupContact
+    ? [selectedGroupContact.street, [selectedGroupContact.postalCode, selectedGroupContact.city].filter(Boolean).join(" "), selectedGroupContact.country].filter(Boolean)
+    : [];
 
   const closeBulkAdd = () => {
     setBulkAddGroup(null);
@@ -782,38 +1039,33 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
   };
 
   return (
-    <div className={`${draggedContactIds.length === 0 ? "page contacts-page" : "page contacts-page dragging-contact"} contacts-font-${contactsFontSize}`}>
-      <div className="contacts-tabs" role="tablist" aria-label="Kontakte">
-        <button className={tab === "all" ? "active" : ""} type="button" onClick={() => changeTab("all")}>
-          Alle Kontakte
-        </button>
-        <button className={tab === "groups" ? "active" : ""} type="button" onClick={() => changeTab("groups")}>
-          Gruppen verwalten
-        </button>
-      </div>
+    <div className={`${draggedContactIds.length === 0 ? "page contacts-page" : "page contacts-page dragging-contact"} contacts-font-${contactsFontSize}${tab === "groups" ? " groups-tab-active" : ""}`}>
+      <header className="contacts-section-header">
+        <strong>Kontakte</strong>
+        <span aria-hidden="true">›</span>
+        <div className="contacts-tabs" role="tablist" aria-label="Kontaktbereiche">
+          <button className={tab === "all" ? "active" : ""} type="button" role="tab" aria-selected={tab === "all"} onClick={() => changeTab("all")}>
+            Alle Kontakte
+          </button>
+          <button className={tab === "groups" ? "active" : ""} type="button" role="tab" aria-selected={tab === "groups"} onClick={() => changeTab("groups")}>
+            Gruppen verwalten
+          </button>
+        </div>
+      </header>
 
-      <header className="contacts-commandbar">
+      {tab === "all" && <header className="contacts-commandbar">
         <div className="contacts-title">
           <h2>{tab === "all" ? "Alle Kontakte" : "Gruppen verwalten"}</h2>
         </div>
         <label className="search-field">
           <Search size={20} />
           <input
-            value={currentSearch}
-            onChange={(event) => tab === "all" ? setAllSearch(event.target.value) : setGroupSearch(event.target.value)}
+            value={allSearch}
+            onChange={(event) => setAllSearch(event.target.value)}
             placeholder={t.search}
           />
         </label>
         <div className="button-row contacts-actions">
-          {tab === "groups" && !selectionMode && (
-              <button
-                type="button"
-                onClick={toggleSelectionMode}
-                disabled={bulkDeleting}
-              >
-                Auswählen
-              </button>
-          )}
           {selectionMode && (
             <>
               <button className="primary" type="button" onClick={toggleSelectionMode} disabled={bulkDeleting}>Fertig</button>
@@ -851,14 +1103,14 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
                 <button type="button" onClick={() => void reviewContactDuplicates()} disabled={duplicateCheckBusy}>
                   <ListChecks size={18} /> {duplicateCheckBusy ? "Duplikate werden geprüft …" : "Duplikate prüfen"}
                 </button>
-                {tab === "all" && !selectionMode && <button type="button" onClick={startSelectionMode}>Auswählen</button>}
+                {!selectionMode && <button type="button" onClick={startSelectionMode}>Auswählen</button>}
                 <span className="calendar-actions-separator" />
                 <button className="danger" type="button" onClick={removeAllContacts}><Trash2 size={18} /> Alle Kontakte löschen</button>
               </div>
             )}
           </div>
         </div>
-      </header>
+      </header>}
 
       <StatusMessage message={actionResult ? "" : message} type={messageType} />
       <ActionResultDialog result={actionResult} onClose={() => setActionResult(null)} />
@@ -1006,10 +1258,18 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
         </div>
       )}
 
-      {editing && (
+      {editing && tab !== "groups" && (
         <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={editing.id ? t.editContact : t.newContact}>
-          <div className="modal-card">
-            <ContactForm value={editing} groups={groups} onChange={setEditing} onSubmit={submit} onCancel={() => setEditing(null)} />
+          <div className="modal-card contact-editor-dialog">
+            <ContactForm
+              value={editing}
+              groups={groups}
+              automaticDisplayName={automaticDisplayName}
+              onChange={setEditing}
+              onAutomaticDisplayNameChange={setAutomaticDisplayName}
+              onSubmit={submit}
+              onCancel={() => setEditing(null)}
+            />
           </div>
         </div>
       )}
@@ -1081,7 +1341,7 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
         <ContactTable
           contacts={contacts}
           paginationKey={`all:${allSearch}`}
-          onEdit={(contact) => setEditing(toContactInput(contact))}
+          onEdit={startEditing}
           onDelete={remove}
           onCopyEmail={copyEmail}
           onEmail={chooseEmailApp}
@@ -1092,78 +1352,160 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
           dragEnabled={false}
         />
       ) : (
-        <section className="contacts-workspace">
-          <aside className="groups-panel">
+        <section
+          className="contacts-workspace"
+          ref={contactsWorkspaceRef}
+          style={{
+            "--groups-pane": `${contactPaneLayout.groups}%`,
+            "--contacts-pane": `${contactPaneLayout.contacts}%`
+          } as CSSProperties}
+        >
+          <aside className="groups-panel group-folder-pane" onContextMenu={(event) => openGroupContextMenu(event, null)}>
             <div className="groups-panel-heading">
-              <div>
-                <span className="groups-panel-kicker">Kontaktorganisation</span>
-                <h3>Gruppen</h3>
-              </div>
-              <span className="group-summary" aria-label={`${groups.length + (ungroupedGroupHidden ? 0 : 1)} Gruppen`}><strong>{groups.length + (ungroupedGroupHidden ? 0 : 1)}</strong><small>Gruppen</small></span>
+              <h3>Gruppen</h3>
+              <button className="group-new-button" type="button" onClick={openGroupCreate}>
+                <Plus size={17} /> Neue Gruppe
+              </button>
             </div>
-            <button className="primary group-create-button" type="button" onClick={openGroupCreate}>
-              <Plus size={20} /> Neue Gruppe erstellen
-            </button>
-            <div className="group-list" aria-label="Kontaktgruppen">
-              {!ungroupedGroupHidden && <div
-                className={["group-drop", groupSelection === "ungrouped" ? "active" : "", dragOverGroupKey === "ungrouped" ? "drag-over" : ""].filter(Boolean).join(" ")}
+            <label className="group-list-search">
+              <Search size={18} aria-hidden="true" />
+              <input
+                value={groupListSearch}
+                onChange={(event) => setGroupListSearch(event.target.value)}
+                placeholder="Gruppen suchen..."
+                aria-label="Gruppen suchen"
+              />
+            </label>
+            <div className="group-list" role="tree" aria-label="Kontaktgruppen" onContextMenu={(event) => openGroupContextMenu(event, null)}>
+              {showUngroupedGroup && <div
+                className={["group-folder-row", groupSelection === "ungrouped" ? "active" : "", dragOverGroupKey === "ungrouped" ? "drag-over" : ""].filter(Boolean).join(" ")}
                 data-group-key="ungrouped"
+                role="treeitem"
+                tabIndex={0}
+                aria-selected={groupSelection === "ungrouped"}
+                onClick={() => selectGroupForDirectory("ungrouped")}
+                onDoubleClick={() => setGroupProperties({ kind: "ungrouped" })}
+                onContextMenu={(event) => openGroupContextMenu(event, { kind: "ungrouped" })}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") selectGroupForDirectory("ungrouped");
+                }}
                 onPointerEnter={() => pointerOverGroup("ungrouped")}
                 onPointerLeave={() => setDragOverGroupKey((current) => current === "ungrouped" ? null : current)}
               >
-                <div className="group-card-top">
-                  <span className="group-card-icon"><Inbox size={22} aria-hidden="true" /></span>
-                  <button type="button" className="group-card-name" title={ungroupedGroupName} onClick={() => setGroupSelection("ungrouped")}>
-                    {ungroupedGroupName}
-                  </button>
-                  <span className="group-card-top-spacer" aria-hidden="true" />
-                </div>
-                <div className="group-card-bottom">
-                  <strong>{ungroupedContactCount} {ungroupedContactCount === 1 ? "Kontakt" : "Kontakte"}</strong>
-                  <div className="group-card-actions">
-                    <button type="button" title="E-Mail an Gruppe" aria-label="E-Mail an Gesammelte Adressen" onClick={() => chooseGroupEmailApp("ungrouped")}><Mail size={20} /></button>
-                    <button className="group-card-delete" type="button" title="Gruppe löschen" aria-label="Gesammelte Adressen löschen" onClick={removeUngroupedGroup}><Trash2 size={20} /></button>
-                  </div>
-                </div>
+                {groupSelection === "ungrouped" ? <FolderOpen size={18} aria-hidden="true" /> : <Folder size={18} aria-hidden="true" />}
+                <span className="group-folder-name" title={ungroupedGroupName}>{ungroupedGroupName}</span>
+                <span className="group-folder-count" aria-label={`${ungroupedContactCount} Kontakte`}>{ungroupedContactCount}</span>
+                <button className="group-row-menu" type="button" title="Gruppenaktionen" aria-label={`Aktionen für ${ungroupedGroupName}`} onClick={(event) => openGroupContextMenu(event, { kind: "ungrouped" })}>
+                  <Ellipsis size={18} />
+                </button>
               </div>}
-              {groups.map((group) => {
+              {visibleGroups.map((group) => {
                 const contactCount = group.id ? (groupContactCounts[group.id] ?? 0) : 0;
                 return (
                   <div
-                    className={["group-drop", groupSelection === group.id ? "active" : "", dragOverGroupKey === group.id ? "drag-over" : ""].filter(Boolean).join(" ")}
+                    className={["group-folder-row", groupSelection === group.id ? "active" : "", dragOverGroupKey === group.id ? "drag-over" : ""].filter(Boolean).join(" ")}
                     key={group.id}
                     data-group-key={group.id}
+                    role="treeitem"
+                    tabIndex={0}
+                    aria-selected={groupSelection === group.id}
+                    onClick={() => selectGroupForDirectory(group.id ?? "ungrouped")}
+                    onDoubleClick={() => setGroupProperties({ kind: "group", group })}
+                    onContextMenu={(event) => openGroupContextMenu(event, { kind: "group", group })}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") selectGroupForDirectory(group.id ?? "ungrouped");
+                    }}
                     onPointerEnter={() => group.id && pointerOverGroup(group.id)}
                     onPointerLeave={() => setDragOverGroupKey((current) => current === group.id ? null : current)}
                   >
-                    <div className="group-card-top">
-                      <span className="group-card-icon"><UsersRound size={22} aria-hidden="true" /></span>
-                      <button type="button" className="group-card-name" title={group.name} onClick={() => setGroupSelection(group.id ?? "ungrouped")}>
-                        {group.name}
-                      </button>
-                      <button className="group-card-edit" type="button" title="Gruppennamen ändern" aria-label={`${group.name} umbenennen`} onClick={() => startGroupRename(group)}>
-                        <Pencil size={19} />
-                      </button>
-                    </div>
-                    <div className="group-card-bottom">
-                      <strong>{contactCount} {contactCount === 1 ? "Kontakt" : "Kontakte"}</strong>
-                      <div className="group-card-actions">
-                        <button type="button" title="E-Mail an Gruppe" aria-label={`E-Mail an ${group.name}`} onClick={() => chooseGroupEmailApp(group)}><Mail size={20} /></button>
-                        <button className="group-card-delete" type="button" title="Gruppe löschen" aria-label={`${group.name} löschen`} onClick={() => removeGroup(group)}><Trash2 size={20} /></button>
-                      </div>
-                    </div>
+                    {groupSelection === group.id ? <FolderOpen size={18} aria-hidden="true" /> : <Folder size={18} aria-hidden="true" />}
+                    <span className="group-folder-name" title={group.name}>{group.name}</span>
+                    <span className="group-folder-count" aria-label={`${contactCount} Kontakte`}>{contactCount}</span>
+                    <button className="group-row-menu" type="button" title="Gruppenaktionen" aria-label={`Aktionen für ${group.name}`} onClick={(event) => openGroupContextMenu(event, { kind: "group", group })}>
+                      <Ellipsis size={18} />
+                    </button>
                   </div>
                 );
               })}
+              {!showUngroupedGroup && visibleGroups.length === 0 && (
+                <p className="group-list-empty">Keine Gruppe gefunden.</p>
+              )}
             </div>
-            <p className="drop-hint">Tipp: Ziehen Sie einen Kontakt auf eine Gruppe, um ihn dorthin zu verschieben.</p>
           </aside>
 
-          <div className="contacts-main">
+          <div
+            className="contact-pane-divider"
+            role="separator"
+            aria-label="Breite der Gruppenliste ändern"
+            aria-orientation="vertical"
+            aria-valuemin={18}
+            aria-valuemax={35}
+            aria-valuenow={Math.round(contactPaneLayout.groups)}
+            tabIndex={0}
+            onPointerDown={(event) => beginPaneResize("groups", event)}
+            onPointerMove={resizeContactPanes}
+            onPointerUp={finishPaneResize}
+            onPointerCancel={finishPaneResize}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                event.preventDefault();
+                adjustPaneWithKeyboard("groups", event.key === "ArrowLeft" ? -1 : 1);
+              }
+            }}
+          />
+
+          <div className="contacts-main contacts-directory-pane">
+            <header className="group-contacts-header">
+              <div className="group-contacts-title">
+                <div><h2>Kontakte</h2><span>{contacts.length} Kontakte</span></div>
+                <p>{selectedGroup ? `Kontakte in „${selectedGroup.name}“ verwalten.` : `Kontakte in „${ungroupedGroupName}“ verwalten.`}</p>
+              </div>
+              <label className="search-field group-contact-search">
+                <Search size={20} />
+                <input value={groupSearch} onChange={(event) => setGroupSearch(event.target.value)} placeholder="Kontakte durchsuchen..." />
+              </label>
+              <div className="button-row group-contact-actions">
+                {!selectionMode && <button type="button" onClick={toggleSelectionMode} disabled={bulkDeleting}>Auswählen</button>}
+                <button className="primary" type="button" onClick={startNew}>
+                  <Plus size={20} /> {t.newContact}
+                </button>
+                <div className="more-menu-wrap">
+                  <button className="icon-only" type="button" aria-label="Weitere Optionen" onClick={() => setTestMenuOpen((open) => !open)}>
+                    <Ellipsis size={20} />
+                  </button>
+                  {testMenuOpen && (
+                    <div className="more-menu" role="menu">
+                      <button type="button" onClick={() => { setTestMenuOpen(false); setM365SyncDialogOpen(true); }}><RefreshCw size={18} /> Microsoft 365 / Exchange verwalten</button>
+                      <span className="calendar-actions-separator" />
+                      <button type="button" onClick={() => { setTestMenuOpen(false); onNavigate("import"); }}><Upload size={18} /> Kontakte importieren</button>
+                      <button type="button" onClick={() => { setTestMenuOpen(false); onNavigate("export"); }}><Download size={18} /> Kontakte exportieren</button>
+                      <button type="button" onClick={() => { setTestMenuOpen(false); setReconciliationOpen(true); }}><RefreshCw size={18} /> Kontakte erneut abgleichen</button>
+                      <button type="button" onClick={() => void reviewContactDuplicates()} disabled={duplicateCheckBusy}>
+                        <ListChecks size={18} /> {duplicateCheckBusy ? "Duplikate werden geprüft …" : "Duplikate prüfen"}
+                      </button>
+                      <span className="calendar-actions-separator" />
+                      <button className="danger" type="button" onClick={removeAllContacts}><Trash2 size={18} /> Alle Kontakte löschen</button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </header>
+            {selectionMode && (
+              <div className="group-selection-toolbar">
+                <strong>{selectedVisibleContactIds.length} Kontakte ausgewählt</strong>
+                <button type="button" onClick={toggleSelectAllVisible} disabled={bulkDeleting || visibleContactIds.length === 0}>
+                  {allVisibleContactsSelected ? "Auswahl aufheben" : "Alle auswählen"}
+                </button>
+                <button className="danger-button" type="button" onClick={removeSelectedContacts} disabled={bulkDeleting || selectedVisibleContactIds.length === 0}>
+                  <Trash2 size={17} /> {bulkDeleting ? "Wird gelöscht …" : "Löschen"}
+                </button>
+                <button className="primary" type="button" onClick={toggleSelectionMode} disabled={bulkDeleting}>Fertig</button>
+              </div>
+            )}
             <ContactTable
               contacts={contacts}
               paginationKey={`groups:${groupSelection}:${groupSearch}`}
-              onEdit={(contact) => setEditing(toContactInput(contact))}
+              onEdit={startEditing}
               onDelete={remove}
               onCopyEmail={copyEmail}
               onEmail={chooseEmailApp}
@@ -1172,9 +1514,229 @@ export function ContactsPage({ onNavigate }: ContactsPageProps) {
               onToggleSelection={toggleContactSelection}
               onPointerDragStart={startContactDrag}
               dragEnabled
+              managementView
+              activeContactId={selectedGroupContactId}
+              onSelect={selectContactForInspector}
             />
           </div>
+
+          <div
+            className="contact-pane-divider"
+            role="separator"
+            aria-label="Breite der Kontaktliste ändern"
+            aria-orientation="vertical"
+            aria-valuemin={30}
+            aria-valuemax={52}
+            aria-valuenow={Math.round(contactPaneLayout.contacts)}
+            tabIndex={0}
+            onPointerDown={(event) => beginPaneResize("contacts", event)}
+            onPointerMove={resizeContactPanes}
+            onPointerUp={finishPaneResize}
+            onPointerCancel={finishPaneResize}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                event.preventDefault();
+                adjustPaneWithKeyboard("contacts", event.key === "ArrowLeft" ? -1 : 1);
+              }
+            }}
+          />
+
+          <aside className={editing ? "contact-inspector editing" : selectedGroupContact ? "contact-inspector" : "contact-inspector empty"} aria-label="Kontaktdetails">
+            {editing ? (
+              <ContactForm
+                value={editing}
+                groups={groups}
+                automaticDisplayName={automaticDisplayName}
+                onChange={setEditing}
+                onAutomaticDisplayNameChange={setAutomaticDisplayName}
+                onSubmit={submit}
+                onCancel={() => setEditing(null)}
+              />
+            ) : selectedGroupContact ? (
+              <>
+                <header className="contact-inspector-header">
+                  <span className={`contact-inspector-avatar avatar-${(selectedGroupContact.id ?? 0) % 6}`} aria-hidden="true">
+                    {contactInitials(selectedGroupContact)}
+                  </span>
+                  <div>
+                    <h2>{displayName(selectedGroupContact)}</h2>
+                    <p>{primaryContactEmail(selectedGroupContact) || selectedGroupContact.company || "Keine E-Mail-Adresse"}</p>
+                  </div>
+                  <div className="more-menu-wrap contact-inspector-more">
+                    <button
+                      className="icon-only"
+                      type="button"
+                      aria-label="Weitere Kontaktaktionen"
+                      aria-expanded={contactInspectorMenuOpen}
+                      onClick={() => setContactInspectorMenuOpen((open) => !open)}
+                    >
+                      <Ellipsis size={20} />
+                    </button>
+                    {contactInspectorMenuOpen && (
+                      <div className="more-menu" role="menu" onPointerDown={(event) => event.stopPropagation()}>
+                        {primaryContactEmail(selectedGroupContact) && (
+                          <button type="button" role="menuitem" onClick={() => { setContactInspectorMenuOpen(false); void copyEmail(primaryContactEmail(selectedGroupContact)); }}>
+                            E-Mail kopieren
+                          </button>
+                        )}
+                        <button className="danger" type="button" role="menuitem" onClick={() => { setContactInspectorMenuOpen(false); remove(selectedGroupContact); }}>
+                          <Trash2 size={17} /> Kontakt löschen
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </header>
+                <div className="contact-inspector-toolbar">
+                  {primaryContactEmail(selectedGroupContact) && (
+                    <button type="button" onClick={() => chooseEmailApp(primaryContactEmail(selectedGroupContact))}>
+                      <Mail size={17} /> Nachricht
+                    </button>
+                  )}
+                  <button className="primary" type="button" onClick={() => startEditing(selectedGroupContact)}>
+                    <Pencil size={17} /> Bearbeiten
+                  </button>
+                </div>
+                <div className="contact-inspector-body">
+                  {(selectedGroupContact.company || selectedGroupContact.shortInfo) && (
+                    <section className="contact-inspector-section">
+                      <h3><Building2 size={17} />Allgemein</h3>
+                      {selectedGroupContact.company && <div><span>Unternehmen</span><strong>{selectedGroupContact.company}</strong></div>}
+                      {selectedGroupContact.shortInfo && <div><span>Kurzinfo</span><strong>{selectedGroupContact.shortInfo}</strong></div>}
+                    </section>
+                  )}
+                  {inspectorEmails.length > 0 && (
+                    <section className="contact-inspector-section">
+                      <h3><Mail size={17} />E-Mail-Adressen</h3>
+                      {inspectorEmails.map((entry) => (
+                        <div key={`${entry.label}:${entry.value}`}>
+                          <span>{entry.label}</span>
+                          <button className="contact-inspector-link" type="button" onClick={() => chooseEmailApp(entry.value)}>{entry.value}</button>
+                        </div>
+                      ))}
+                    </section>
+                  )}
+                  {inspectorPhones.length > 0 && (
+                    <section className="contact-inspector-section">
+                      <h3><Phone size={17} />Telefonnummern</h3>
+                      {inspectorPhones.map((entry) => (
+                        <div key={`${entry.label}:${entry.value}`}><span>{entry.label}</span><strong>{entry.value}</strong></div>
+                      ))}
+                    </section>
+                  )}
+                  {inspectorAddress.length > 0 && (
+                    <section className="contact-inspector-section">
+                      <h3><MapPin size={17} />Adresse</h3>
+                      <address>{inspectorAddress.map((line) => <span key={line}>{line}</span>)}</address>
+                    </section>
+                  )}
+                  {selectedGroupContact.groups.length > 0 && (
+                    <section className="contact-inspector-section">
+                      <h3><UsersRound size={17} />Gruppen</h3>
+                      <div className="contact-inspector-tags">
+                        {selectedGroupContact.groups.map((group) => <span key={group.id ?? group.name}>{group.name}</span>)}
+                      </div>
+                    </section>
+                  )}
+                  {selectedGroupContact.notes && (
+                    <section className="contact-inspector-section">
+                      <h3><StickyNote size={17} />Notizen</h3>
+                      <p>{selectedGroupContact.notes}</p>
+                    </section>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="contact-inspector-empty">
+                <span><UserRound size={28} /></span>
+                <h3>Kontakt auswählen</h3>
+                <p>Wählen Sie links einen Kontakt aus, um seine Angaben hier anzuzeigen und zu bearbeiten.</p>
+                <button className="primary" type="button" onClick={startNew}><Plus size={17} /> Neuer Kontakt</button>
+              </div>
+            )}
+          </aside>
         </section>
+      )}
+
+      {groupContextMenu && (
+        <div
+          className="group-context-menu"
+          role="menu"
+          aria-label={groupContextMenu.target ? "Gruppenaktionen" : "Ordneraktionen"}
+          style={{
+            left: groupContextMenu.x,
+            top: groupContextMenu.y,
+            transform: `translate(${groupContextMenu.x > window.innerWidth / 2 ? "-100%" : "0"}, ${groupContextMenu.y > window.innerHeight / 2 ? "-100%" : "0"})`
+          }}
+          onPointerDown={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          {contextMenuTarget && (
+            <>
+              <button type="button" role="menuitem" onClick={() => runGroupMenuAction(() => setGroupProperties(contextMenuTarget))}>
+                <Info size={17} /> Eigenschaften
+              </button>
+              {contextMenuGroup && (
+                <button type="button" role="menuitem" onClick={() => runGroupMenuAction(() => openBulkAdd(contextMenuGroup))}>
+                  <UserPlus size={17} /> Kontakte hinzufügen
+                </button>
+              )}
+              <button type="button" role="menuitem" onClick={() => runGroupMenuAction(() => chooseGroupEmailApp(contextMenuGroup ?? "ungrouped"))}>
+                <Mail size={17} /> E-Mail an Gruppe
+              </button>
+              <span className="group-context-menu-separator" role="separator" />
+              {contextMenuGroup && (
+                <button type="button" role="menuitem" onClick={() => runGroupMenuAction(() => startGroupRename(contextMenuGroup))}>
+                  <Pencil size={17} /> Umbenennen
+                </button>
+              )}
+              <button className="danger" type="button" role="menuitem" onClick={() => runGroupMenuAction(() => contextMenuGroup ? removeGroup(contextMenuGroup) : removeUngroupedGroup())}>
+                <Trash2 size={17} /> Löschen
+              </button>
+              <span className="group-context-menu-separator" role="separator" />
+            </>
+          )}
+          <button type="button" role="menuitem" onClick={() => runGroupMenuAction(openGroupCreate)}>
+            <FolderPlus size={17} /> Neue Gruppe
+          </button>
+        </div>
+      )}
+
+      {groupProperties && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="group-properties-title">
+          <section className="form-panel modal-card group-properties-dialog">
+            <header className="group-properties-header">
+              <span className="group-properties-icon"><FolderOpen size={23} /></span>
+              <div>
+                <h3 id="group-properties-title">Eigenschaften</h3>
+                <p>{groupProperties.kind === "group" ? groupProperties.group.name : ungroupedGroupName}</p>
+              </div>
+              <button className="icon-only" type="button" onClick={() => setGroupProperties(null)} aria-label="Schließen"><X size={20} /></button>
+            </header>
+            <dl className="group-properties-list">
+              <div><dt>Name</dt><dd>{groupProperties.kind === "group" ? groupProperties.group.name : ungroupedGroupName}</dd></div>
+              <div><dt>Typ</dt><dd>{groupProperties.kind === "group" ? "Benutzerdefinierte Gruppe" : "Systemordner"}</dd></div>
+              <div><dt>Kontakte</dt><dd>{groupPropertiesContactCount}</dd></div>
+              <div className="wide"><dt>Beschreibung</dt><dd>{groupProperties.kind === "group" ? (groupProperties.group.description || "Keine Beschreibung") : "Kontakte, die keiner benutzerdefinierten Gruppe zugeordnet sind."}</dd></div>
+              {groupProperties.kind === "group" && (
+                <>
+                  <div><dt>Erstellt</dt><dd>{formatGroupDate(groupProperties.group.createdAt)}</dd></div>
+                  <div><dt>Zuletzt geändert</dt><dd>{formatGroupDate(groupProperties.group.updatedAt)}</dd></div>
+                  <div><dt>Interne ID</dt><dd>{groupProperties.group.id ?? "–"}</dd></div>
+                </>
+              )}
+            </dl>
+            <footer className="group-properties-actions">
+              {groupProperties.kind === "group" && (
+                <button type="button" onClick={() => {
+                  const group = groupProperties.group;
+                  setGroupProperties(null);
+                  startGroupRename(group);
+                }}><Pencil size={17} /> Umbenennen</button>
+              )}
+              <button className="primary" type="button" onClick={() => setGroupProperties(null)}>Schließen</button>
+            </footer>
+          </section>
+        </div>
       )}
 
       <ConfirmDialog
