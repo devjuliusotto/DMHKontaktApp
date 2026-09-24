@@ -37,13 +37,27 @@
     "targets": [
       "msi",
       "nsis"
-    ]
+    ],
+    "windows": {
+      "signCommand": {
+        "cmd": "powershell.exe",
+        "args": [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "scripts/sign-windows-artifact.ps1",
+          "-ArtifactPath",
+          "%1"
+        ]
+      }
+    }
   },
   "identifier": "de.dmh.agendakontakte",
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/devjuliusotto/DMHKontaktApp/releases/latest/download/latest.json"
+        "https://github.com/Diakonissenmutterhaus/DMHKontaktApp/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJDNUFCRkU2MTM3ODc2MTAKUldRUWRuZ1Q1cjlhdk1MaUowYzBtRTFXeXJpYURCMnhCa1pqa3FaNk55ZGdnbEFjbTJFdkh5OVAK",
       "windows": {
@@ -52,5 +66,5 @@
     }
   },
   "productName": "DMH Backup",
-  "version": "0.0.25"
+  "version": "0.1.1"
 }

@@ -38,6 +38,10 @@ export function calendarColorFromCategory(category: string, fallback = defaultCa
 }
 
 export function mergeImportedCalendarCategories(events: CalendarEvent[]) {
+  return mergeImportedCalendarCategoryDefinitions(events.map((event) => ({ name: event.category, color: event.color })));
+}
+
+export function mergeImportedCalendarCategoryDefinitions(imported: CalendarCategoryDefinition[]) {
   let stored: CalendarCategoryDefinition[] = [];
   try {
     const parsed = JSON.parse(localStorage.getItem(calendarCategoriesStorageKey) ?? "[]") as unknown;
@@ -54,11 +58,11 @@ export function mergeImportedCalendarCategories(events: CalendarEvent[]) {
 
   let added = 0;
   let updated = 0;
-  for (const event of events) {
-    const name = event.category?.trim();
+  for (const category of imported) {
+    const name = category.name?.trim();
     if (!name) continue;
     const key = name.toLocaleLowerCase("de-DE");
-    const importedColor = calendarColorValue(event.color);
+    const importedColor = calendarColorValue(category.color);
     const current = byName.get(key);
     if (!current) {
       byName.set(key, { name, color: importedColor });

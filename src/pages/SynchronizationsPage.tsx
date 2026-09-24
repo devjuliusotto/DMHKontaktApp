@@ -21,10 +21,10 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { StatusMessage } from "../components/StatusMessage";
 import type { SettingsSection } from "../components/SettingsSubtabs";
 import type { Page } from "../components/Sidebar";
-import { applyMicrosoft365Sync, cancelMicrosoft365Connection, connectMicrosoft365Interactively, createAutomaticBackup, createAutomaticPasswordBackup, disconnectMicrosoft365Account, getAppSetting, getBackupData, getMicrosoft365ConnectionStatus, getSyncBackupData, listMicrosoft365SyncSources, moveCalendarEventsToTrash, openMicrosoft365SignIn, pollMicrosoft365Connection, previewMicrosoft365Sync, saveCalendarEvents, setAppSetting, startMicrosoft365Connection, testMicrosoft365Connection } from "../services/db";
+import { applyMicrosoft365Sync, cancelMicrosoft365Connection, connectMicrosoft365Interactively, createAutomaticSafetyBackup, disconnectMicrosoft365Account, getAppSetting, getMicrosoft365ConnectionStatus, getSyncBackupData, listMicrosoft365SyncSources, moveCalendarEventsToTrash, openMicrosoft365SignIn, pollMicrosoft365Connection, previewMicrosoft365Sync, saveCalendarEvents, setAppSetting, startMicrosoft365Connection, testMicrosoft365Connection } from "../services/db";
 import type { Microsoft365ConflictDecision, Microsoft365ConnectionStatus, Microsoft365DeviceCode, Microsoft365PollResult, Microsoft365SyncHistoryEntry, Microsoft365SyncPreview, Microsoft365SyncSource, Microsoft365SyncSources } from "../types/m365";
 import { defaultSyncConfig, parseSyncConfig, type SyncConfig, type SyncDirection } from "../types/sync";
-import { addBrowserDataToBackup } from "../utils/backup";
+import { captureBrowserStorage } from "../utils/backup";
 import { mergeImportedCalendarCategories } from "../utils/calendar";
 import { calendarChangedEventName, recordMicrosoft365SynchronizationError, recordMicrosoft365SynchronizationSuccess, synchronizationConfigKey as syncConfigKey, synchronizationHistoryKey as syncHistoryKey } from "../utils/automaticCalendarSync";
 import { initializeMicrosoft365SourceSelection, isTechnicalMicrosoft365Source } from "../utils/microsoft365SyncConfig";
@@ -384,13 +384,11 @@ export function SynchronizationsPage({ onNavigate, embedded = false, onClose }: 
   const applySync = async () => {
     if (!preview || config.paused || unresolvedConflicts > 0) return;
     const total = preview.changes.length;
-    if (!window.confirm(`${total} Änderung(en) jetzt ausführen? Vorher wird automatisch ein Snapshot erstellt.`)) return;
+    if (!window.confirm(`${total} Änderung(en) jetzt ausführen? Vorher wird der lokale Sicherungsverlauf aktualisiert.`)) return;
     setBusy(true);
     setMessage("");
     try {
-      const snapshot = addBrowserDataToBackup(await getBackupData());
-      await createAutomaticBackup(snapshot, true);
-      await createAutomaticPasswordBackup(true);
+      await createAutomaticSafetyBackup(true, captureBrowserStorage());
       const backup = await getSyncBackupData();
       const result = await applyMicrosoft365Sync({
         direction: config.direction,

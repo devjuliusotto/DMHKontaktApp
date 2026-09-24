@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
-  createAutomaticBackup,
+  createAutomaticSafetyBackup,
   getBackupData,
   importOutlookClassicAppointmentsOnce,
   importThunderbirdCalendarsOnce,
@@ -135,7 +135,7 @@ export function CalendarReconciliationDialog({ open, events, onClose, onChanged 
     let backup: BackupData | null = null;
     try {
       backup = addBrowserDataToBackup(await getBackupData());
-      await createAutomaticBackup(backup, true);
+      await createAutomaticSafetyBackup(true, backup.browserStorage);
       setUndoBackup(backup);
 
       const nextEvents = applyCalendarReconciliation(events, preview, conflictChoices);

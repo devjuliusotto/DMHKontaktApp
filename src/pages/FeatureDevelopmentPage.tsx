@@ -2,13 +2,12 @@ import { AlertTriangle, Files, KeyRound, RotateCcw, ShieldCheck, Trash2 } from "
 import { useState, type ReactNode } from "react";
 import { StatusMessage } from "../components/StatusMessage";
 import {
-  createAutomaticBackup,
-  getBackupData,
+  createAutomaticSafetyBackup,
   resetMigrationCaptureStatus,
   resetLocalAppData,
   restartApp
 } from "../services/db";
-import { addBrowserDataToBackup } from "../utils/backup";
+import { captureBrowserStorage } from "../utils/backup";
 import type { AppFeature, AppFeatureAvailability } from "../utils/featureFlags";
 import { releaseFeatureDefaults } from "../utils/featureFlags";
 
@@ -60,7 +59,7 @@ export function FeatureDevelopmentPage({ availability, onFeatureChange, onReset 
 
   const resetApplication = async () => {
     const confirmed = window.confirm(
-      "App vollständig zurücksetzen?\n\nAlle lokalen App-Daten werden unwiderruflich gelöscht. Outlook, Exchange und die externe automatische Sicherung bleiben erhalten."
+      "App vollständig zurücksetzen?\n\nAlle aktiven lokalen App-Daten werden gelöscht. Outlook, Exchange und der lokale Sicherungsverlauf bleiben zur Wiederherstellung erhalten."
     );
     if (!confirmed) return;
     const typed = window.prompt("Tippen Sie ZURÜCKSETZEN, um alle lokalen App-Daten zu löschen.");
@@ -73,8 +72,7 @@ export function FeatureDevelopmentPage({ availability, onFeatureChange, onReset 
     setBusyAction("reset-application");
     setMessage("");
     try {
-      const backup = addBrowserDataToBackup(await getBackupData());
-      await createAutomaticBackup(backup, true);
+      await createAutomaticSafetyBackup(true, captureBrowserStorage());
       await resetLocalAppData();
       localStorage.clear();
       await restartApp();

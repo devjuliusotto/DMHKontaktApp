@@ -3,7 +3,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-$env:CARGO_TARGET_DIR = Join-Path $env:TEMP "agendakontakte-cargo-target"
+$env:CARGO_TARGET_DIR = Join-Path $root "src-tauri\target-dev"
 $exe = Join-Path $env:CARGO_TARGET_DIR "debug\agendakontakte.exe"
 $manifest = Join-Path $root "src-tauri\Cargo.toml"
 

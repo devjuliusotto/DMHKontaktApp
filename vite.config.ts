@@ -9,7 +9,9 @@ export default defineConfig({
     port: 4000,
     strictPort: true,
     watch: {
-      ignored: ["**/src-tauri/target/**"]
+      // Rust owns this directory and locks its DLLs while compiling. Tauri
+      // watches Rust sources itself, so Vite must not attempt to watch it.
+      ignored: ["**/src-tauri/target/**", "**/src-tauri/target-dev/**"]
     }
   },
   envPrefix: ["VITE_", "TAURI_"],

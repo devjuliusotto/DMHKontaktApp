@@ -200,6 +200,9 @@ export interface RecoveryArchiveStatus {
   totalCheckpoints: number;
   totalSizeBytes: number;
   checkpoints: RecoveryCheckpointSummary[];
+  internalLocation: string;
+  externalLocation: string;
+  externalEncrypted: boolean;
 }
 
 export interface DeleteAllContactsResult {

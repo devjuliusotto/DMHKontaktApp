@@ -28,10 +28,35 @@ reduzir o repositório; o logo exibido na interface continua em `public/`.
    - em **Secrets**: `TAURI_SIGNING_PRIVATE_KEY`;
    - em **Secrets**, somente se a chave foi criada com senha:
      `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, contendo exatamente a senha original;
+   - em **Secrets**: `DMH_WINDOWS_CODESIGN_PFX_BASE64`, contendo o backup PFX
+     protegido por senha e codificado em Base64;
+   - em **Secrets**: `DMH_WINDOWS_CODESIGN_PFX_PASSWORD`, a senha do PFX. Este
+     segredo é usado somente no runner Windows, que importa o certificado para
+     `Cert:\CurrentUser\My` durante o job e apaga o arquivo temporário ao final;
    - em **Secrets**: `MIGRATION_CAPTURE_URL`.
 4. Verificar se **Actions > General > Workflow permissions** permite escrita do `GITHUB_TOKEN`, necessária para publicar releases.
 
 O ambiente `production` funciona como o último portão humano. Se a conta/plano não disponibilizar revisores obrigatórios para este repositório, o workflow continua sendo manual e executa todas as verificações antes de publicar diretamente o commit selecionado da `main`.
+
+## Assinatura Authenticode interna
+
+Os instaladores Windows usam o certificado interno **Diakonissenmutterhaus
+Aidlingen Internal Code Signing**. O certificado público pode ser distribuído
+em `certificates/public/`; PFX, senha e chaves privadas nunca podem ser
+versionados. Antes da primeira execução do workflow, crie um PFX protegido por
+senha localmente com:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/initialize-internal-code-signing.ps1 -PfxProtection Password -PfxFileName Diakonissenmutterhaus-Aidlingen-GitHub-Actions.pfx
+```
+
+Cadastre o conteúdo desse PFX em Base64 como
+`DMH_WINDOWS_CODESIGN_PFX_BASE64` e a senha como
+`DMH_WINDOWS_CODESIGN_PFX_PASSWORD` nos GitHub Actions Secrets. Os workflows
+falham propositalmente se um desses valores não estiver configurado, impedindo
+uma publicação sem assinatura. Computadores internos que instalem o aplicativo
+precisam receber o `.cer` público em **Trusted Root Certification Authorities**
+e **Trusted Publishers**, preferencialmente por GPO.
 
 ## Fluxo automático: push -> Admin Test -> release oficial
 

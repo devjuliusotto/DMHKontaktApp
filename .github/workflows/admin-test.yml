@@ -92,6 +92,8 @@ jobs:
           M365_TENANT_ID: ${{ vars.M365_TENANT_ID }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          DMH_WINDOWS_CODESIGN_PFX_BASE64: ${{ secrets.DMH_WINDOWS_CODESIGN_PFX_BASE64 }}
+          DMH_WINDOWS_CODESIGN_PFX_PASSWORD: ${{ secrets.DMH_WINDOWS_CODESIGN_PFX_PASSWORD }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:M365_CLIENT_ID)) {
             throw "Repository variable M365_CLIENT_ID fehlt."
@@ -101,6 +103,12 @@ jobs:
           }
           if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
             throw "Repository secret TAURI_SIGNING_PRIVATE_KEY fehlt."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:DMH_WINDOWS_CODESIGN_PFX_BASE64)) {
+            throw "Repository secret DMH_WINDOWS_CODESIGN_PFX_BASE64 fehlt."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:DMH_WINDOWS_CODESIGN_PFX_PASSWORD)) {
+            throw "Repository secret DMH_WINDOWS_CODESIGN_PFX_PASSWORD fehlt."
           }
           if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD)) {
             "Kein Signaturpasswort konfiguriert; der Build verwendet einen unverschlüsselten Tauri-Schlüssel."
@@ -159,6 +167,13 @@ jobs:
         id: install_dependencies
         run: npm ci
 
+      - name: Internes Code-Signing-Zertifikat importieren
+        shell: pwsh
+        env:
+          DMH_WINDOWS_CODESIGN_PFX_BASE64: ${{ secrets.DMH_WINDOWS_CODESIGN_PFX_BASE64 }}
+          DMH_WINDOWS_CODESIGN_PFX_PASSWORD: ${{ secrets.DMH_WINDOWS_CODESIGN_PFX_PASSWORD }}
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/import-internal-code-signing-certificate.ps1
+
       - name: Quellversionen prüfen
         id: check_versions
         run: node scripts/check-version.mjs
@@ -179,6 +194,18 @@ jobs:
           VITE_FEATURE_SERVICES_DEFAULT: "false"
           VITE_SOURCE_COMMIT: ${{ steps.source.outputs.sha }}
         run: npm run build
+
+      - name: Frontend-Komponententests
+        id: frontend_tests
+        run: npm test
+
+      - name: Chromium für Ende-zu-Ende-Tests installieren
+        id: install_e2e_browser
+        run: npx playwright install chromium
+
+      - name: Kritische Bedienabläufe testen
+        id: frontend_e2e
+        run: npm run test:e2e
 
       - name: Rust-Tests
         id: rust_tests
@@ -261,6 +288,9 @@ jobs:
           THEME_OUTCOME: ${{ steps.check_theme.outcome }}
           CONFIG_OUTCOME: ${{ steps.check_configuration.outcome }}
           FRONTEND_OUTCOME: ${{ steps.build_frontend.outcome }}
+          FRONTEND_TESTS_OUTCOME: ${{ steps.frontend_tests.outcome }}
+          E2E_BROWSER_OUTCOME: ${{ steps.install_e2e_browser.outcome }}
+          FRONTEND_E2E_OUTCOME: ${{ steps.frontend_e2e.outcome }}
           RUST_OUTCOME: ${{ steps.rust_tests.outcome }}
           PREBUILD_OUTCOME: ${{ steps.prebuild_admin_installer.outcome }}
           CLEANUP_OUTCOME: ${{ steps.remove_previous_release.outcome }}
@@ -283,6 +313,9 @@ jobs:
             "check_theme=$env:THEME_OUTCOME"
             "check_configuration=$env:CONFIG_OUTCOME"
             "build_frontend=$env:FRONTEND_OUTCOME"
+            "frontend_tests=$env:FRONTEND_TESTS_OUTCOME"
+            "install_e2e_browser=$env:E2E_BROWSER_OUTCOME"
+            "frontend_e2e=$env:FRONTEND_E2E_OUTCOME"
             "rust_tests=$env:RUST_OUTCOME"
             "prebuild_admin_installer=$env:PREBUILD_OUTCOME"
             "remove_previous_release=$env:CLEANUP_OUTCOME"

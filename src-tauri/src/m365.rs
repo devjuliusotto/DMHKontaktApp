@@ -4,7 +4,7 @@ use base64::{
     Engine as _,
 };
 use chrono::{Duration as ChronoDuration, Utc};
-use rand::RngCore;
+use rand::{Rng, RngCore};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -25,6 +25,13 @@ const GRAPH_PROFILE_URL: &str =
     "https://graph.microsoft.com/v1.0/me?$select=id,displayName,mail,userPrincipalName";
 const LOGIN_SCOPES: &str = "openid profile offline_access User.Read Contacts.ReadWrite Contacts.ReadWrite.Shared Calendars.ReadWrite Calendars.ReadWrite.Shared Calendars.Read.Shared MailboxSettings.Read Files.ReadWrite.All Sites.Read.All";
 const INTERACTIVE_LOGIN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const GRAPH_MAX_ATTEMPTS: usize = 5;
+const GRAPH_MAX_PAGES: usize = 100_000;
+// Large enough to drain a 200k-event first import in roughly 40 bounded
+// transactions, while keeping each WebView/SQLite hand-off manageable.
+const CALENDAR_DELTA_BATCH_SIZE: usize = 5_000;
+const CALENDAR_DELTA_WINDOW_START: &str = "1900-01-01T00:00:00Z";
+const CALENDAR_DELTA_WINDOW_END: &str = "2100-01-01T00:00:00Z";
 
 #[derive(Default)]
 pub struct Microsoft365Runtime {
@@ -635,15 +642,20 @@ fn set_setting(app: &AppHandle, key: &str, value: &str) -> Result<(), String> {
 }
 
 fn delete_connection_settings(app: &AppHandle) -> Result<(), String> {
-    let conn = open_db(app)?;
+    let mut conn = open_db(app)?;
     conn.execute_batch("PRAGMA secure_delete = ON;")
         .map_err(|error| error.to_string())?;
-    conn.execute(
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    tx.execute(
         "DELETE FROM app_settings WHERE key IN (?1, ?2)",
         params![TOKEN_SETTING_KEY, PROFILE_SETTING_KEY],
     )
     .map_err(|error| error.to_string())?;
-    Ok(())
+    tx.execute("DELETE FROM m365_calendar_delta_changes", [])
+        .map_err(|error| error.to_string())?;
+    tx.execute("DELETE FROM m365_calendar_delta_state", [])
+        .map_err(|error| error.to_string())?;
+    tx.commit().map_err(|error| error.to_string())
 }
 
 fn read_account(app: &AppHandle) -> Result<Option<Microsoft365Account>, String> {
@@ -770,32 +782,105 @@ fn cached_access_token(state: &State<'_, AppState>) -> Result<Option<String>, St
     Ok(None)
 }
 
-pub(crate) async fn graph_json(access_token: &str, url: &str) -> Result<Value, String> {
-    let response = http_client()
-        .get(url)
-        .bearer_auth(access_token)
-        .header("Prefer", "outlook.timezone=\"W. Europe Standard Time\"")
-        .send()
-        .await
-        .map_err(|_| {
-            "Microsoft Graph ist derzeit nicht erreichbar. Internetverbindung prüfen.".to_string()
-        })?;
-    if !response.status().is_success() {
+fn graph_retry_delay(
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+    attempt: usize,
+) -> Option<Duration> {
+    if !matches!(status.as_u16(), 429 | 502 | 503 | 504) {
+        return None;
+    }
+    let retry_after = headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|seconds| seconds.clamp(1, 120));
+    let exponential = (1u64 << attempt.min(6)).min(60);
+    let jitter_ms = rand::thread_rng().gen_range(0..=400);
+    Some(Duration::from_millis(
+        retry_after.unwrap_or(exponential) * 1_000 + jitter_ms,
+    ))
+}
+
+async fn graph_json_response(access_token: &str, url: &str) -> Result<Value, String> {
+    let mut last_network_error = None;
+    for attempt in 0..GRAPH_MAX_ATTEMPTS {
+        let response = match http_client()
+            .get(url)
+            .bearer_auth(access_token)
+            .header(
+                "Prefer",
+                "outlook.timezone=\"W. Europe Standard Time\", odata.maxpagesize=250",
+            )
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                last_network_error = Some(error.to_string());
+                if attempt + 1 < GRAPH_MAX_ATTEMPTS {
+                    tokio::time::sleep(Duration::from_secs(1u64 << attempt.min(5))).await;
+                    continue;
+                }
+                break;
+            }
+        };
+        let status = response.status();
+        if status.is_success() {
+            return response
+                .json::<Value>()
+                .await
+                .map_err(|_| "Microsoft Graph hat eine ungültige Antwort geliefert.".to_string());
+        }
+        if let Some(delay) = graph_retry_delay(status, response.headers(), attempt) {
+            if attempt + 1 < GRAPH_MAX_ATTEMPTS {
+                tokio::time::sleep(delay).await;
+                continue;
+            }
+        }
+        let detail = response.json::<Value>().await.ok().and_then(|value| {
+            let code = value
+                .pointer("/error/code")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let message = value
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let safe = format!("{code}: {message}")
+                .chars()
+                .filter(|character| !character.is_control())
+                .take(240)
+                .collect::<String>();
+            (!safe.trim_matches([':', ' ']).is_empty()).then_some(safe)
+        });
         return Err(format!(
-            "Microsoft Graph konnte die Synchronisierungsquellen nicht lesen (HTTP {}).",
-            response.status().as_u16()
+            "Microsoft Graph konnte die Daten nicht lesen (HTTP {}){}.",
+            status.as_u16(),
+            detail.map(|value| format!(", {value}")).unwrap_or_default()
         ));
     }
-    response.json::<Value>().await.map_err(|_| {
-        "Microsoft Graph hat eine ungültige Antwort für die Synchronisierungsquellen geliefert."
-            .to_string()
-    })
+    Err(format!(
+        "Microsoft Graph ist nach mehreren Versuchen nicht erreichbar. Internetverbindung prüfen{}.",
+        last_network_error
+            .map(|error| format!(" ({})", error.chars().take(160).collect::<String>()))
+            .unwrap_or_default()
+    ))
+}
+
+pub(crate) async fn graph_json(access_token: &str, url: &str) -> Result<Value, String> {
+    graph_json_response(access_token, url).await
 }
 
 pub(crate) async fn graph_collection(access_token: &str, url: &str) -> Result<Vec<Value>, String> {
     let mut next_url = Some(url.to_string());
     let mut values = Vec::new();
+    let mut pages = 0usize;
     while let Some(current_url) = next_url.take() {
+        pages += 1;
+        if pages > GRAPH_MAX_PAGES {
+            return Err("Microsoft Graph lieferte ungewöhnlich viele Seiten. Die Synchronisierung wurde sicher abgebrochen.".to_string());
+        }
         let page = graph_json(access_token, &current_url).await?;
         if let Some(items) = page.get("value").and_then(Value::as_array) {
             values.extend(items.iter().cloned());
@@ -806,6 +891,246 @@ pub(crate) async fn graph_collection(access_token: &str, url: &str) -> Result<Ve
             .map(ToOwned::to_owned);
     }
     Ok(values)
+}
+
+#[derive(Debug)]
+struct CalendarDeltaBatch {
+    values: Vec<Value>,
+    removed_ids: HashSet<String>,
+}
+
+fn calendar_delta_queue_count(app: &AppHandle, source_id: &str) -> Result<usize, String> {
+    open_db(app)?
+        .query_row(
+            "SELECT COUNT(*) FROM m365_calendar_delta_changes WHERE source_id = ?1",
+            [source_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())
+}
+
+fn clear_calendar_delta_state(app: &AppHandle, source_id: &str) -> Result<(), String> {
+    let mut conn = open_db(app)?;
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    tx.execute(
+        "DELETE FROM m365_calendar_delta_state WHERE source_id = ?1",
+        [source_id],
+    )
+    .map_err(|error| error.to_string())?;
+    tx.execute(
+        "DELETE FROM m365_calendar_delta_changes WHERE source_id = ?1",
+        [source_id],
+    )
+    .map_err(|error| error.to_string())?;
+    tx.commit().map_err(|error| error.to_string())
+}
+
+fn calendar_delta_link(app: &AppHandle, source_id: &str) -> Result<Option<String>, String> {
+    open_db(app)?
+        .query_row(
+            "SELECT delta_link FROM m365_calendar_delta_state
+             WHERE source_id = ?1 AND window_start = ?2 AND window_end = ?3",
+            params![
+                source_id,
+                CALENDAR_DELTA_WINDOW_START,
+                CALENDAR_DELTA_WINDOW_END
+            ],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())
+}
+
+fn queue_calendar_delta_page(
+    app: &AppHandle,
+    source_id: &str,
+    values: &[Value],
+) -> Result<(), String> {
+    if values.is_empty() {
+        return Ok(());
+    }
+    let mut conn = open_db(app)?;
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    let received_at = Utc::now().to_rfc3339();
+    for value in values {
+        let remote_id = value_text(value, "id").trim();
+        if remote_id.is_empty() {
+            continue;
+        }
+        let removed = value.get("@removed").is_some();
+        let payload = if removed {
+            None
+        } else {
+            Some(serde_json::to_string(value).map_err(|error| error.to_string())?)
+        };
+        tx.execute(
+            "INSERT INTO m365_calendar_delta_changes
+             (source_id, remote_id, change_kind, payload_json, received_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(source_id, remote_id) DO UPDATE SET
+               change_kind = excluded.change_kind,
+               payload_json = excluded.payload_json,
+               received_at = excluded.received_at",
+            params![
+                source_id,
+                remote_id,
+                if removed { "delete" } else { "upsert" },
+                payload,
+                received_at
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    tx.commit().map_err(|error| error.to_string())
+}
+
+fn save_calendar_delta_link(
+    app: &AppHandle,
+    source_id: &str,
+    delta_link: &str,
+) -> Result<(), String> {
+    let conn = open_db(app)?;
+    conn.execute(
+        "INSERT INTO m365_calendar_delta_state
+         (source_id, delta_link, window_start, window_end, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(source_id) DO UPDATE SET
+           delta_link = excluded.delta_link,
+           window_start = excluded.window_start,
+           window_end = excluded.window_end,
+           updated_at = excluded.updated_at",
+        params![
+            source_id,
+            delta_link,
+            CALENDAR_DELTA_WINDOW_START,
+            CALENDAR_DELTA_WINDOW_END,
+            Utc::now().to_rfc3339()
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+async fn refresh_calendar_delta_queue(
+    app: &AppHandle,
+    access_token: &str,
+    source: &Microsoft365SyncSource,
+) -> Result<(), String> {
+    if calendar_delta_queue_count(app, &source.id)? > 0 {
+        return Ok(());
+    }
+
+    let mut reset_attempted = false;
+    loop {
+        let saved_link = calendar_delta_link(app, &source.id)?;
+        let mut next_url = Some(saved_link.clone().unwrap_or_else(|| {
+            format!(
+                "{}/calendarView/delta?startDateTime={}&endDateTime={}",
+                source.resource_path, CALENDAR_DELTA_WINDOW_START, CALENDAR_DELTA_WINDOW_END
+            )
+        }));
+        let mut pages = 0usize;
+        let mut final_delta_link = None;
+        let mut restart = false;
+        while let Some(url) = next_url.take() {
+            pages += 1;
+            if pages > GRAPH_MAX_PAGES {
+                return Err("Microsoft Graph lieferte ungewöhnlich viele Delta-Seiten. Die Synchronisierung wurde sicher unterbrochen.".to_string());
+            }
+            let page = match graph_json(access_token, &url).await {
+                Ok(page) => page,
+                Err(error)
+                    if saved_link.is_some()
+                        && !reset_attempted
+                        && (error.contains("HTTP 400") || error.contains("HTTP 410")) =>
+                {
+                    clear_calendar_delta_state(app, &source.id)?;
+                    reset_attempted = true;
+                    restart = true;
+                    break;
+                }
+                Err(error) => return Err(error),
+            };
+            if let Some(values) = page.get("value").and_then(Value::as_array) {
+                queue_calendar_delta_page(app, &source.id, values)?;
+            }
+            next_url = page
+                .get("@odata.nextLink")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned);
+            if next_url.is_none() {
+                final_delta_link = page
+                    .get("@odata.deltaLink")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned);
+            }
+        }
+        if restart {
+            continue;
+        }
+        let delta_link = final_delta_link.ok_or_else(|| {
+            "Microsoft Graph hat keinen Delta-Merker geliefert. Es wurden keine Änderungen verworfen."
+                .to_string()
+        })?;
+        save_calendar_delta_link(app, &source.id, &delta_link)?;
+        return Ok(());
+    }
+}
+
+fn read_calendar_delta_batch(
+    app: &AppHandle,
+    source_id: &str,
+) -> Result<CalendarDeltaBatch, String> {
+    let conn = open_db(app)?;
+    let mut statement = conn
+        .prepare(
+            "SELECT remote_id, change_kind, payload_json
+             FROM m365_calendar_delta_changes
+             WHERE source_id = ?1
+             ORDER BY received_at, remote_id
+             LIMIT ?2",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params![source_id, CALENDAR_DELTA_BATCH_SIZE], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .map_err(|error| error.to_string())?;
+    let mut values = Vec::new();
+    let mut removed_ids = HashSet::new();
+    for row in rows {
+        let (remote_id, change_kind, payload) = row.map_err(|error| error.to_string())?;
+        if change_kind == "delete" {
+            removed_ids.insert(remote_id);
+        } else if let Some(payload) = payload {
+            let value = serde_json::from_str::<Value>(&payload).map_err(|error| {
+                format!("Eine vorgemerkte Kalenderänderung ist beschädigt: {error}")
+            })?;
+            values.push(value);
+        }
+    }
+    Ok(CalendarDeltaBatch {
+        values,
+        removed_ids,
+    })
+}
+
+fn acknowledge_calendar_delta_change(
+    app: &AppHandle,
+    source_id: &str,
+    remote_id: &str,
+) -> Result<(), String> {
+    open_db(app)?
+        .execute(
+            "DELETE FROM m365_calendar_delta_changes WHERE source_id = ?1 AND remote_id = ?2",
+            params![source_id, remote_id],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 fn encode_graph_path_segment(value: &str) -> String {
@@ -2185,10 +2510,12 @@ struct PlannedOperation {
 struct Microsoft365SyncPlan {
     preview: Microsoft365SyncPreview,
     operations: Vec<PlannedOperation>,
+    delta_operation_acks: HashMap<String, (String, String)>,
+    delta_noop_acks: Vec<(String, String)>,
 }
 
 const MAX_CONTACT_OPERATIONS_PER_SYNC: usize = 250;
-const MAX_CALENDAR_OPERATIONS_PER_SYNC: usize = 250;
+const MAX_CALENDAR_OPERATIONS_PER_SYNC: usize = CALENDAR_DELTA_BATCH_SIZE;
 
 fn operation_limit(operation: &PlannedOperation) -> usize {
     match operation.change.kind.as_str() {
@@ -2298,6 +2625,8 @@ async fn build_m365_sync_plan(
     let mut deleted_local_events = crate::read_calendar_events(&crate::open_db(app)?, true)?;
     deleted_local_events.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
     let mut operations = Vec::new();
+    let mut pending_delta_ids = HashMap::<String, HashSet<String>>::new();
+    let mut delta_noop_acks = Vec::<(String, String)>::new();
     let mut remote_contacts = 0usize;
     let mut remote_events = 0usize;
     let calendar_export_target_id =
@@ -2686,12 +3015,28 @@ async fn build_m365_sync_plan(
             .filter(|source| calendar_source_is_enabled(request, &selected_calendars, source))
         {
             let direction = source_direction(request, &source.id);
-            let url = format!("{}/events?$select=id,subject,start,end,isAllDay,lastModifiedDateTime,location,body,categories,attendees,showAs,isReminderOn,reminderMinutesBeforeStart,sensitivity,isOnlineMeeting,onlineMeeting,onlineMeetingUrl,recurrence&$top=100", source.resource_path);
-            let mut values = graph_collection(access_token, &url).await?;
+            let use_delta = direction == "import";
+            let (mut values, removed_ids) = if use_delta {
+                refresh_calendar_delta_queue(app, access_token, source).await?;
+                let batch = read_calendar_delta_batch(app, &source.id)?;
+                let mut ids = batch.removed_ids.clone();
+                ids.extend(
+                    batch
+                        .values
+                        .iter()
+                        .map(|value| value_text(value, "id").to_string())
+                        .filter(|id| !id.is_empty()),
+                );
+                pending_delta_ids.insert(source.id.clone(), ids);
+                (batch.values, batch.removed_ids)
+            } else {
+                let url = format!("{}/events?$select=id,subject,start,end,isAllDay,lastModifiedDateTime,location,body,categories,attendees,showAs,isReminderOn,reminderMinutesBeforeStart,sensitivity,isOnlineMeeting,onlineMeeting,onlineMeetingUrl,recurrence&$top=100", source.resource_path);
+                (graph_collection(access_token, &url).await?, HashSet::new())
+            };
             for value in &mut values {
                 apply_m365_category_color(value, &master_category_colors);
             }
-            remote_events += values.len();
+            remote_events += values.len() + removed_ids.len();
             let remote_by_key: HashMap<String, &Value> = values
                 .iter()
                 .map(|value| (remote_event_key(value), value))
@@ -2704,7 +3049,8 @@ async fn build_m365_sync_plan(
             let mut matched_remote_ids = HashSet::new();
 
             for local in local_events.iter().filter(|event| {
-                duplicate_calendar_event_ids.contains(&event.id)
+                !use_delta
+                    && duplicate_calendar_event_ids.contains(&event.id)
                     && linked_calendar_remote_id(event, &source.id).is_some()
             }) {
                 let remote = linked_calendar_remote_id(local, &source.id)
@@ -2759,6 +3105,13 @@ async fn build_m365_sync_plan(
                     continue;
                 }
                 let linked_id = linked_calendar_remote_id(local, &source.id);
+                if use_delta
+                    && !linked_id
+                        .is_some_and(|id| remote_by_id.contains_key(id) || removed_ids.contains(id))
+                    && !remote_by_key.contains_key(&local_event_key(local))
+                {
+                    continue;
+                }
                 let remote = linked_id
                     .and_then(|remote_id| remote_by_id.get(remote_id).copied())
                     .or_else(|| remote_by_key.get(&local_event_key(local)).copied());
@@ -2767,6 +3120,9 @@ async fn build_m365_sync_plan(
                     matched_remote_ids.insert(remote_id.to_string());
                     let equivalent = event_equivalent(local, remote, source);
                     if equivalent && linked_id.is_some() {
+                        if use_delta {
+                            delta_noop_acks.push((source.id.clone(), remote_id.to_string()));
+                        }
                         continue;
                     }
                     // Equal appointments are linked without rewriting Exchange or the
@@ -2818,7 +3174,10 @@ async fn build_m365_sync_plan(
                             },
                         },
                     );
-                } else if linked_id.is_some() && direction != "export" {
+                } else if linked_id.is_some()
+                    && direction != "export"
+                    && (!use_delta || linked_id.is_some_and(|id| removed_ids.contains(id)))
+                {
                     push_operation(
                         &mut operations,
                         PlannedOperation {
@@ -2865,7 +3224,7 @@ async fn build_m365_sync_plan(
                 }
             }
 
-            for deleted in deleted_local_events.iter().cloned() {
+            for deleted in deleted_local_events.iter().cloned().filter(|_| !use_delta) {
                 let Some(remote_id) = linked_calendar_remote_id(&deleted, &source.id) else {
                     continue;
                 };
@@ -2932,10 +3291,50 @@ async fn build_m365_sync_plan(
                     );
                 }
             }
+            if use_delta {
+                for remote_id in &removed_ids {
+                    let has_local_match = local_events.iter().any(|event| {
+                        linked_calendar_remote_id(event, &source.id) == Some(remote_id.as_str())
+                    });
+                    if !has_local_match {
+                        delta_noop_acks.push((source.id.clone(), remote_id.clone()));
+                    }
+                }
+            }
         }
     }
 
     prioritize_operations(&mut operations);
+    let mut delta_operation_acks = HashMap::new();
+    for operation in &operations {
+        let Some(pending_ids) = pending_delta_ids.get(&operation.source.id) else {
+            continue;
+        };
+        let remote_id = match &operation.payload {
+            PlannedPayload::Calendar {
+                remote: Some(remote),
+                ..
+            } => Some(value_text(remote, "id")),
+            PlannedPayload::Calendar {
+                local: Some(local),
+                remote: None,
+            } => linked_calendar_remote_id(local, &operation.source.id),
+            _ => None,
+        };
+        if let Some(remote_id) = remote_id.filter(|id| pending_ids.contains(*id)) {
+            delta_operation_acks.insert(
+                operation.change.id.clone(),
+                (operation.source.id.clone(), remote_id.to_string()),
+            );
+        }
+    }
+    delta_noop_acks.retain(|(source_id, remote_id)| {
+        pending_delta_ids
+            .get(source_id)
+            .is_some_and(|ids| ids.contains(remote_id))
+    });
+    delta_noop_acks.sort();
+    delta_noop_acks.dedup();
 
     let create_in_m365 = operations
         .iter()
@@ -2979,6 +3378,8 @@ async fn build_m365_sync_plan(
                 .collect(),
         },
         operations,
+        delta_operation_acks,
+        delta_noop_acks,
     })
 }
 
@@ -2988,16 +3389,43 @@ async fn graph_write(
     url: &str,
     body: &Value,
 ) -> Result<Value, String> {
-    let response = http_client()
-        .request(method, url)
-        .bearer_auth(access_token)
-        .header("Prefer", "outlook.timezone=\"W. Europe Standard Time\"")
-        .json(body)
-        .send()
-        .await
-        .map_err(|_| "Microsoft Graph ist derzeit nicht erreichbar.".to_string())?;
-    let status = response.status();
-    if !status.is_success() {
+    let mut last_network_error = None;
+    let idempotent = method != reqwest::Method::POST;
+    for attempt in 0..GRAPH_MAX_ATTEMPTS {
+        let response = match http_client()
+            .request(method.clone(), url)
+            .bearer_auth(access_token)
+            .header("Prefer", "outlook.timezone=\"W. Europe Standard Time\"")
+            .json(body)
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                last_network_error = Some(error.to_string());
+                if idempotent && attempt + 1 < GRAPH_MAX_ATTEMPTS {
+                    tokio::time::sleep(Duration::from_secs(1u64 << attempt.min(5))).await;
+                    continue;
+                }
+                break;
+            }
+        };
+        let status = response.status();
+        if status.is_success() {
+            if status.as_u16() == 204 {
+                return Ok(Value::Null);
+            }
+            return response
+                .json::<Value>()
+                .await
+                .map_err(|_| "Microsoft Graph hat eine ungültige Antwort geliefert.".to_string());
+        }
+        if let Some(delay) = graph_retry_delay(status, response.headers(), attempt) {
+            if (idempotent || status.as_u16() == 429) && attempt + 1 < GRAPH_MAX_ATTEMPTS {
+                tokio::time::sleep(delay).await;
+                continue;
+            }
+        }
         let detail = response.json::<Value>().await.ok().and_then(|value| {
             let code = value
                 .pointer("/error/code")
@@ -3020,13 +3448,12 @@ async fn graph_write(
             detail.map(|value| format!(", {value}")).unwrap_or_default()
         ));
     }
-    if status.as_u16() == 204 {
-        return Ok(Value::Null);
-    }
-    response
-        .json::<Value>()
-        .await
-        .map_err(|_| "Microsoft Graph hat eine ungültige Antwort geliefert.".to_string())
+    Err(format!(
+        "Microsoft Graph ist nach mehreren Versuchen nicht erreichbar{}.",
+        last_network_error
+            .map(|error| format!(" ({})", error.chars().take(160).collect::<String>()))
+            .unwrap_or_default()
+    ))
 }
 
 const CONTACT_OUTBOX_BATCH_SIZE: usize = 250;
@@ -3626,6 +4053,11 @@ pub async fn apply_m365_sync(
         backup: request.backup,
     };
     let plan = build_m365_sync_plan(&app, &access_token, &preview_request).await?;
+    let conflicts = plan.preview.conflicts;
+    for (source_id, remote_id) in &plan.delta_noop_acks {
+        acknowledge_calendar_delta_change(&app, source_id, remote_id)?;
+    }
+    let delta_operation_acks = plan.delta_operation_acks;
     let mut result = Microsoft365SyncResult {
         started_at,
         finished_at: String::new(),
@@ -3633,7 +4065,7 @@ pub async fn apply_m365_sync(
         updated: 0,
         deleted: 0,
         ignored: 0,
-        conflicts: plan.preview.conflicts,
+        conflicts,
         errors: 0,
         error_messages: Vec::new(),
         calendar_upserts: Vec::new(),
@@ -3641,6 +4073,9 @@ pub async fn apply_m365_sync(
     };
 
     for operation in plan.operations {
+        let delta_ack = delta_operation_acks.get(&operation.change.id).cloned();
+        let conflict_was_decided = operation.change.action != "conflict"
+            || request.decisions.contains_key(&operation.change.id);
         let requested_action = if operation.change.action == "conflict" {
             request
                 .decisions
@@ -4025,6 +4460,11 @@ pub async fn apply_m365_sync(
                 Ok(())
             }
         };
+        if execution.is_ok() && conflict_was_decided {
+            if let Some((source_id, remote_id)) = delta_ack {
+                acknowledge_calendar_delta_change(&app, &source_id, &remote_id)?;
+            }
+        }
         if let Err(error) = execution {
             result.errors += 1;
             if result.error_messages.len() < 20 {
@@ -4509,6 +4949,20 @@ fn unprotect_secret(_protected_secret: &[u8]) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn graph_retry_uses_retry_after_and_only_transient_statuses() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            reqwest::header::HeaderValue::from_static("7"),
+        );
+        let delay = graph_retry_delay(reqwest::StatusCode::TOO_MANY_REQUESTS, &headers, 0)
+            .expect("429 must be retried");
+        assert!(delay >= Duration::from_secs(7));
+        assert!(delay < Duration::from_secs(8));
+        assert!(graph_retry_delay(reqwest::StatusCode::BAD_REQUEST, &headers, 0).is_none());
+    }
 
     fn contact_for_identity(name: &str, email: &str, phone: &str) -> crate::Contact {
         crate::Contact {

@@ -115,12 +115,6 @@ export function EasyImportDialog({ kind, open, onClose, onImported, onManageSync
                 {busyPlatform === "thunderbird" && <LoaderCircle className="spin" size={23} />}
               </button>
             </div>
-            {!contacts && (
-              <button className="easy-import-connected-button" type="button" onClick={() => void scanConnectedCalendars()} disabled={busyPlatform !== null}>
-                <CloudCog size={23} aria-hidden="true" />
-                <span><strong>Verbundene Kalender übernehmen</strong><small>Google, Apple, Exchange, ChurchTools und weitere Konten erkennen</small></span>
-              </button>
-            )}
             <p className="easy-import-safe-note">Ein Klick startet den Import. Es wird nichts gelöscht.</p>
           </>
         )}

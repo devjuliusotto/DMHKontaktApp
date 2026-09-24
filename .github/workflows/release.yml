@@ -9,9 +9,14 @@ on:
         default: "main"
         type: string
       version:
-        description: "Offizielle SemVer-Version, zum Beispiel 0.1.0"
+        description: "Offizielle SemVer-Version (mindestens 0.1.1)"
         required: true
-        default: "0.1.0"
+        default: "0.1.1"
+        type: string
+      release_notes:
+        description: "Kurzer Hinweis für die Download-Seite"
+        required: false
+        default: "Stabilitäts- und Funktionsverbesserungen für DMH Backup."
         type: string
 
 concurrency:
@@ -28,15 +33,44 @@ jobs:
       contents: read
 
     steps:
-      - name: Nur main darf offiziell veröffentlichen
+      - name: Release-Anfrage prüfen
         id: validate_request
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
           if ("${{ github.ref }}" -ne "refs/heads/main") {
             throw "Offizielle Releases müssen über den Workflow auf dem Branch main gestartet werden."
           }
-          if ("${{ inputs.version }}" -notmatch '^\d+\.\d+\.\d+$') {
-            throw "Offizielle Version muss das Format 0.1.0 ohne beta/rc-Zusatz haben."
+          if ($env:RELEASE_VERSION -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Offizielle Version muss das Format 0.1.1 ohne beta/rc-Zusatz haben."
+          }
+          $requestedVersion = [Version]$env:RELEASE_VERSION
+          $minimumVersion = [Version]"0.1.1"
+          if ($requestedVersion -lt $minimumVersion) {
+            throw "Offizielle Releases müssen mindestens Version 0.1.1 verwenden. 0.0.x darf nicht mehr veröffentlicht werden."
+          }
+
+          $headers = @{
+            Accept = "application/vnd.github+json"
+            Authorization = "Bearer $env:GH_TOKEN"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+          $tagExists = $false
+          try {
+            $null = Invoke-RestMethod `
+              -Uri "https://api.github.com/repos/${{ github.repository }}/releases/tags/v$env:RELEASE_VERSION" `
+              -Headers $headers
+            $tagExists = $true
+          } catch {
+            $statusCode = [int]$_.Exception.Response.StatusCode
+            if ($statusCode -ne 404) {
+              throw "Die vorhandenen Releases konnten nicht zuverlässig geprüft werden: $($_.Exception.Message)"
+            }
+          }
+          if ($tagExists) {
+            throw "Die Release v$env:RELEASE_VERSION existiert bereits. Bitte eine höhere Version wählen."
           }
 
       - name: Getesteten Quellstand auflösen
@@ -122,6 +156,18 @@ jobs:
         id: build_frontend
         run: npm run build
 
+      - name: Frontend-Komponententests
+        id: frontend_tests
+        run: npm test
+
+      - name: Chromium für Ende-zu-Ende-Tests installieren
+        id: install_e2e_browser
+        run: npx playwright install chromium
+
+      - name: Kritische Bedienabläufe testen
+        id: frontend_e2e
+        run: npm run test:e2e
+
       - name: Rust-Tests
         id: rust_tests
         env:
@@ -144,6 +190,9 @@ jobs:
           THEME_OUTCOME: ${{ steps.check_theme.outcome }}
           M365_OUTCOME: ${{ steps.check_m365_configuration.outcome }}
           FRONTEND_OUTCOME: ${{ steps.build_frontend.outcome }}
+          FRONTEND_TESTS_OUTCOME: ${{ steps.frontend_tests.outcome }}
+          E2E_BROWSER_OUTCOME: ${{ steps.install_e2e_browser.outcome }}
+          FRONTEND_E2E_OUTCOME: ${{ steps.frontend_e2e.outcome }}
           RUST_OUTCOME: ${{ steps.rust_tests.outcome }}
         run: |
           $reportPath = Join-Path $env:RUNNER_TEMP "stable-verify-diagnostics.txt"
@@ -162,6 +211,9 @@ jobs:
             "check_theme=$env:THEME_OUTCOME"
             "check_m365_configuration=$env:M365_OUTCOME"
             "build_frontend=$env:FRONTEND_OUTCOME"
+            "frontend_tests=$env:FRONTEND_TESTS_OUTCOME"
+            "install_e2e_browser=$env:E2E_BROWSER_OUTCOME"
+            "frontend_e2e=$env:FRONTEND_E2E_OUTCOME"
             "rust_tests=$env:RUST_OUTCOME"
             "created_utc=$([DateTime]::UtcNow.ToString('o'))"
           )
@@ -242,9 +294,17 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          DMH_WINDOWS_CODESIGN_PFX_BASE64: ${{ secrets.DMH_WINDOWS_CODESIGN_PFX_BASE64 }}
+          DMH_WINDOWS_CODESIGN_PFX_PASSWORD: ${{ secrets.DMH_WINDOWS_CODESIGN_PFX_PASSWORD }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
             throw "Repository secret TAURI_SIGNING_PRIVATE_KEY fehlt."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:DMH_WINDOWS_CODESIGN_PFX_BASE64)) {
+            throw "Repository secret DMH_WINDOWS_CODESIGN_PFX_BASE64 fehlt."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:DMH_WINDOWS_CODESIGN_PFX_PASSWORD)) {
+            throw "Repository secret DMH_WINDOWS_CODESIGN_PFX_PASSWORD fehlt."
           }
           if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD)) {
             "Kein Signaturpasswort konfiguriert; der Build verwendet einen unverschlüsselten Tauri-Schlüssel."
@@ -252,6 +312,13 @@ jobs:
             "Signaturpasswort ist konfiguriert."
           }
           "Der erforderliche Signaturschlüssel ist vorhanden."
+
+      - name: Internes Code-Signing-Zertifikat importieren
+        shell: pwsh
+        env:
+          DMH_WINDOWS_CODESIGN_PFX_BASE64: ${{ secrets.DMH_WINDOWS_CODESIGN_PFX_BASE64 }}
+          DMH_WINDOWS_CODESIGN_PFX_PASSWORD: ${{ secrets.DMH_WINDOWS_CODESIGN_PFX_PASSWORD }}
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/import-internal-code-signing-certificate.ps1
 
       - name: Offizielle Tauri-Version bauen und veröffentlichen
         id: publish_stable_release
@@ -271,9 +338,14 @@ jobs:
           M365_TENANT_ID: ${{ vars.M365_TENANT_ID }}
         with:
           tagName: v${{ inputs.version }}
-          releaseName: DMH Kontakte und Kalender v${{ inputs.version }}
+          releaseName: DMH Backup v${{ inputs.version }}
           releaseBody: |
-            Offizielle stabile Windows-Version für die Anwenderinnen.
+            ${{ inputs.release_notes }}
+
+            Enthaltene Windows-Downloads:
+            - EXE-Installer für die einfache Installation
+            - MSI-Installer für die Softwareverteilung
+
             Quellstand: ${{ needs.verify.outputs.source_sha }}
           releaseDraft: false
           prerelease: false

@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
-  createAutomaticBackup,
+  createAutomaticSafetyBackup,
   getBackupData,
   importSelectedOutlookClassicContacts,
   importThunderbirdContactsOnce,
@@ -127,7 +127,7 @@ export function ContactReconciliationDialog({ open, onClose, onChanged }: Contac
     setError("");
     try {
       const backup = addBrowserDataToBackup(await getBackupData());
-      await createAutomaticBackup(backup, true);
+      await createAutomaticSafetyBackup(true, backup.browserStorage);
       setUndoBackup(backup);
 
       if (platform === "outlook") {

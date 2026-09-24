@@ -1,14 +1,17 @@
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { Download, Ellipsis, Folder, FolderOpen, FolderPlus, Info, ListChecks, Mail, Minus, Pencil, Plus, RefreshCw, Search, ShieldCheck, Trash2, Upload, UserPlus, X } from "lucide-react";
+import { Check, Download, Ellipsis, Folder, FolderOpen, FolderPlus, Info, ListChecks, Mail, Minus, Pencil, Plus, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Trash2, Upload, UserPlus, X } from "lucide-react";
 import { type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ContactEditorPane } from "../components/ContactEditorPane";
-import { ContactTable } from "../components/ContactTable";
+import { ContactForm } from "../components/ContactForm";
+import { ContactTable, type ContactNameDisplay, type ContactSort } from "../components/ContactTable";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ContactReconciliationDialog } from "../components/ContactReconciliationDialog";
 import { ActionResultDialog, type ActionResult } from "../components/ActionResultDialog";
+import { EasyImportDialog } from "../components/EasyImportDialog";
+import { EmptyImportState } from "../components/EmptyImportState";
 import { Microsoft365SyncDialog } from "../components/Microsoft365SyncDialog";
 import { StatusMessage } from "../components/StatusMessage";
-import { UnsavedContactChangesDialog } from "../components/UnsavedContactChangesDialog";
+import { UnsavedContactChangesDialog, type UnsavedContactChange } from "../components/UnsavedContactChangesDialog";
 import type { Page } from "../components/Sidebar";
 import { t } from "../i18n";
 import {
@@ -72,6 +75,7 @@ const blankGroup: Group = { name: "", description: "", createdAt: "", updatedAt:
 const emailAppSettingKey = "default_email_app";
 const contactsFontSizeStorageKey = "dmh.contacts.fontSize";
 const contactPaneLayoutStorageKey = "dmh.contacts.paneLayout.v2";
+const contactListPreferencesStorageKey = "dmh.contacts.listPreferences.v1";
 const contactsFontSizes = [14, 16, 18, 20] as const;
 const allContactsFolderName = "Alle Kontakte";
 const ungroupedGroupName = "Gesammelte Adressen";
@@ -130,12 +134,103 @@ function formatGroupDate(value: string): string {
   return new Intl.DateTimeFormat("de-DE", { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
 
+function initialContactListPreferences(): { nameDisplay: ContactNameDisplay; sort: ContactSort } {
+  try {
+    const saved = JSON.parse(localStorage.getItem(contactListPreferencesStorageKey) ?? "null") as {
+      nameDisplay?: ContactNameDisplay;
+      sort?: Partial<ContactSort>;
+    } | null;
+    const nameDisplay = saved?.nameDisplay === "last-first" ? "last-first" : "first-last";
+    const key = saved?.sort?.key === "email" ? "email" : "name";
+    const direction = saved?.sort?.direction === "desc" ? "desc" : "asc";
+    return { nameDisplay, sort: { key, direction } };
+  } catch {
+    return { nameDisplay: "first-last", sort: { key: "name", direction: "asc" } };
+  }
+}
+
 function contactDraftSignature(value: ContactInput, automaticDisplayName: boolean): string {
   return JSON.stringify({
     ...value,
     groupIds: [...value.groupIds].sort((left, right) => left - right),
     automaticDisplayName
   });
+}
+
+type ContactDraftSnapshot = ContactInput & { automaticDisplayName: boolean };
+
+const contactChangeFields: Array<{ key: keyof Omit<ContactInput, "id" | "groupIds">; label: string }> = [
+  { key: "firstName", label: "Vorname" },
+  { key: "lastName", label: "Nachname" },
+  { key: "displayName", label: "Anzeigename" },
+  { key: "company", label: "Unternehmen" },
+  { key: "email", label: "E-Mail · Geschäftlich" },
+  { key: "privateEmail", label: "E-Mail · Privat" },
+  { key: "secondPrivateEmail", label: "E-Mail · Privat 2" },
+  { key: "phone", label: "Telefon · Geschäftlich" },
+  { key: "mobilePhone", label: "Telefon · Mobil" },
+  { key: "privatePhone", label: "Telefon · Privat" },
+  { key: "secondPrivatePhone", label: "Telefon · Privat 2" },
+  { key: "street", label: "Straße" },
+  { key: "postalCode", label: "PLZ" },
+  { key: "city", label: "Stadt" },
+  { key: "country", label: "Land" },
+  { key: "shortInfo", label: "Kurzinfo" },
+  { key: "notes", label: "Notizen" }
+];
+
+function readableContactValue(value: string): string {
+  return value.trim() || "Leer";
+}
+
+function contactGroupNames(groupIds: number[], groups: Group[]): string {
+  const names = groupIds
+    .map((groupId) => groups.find((group) => group.id === groupId)?.name ?? `Gruppe ${groupId}`)
+    .sort((left, right) => left.localeCompare(right, "de"));
+  return names.length > 0 ? names.join(", ") : "Keine Gruppe";
+}
+
+function contactDraftChanges(
+  value: ContactInput | null,
+  baselineSignature: string,
+  automaticDisplayName: boolean,
+  groups: Group[]
+): UnsavedContactChange[] {
+  if (!value || !baselineSignature) return [];
+
+  let baseline: ContactDraftSnapshot;
+  try {
+    baseline = JSON.parse(baselineSignature) as ContactDraftSnapshot;
+  } catch {
+    return [];
+  }
+
+  const changes = contactChangeFields.flatMap<UnsavedContactChange>(({ key, label }) => {
+    if (key === "displayName" && baseline.automaticDisplayName && automaticDisplayName) return [];
+    const before = String(baseline[key] ?? "");
+    const after = String(value[key] ?? "");
+    return before === after ? [] : [{ label, before: readableContactValue(before), after: readableContactValue(after) }];
+  });
+
+  const previousGroups = [...baseline.groupIds].sort((left, right) => left - right);
+  const currentGroups = [...value.groupIds].sort((left, right) => left - right);
+  if (JSON.stringify(previousGroups) !== JSON.stringify(currentGroups)) {
+    changes.push({
+      label: "Gruppen",
+      before: contactGroupNames(previousGroups, groups),
+      after: contactGroupNames(currentGroups, groups)
+    });
+  }
+
+  if (baseline.automaticDisplayName !== automaticDisplayName) {
+    changes.push({
+      label: "Anzeigename automatisch bilden",
+      before: baseline.automaticDisplayName ? "Ein" : "Aus",
+      after: automaticDisplayName ? "Ein" : "Aus"
+    });
+  }
+
+  return changes;
 }
 
 interface ContactsPageProps {
@@ -166,6 +261,7 @@ export function ContactsPage({ onNavigate, onRegisterNavigationBlocker }: Contac
   const [groupRenameError, setGroupRenameError] = useState("");
   const [testMenuOpen, setTestMenuOpen] = useState(false);
   const [m365SyncDialogOpen, setM365SyncDialogOpen] = useState(false);
+  const [easyImportOpen, setEasyImportOpen] = useState(false);
   const [duplicateReviewOpen, setDuplicateReviewOpen] = useState(false);
   const [duplicateCheckBusy, setDuplicateCheckBusy] = useState(false);
   const [duplicateGroups, setDuplicateGroups] = useState<ContactDuplicateGroup[]>([]);
@@ -196,6 +292,8 @@ export function ContactsPage({ onNavigate, onRegisterNavigationBlocker }: Contac
   const [bulkAddSelectedIds, setBulkAddSelectedIds] = useState<Set<number>>(() => new Set());
   const [contactsFontSizeIndex, setContactsFontSizeIndex] = useState(initialContactsFontSizeIndex);
   const [contactPaneLayout, setContactPaneLayout] = useState<ContactPaneLayout>(initialContactPaneLayout);
+  const [contactListPreferences, setContactListPreferences] = useState(initialContactListPreferences);
+  const [contactSortMenuOpen, setContactSortMenuOpen] = useState(false);
   const [unsavedChangesOpen, setUnsavedChangesOpen] = useState(false);
   const [unsavedSaveBusy, setUnsavedSaveBusy] = useState(false);
   const draggedContactIdsRef = useRef<number[]>([]);
@@ -233,6 +331,10 @@ export function ContactsPage({ onNavigate, onRegisterNavigationBlocker }: Contac
   const contactsFontSize = contactsFontSizes[contactsFontSizeIndex];
   const hasUnsavedContactChanges = editing !== null
     && contactDraftSignature(editing, automaticDisplayName) !== contactDraftBaselineRef.current;
+  const unsavedContactChanges = useMemo(
+    () => contactDraftChanges(editing, contactDraftBaselineRef.current, automaticDisplayName, groups),
+    [automaticDisplayName, editing, groups]
+  );
   const duplicateCandidateCount = useMemo(
     () => new Set(duplicateGroups.flatMap((group) => group.contacts.map((contact) => contact.id))).size,
     [duplicateGroups]
@@ -305,6 +407,29 @@ export function ContactsPage({ onNavigate, onRegisterNavigationBlocker }: Contac
       window.removeEventListener("keydown", closeMenuWithKeyboard);
     };
   }, [groupContextMenu]);
+
+  useEffect(() => {
+    if (!contactSortMenuOpen) return;
+    const closeMenu = () => setContactSortMenuOpen(false);
+    const closeMenuWithKeyboard = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeMenu();
+    };
+    window.addEventListener("pointerdown", closeMenu);
+    window.addEventListener("keydown", closeMenuWithKeyboard);
+    return () => {
+      window.removeEventListener("pointerdown", closeMenu);
+      window.removeEventListener("keydown", closeMenuWithKeyboard);
+    };
+  }, [contactSortMenuOpen]);
+
+  const updateContactListPreferences = (changes: Partial<{ nameDisplay: ContactNameDisplay; sort: ContactSort }>) => {
+    setContactListPreferences((current) => {
+      const next = { ...current, ...changes };
+      localStorage.setItem(contactListPreferencesStorageKey, JSON.stringify(next));
+      return next;
+    });
+    setContactSortMenuOpen(false);
+  };
 
   useEffect(() => () => {
     document.body.classList.remove("resizing-contact-panes");
@@ -1112,10 +1237,38 @@ export function ContactsPage({ onNavigate, onRegisterNavigationBlocker }: Contac
       <UnsavedContactChangesDialog
         open={unsavedChangesOpen}
         busy={unsavedSaveBusy}
+        contactName={editing ? displayName(editing) : "diesen Kontakt"}
+        changes={unsavedContactChanges}
         onSave={() => void saveAndContinue()}
         onDiscard={discardAndContinue}
         onContinueEditing={keepEditing}
       />
+      <EasyImportDialog
+        kind="contacts"
+        open={easyImportOpen}
+        onClose={() => setEasyImportOpen(false)}
+        onImported={async () => {
+          await refresh();
+          notifyLocalM365Change();
+        }}
+      />
+      {editing && !editing.id && (
+        <div className="modal-backdrop contact-new-dialog-backdrop" role="dialog" aria-modal="true" aria-label="Neuen Kontakt anlegen">
+          <div className="contact-editor-dialog">
+            <ContactForm
+              key="new-contact"
+              value={editing}
+              groups={groups}
+              automaticDisplayName={automaticDisplayName}
+              hasUnsavedChanges={hasUnsavedContactChanges}
+              onChange={setEditing}
+              onAutomaticDisplayNameChange={setAutomaticDisplayName}
+              onSubmit={() => void submit()}
+              onCancel={resetContactEditor}
+            />
+          </div>
+        </div>
+      )}
       {m365SyncDialogOpen && <Microsoft365SyncDialog context="contacts" onClose={() => setM365SyncDialogOpen(false)} />}
 
       {duplicateReviewOpen && (
@@ -1321,7 +1474,13 @@ export function ContactsPage({ onNavigate, onRegisterNavigationBlocker }: Contac
         </div>
       )}
 
-      <section
+      {totalContactCount === 0 ? (
+        <EmptyImportState
+          kind="contacts"
+          onEasyImport={() => setEasyImportOpen(true)}
+          onManualImport={() => onNavigate("contact-import")}
+        />
+      ) : <section
           className="contacts-workspace"
           ref={contactsWorkspaceRef}
           style={{
@@ -1443,10 +1602,55 @@ export function ContactsPage({ onNavigate, onRegisterNavigationBlocker }: Contac
               <div className="group-contacts-title">
                 <div><h2>Kontakte</h2><span>{contacts.length} Kontakte</span></div>
               </div>
-              <label className="search-field group-contact-search">
-                <Search size={20} />
-                <input value={groupSearch} onChange={(event) => setGroupSearch(event.target.value)} placeholder="Kontakte durchsuchen..." />
-              </label>
+              <div className="group-contact-search-row">
+                <label className="search-field group-contact-search">
+                  <Search size={20} />
+                  <input value={groupSearch} onChange={(event) => setGroupSearch(event.target.value)} placeholder="Kontakte durchsuchen..." />
+                </label>
+                <div className="contact-sort-menu-wrap" onPointerDown={(event) => event.stopPropagation()}>
+                  <button
+                    className={contactSortMenuOpen ? "contact-sort-menu-button active" : "contact-sort-menu-button"}
+                    type="button"
+                    aria-label="Anzeige und Sortierung"
+                    aria-expanded={contactSortMenuOpen}
+                    aria-haspopup="menu"
+                    title="Anzeige und Sortierung"
+                    onClick={() => {
+                      setTestMenuOpen(false);
+                      setContactSortMenuOpen((open) => !open);
+                    }}
+                  >
+                    <SlidersHorizontal size={19} />
+                  </button>
+                  {contactSortMenuOpen && (
+                    <div className="contact-sort-menu" role="menu" aria-label="Kontakte anzeigen und sortieren">
+                      <strong>Anzeigename</strong>
+                      <button type="button" role="menuitemradio" aria-checked={contactListPreferences.nameDisplay === "first-last"} onClick={() => updateContactListPreferences({ nameDisplay: "first-last" })}>
+                        <span className="contact-sort-check">{contactListPreferences.nameDisplay === "first-last" && <Check size={16} />}</span>
+                        Vorname Nachname
+                      </button>
+                      <button type="button" role="menuitemradio" aria-checked={contactListPreferences.nameDisplay === "last-first"} onClick={() => updateContactListPreferences({ nameDisplay: "last-first" })}>
+                        <span className="contact-sort-check">{contactListPreferences.nameDisplay === "last-first" && <Check size={16} />}</span>
+                        Nachname, Vorname
+                      </button>
+                      <span className="contact-sort-separator" role="separator" />
+                      <strong>Sortieren</strong>
+                      {([
+                        ["name", "asc", "Nach Namen (A → Z)"],
+                        ["name", "desc", "Nach Namen (Z → A)"],
+                        ["email", "asc", "Nach E-Mail-Adresse (A → Z)"],
+                        ["email", "desc", "Nach E-Mail-Adresse (Z → A)"]
+                      ] as Array<[ContactSort["key"], ContactSort["direction"], string]>).map(([key, direction, label]) => {
+                        const selected = contactListPreferences.sort.key === key && contactListPreferences.sort.direction === direction;
+                        return <button type="button" role="menuitemradio" aria-checked={selected} key={`${key}-${direction}`} onClick={() => updateContactListPreferences({ sort: { key, direction } })}>
+                          <span className="contact-sort-check">{selected && <Check size={16} />}</span>
+                          {label}
+                        </button>;
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
               <div className="button-row group-contact-actions">
                 <div className="more-menu-wrap">
                   <button className="icon-only" type="button" aria-label="Weitere Optionen" onClick={() => setTestMenuOpen((open) => !open)}>
@@ -1473,6 +1677,9 @@ export function ContactsPage({ onNavigate, onRegisterNavigationBlocker }: Contac
                     </div>
                   )}
                 </div>
+                <button className="primary contact-new-button" type="button" onClick={startNew}>
+                  <Plus size={17} /> {t.newContact}
+                </button>
               </div>
             </header>
             {selectionActive && (
@@ -1504,6 +1711,9 @@ export function ContactsPage({ onNavigate, onRegisterNavigationBlocker }: Contac
               managementView
               activeContactId={selectedGroupContactId}
               onSelect={selectContactForInspector}
+              sort={contactListPreferences.sort}
+              onSortChange={(sort) => updateContactListPreferences({ sort })}
+              nameDisplay={contactListPreferences.nameDisplay}
             />
           </div>
 
@@ -1529,7 +1739,7 @@ export function ContactsPage({ onNavigate, onRegisterNavigationBlocker }: Contac
           />
 
           <ContactEditorPane
-            editing={editing}
+            editing={editing?.id ? editing : null}
             groups={groups}
             automaticDisplayName={automaticDisplayName}
             hasUnsavedChanges={hasUnsavedContactChanges}
@@ -1539,7 +1749,7 @@ export function ContactsPage({ onNavigate, onRegisterNavigationBlocker }: Contac
             onReset={resetContactEditor}
             onNew={startNew}
           />
-        </section>
+        </section>}
 
       {groupContextMenu && (
         <div

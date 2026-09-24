@@ -1,18 +1,19 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { readFile } from "@tauri-apps/plugin-fs";
-import { CalendarDays, CheckSquare, FileSpreadsheet, Plus, Square, UsersRound, X } from "lucide-react";
+import { listen } from "@tauri-apps/api/event";
+import { CalendarDays, CheckSquare, FileSpreadsheet, Pause, Plus, Square, UsersRound, X } from "lucide-react";
 import type { CSSProperties } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { StatusMessage } from "../components/StatusMessage";
 import { ActionResultDialog, type ActionResult } from "../components/ActionResultDialog";
 import { t } from "../i18n";
-import { importContacts, importOutlookStore, listGroups, mergeCalendarEvents, saveGroup } from "../services/db";
-import type { CalendarEvent } from "../types/calendar";
+import { cancelCalendarFileImport, discardCalendarFileImport, getPendingCalendarFileImport, importContacts, importOutlookStore, listGroups, mergeCalendarEvents, prepareCalendarFileImport, runCalendarFileImport, saveGroup } from "../services/db";
+import type { CalendarEvent, CalendarFileImportStatus } from "../types/calendar";
 import type { Group } from "../types/contact";
 import { contactEmails } from "../utils/contact";
-import { calendarColorFromCategory, calendarColorOptions, calendarColorValue, defaultCalendarColor, mergeImportedCalendarCategories } from "../utils/calendar";
+import { calendarColorFromCategory, calendarColorOptions, calendarColorValue, defaultCalendarColor, mergeImportedCalendarCategories, mergeImportedCalendarCategoryDefinitions } from "../utils/calendar";
 import { type ImportPreview } from "../utils/importers";
-import { parseCalendarFileInWorker, parseContactFileInWorker } from "../utils/importParserWorker";
+import { parseContactFileInWorker } from "../utils/importParserWorker";
 
 type ImportMode = "contacts" | "calendar";
 
@@ -30,6 +31,8 @@ export function ImportPage({ embedded = false, initialMode }: ImportPageProps) {
   const [fileName, setFileName] = useState("");
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [pendingEvents, setPendingEvents] = useState<CalendarEvent[]>([]);
+  const [nativeCalendarImport, setNativeCalendarImport] = useState<CalendarFileImportStatus | null>(null);
+  const [calendarImportBusy, setCalendarImportBusy] = useState(false);
   const [groups, setGroups] = useState<Group[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState<number | "">("");
   const [message, setMessage] = useState("");
@@ -42,18 +45,45 @@ export function ImportPage({ embedded = false, initialMode }: ImportPageProps) {
   const selectedCount = preview?.contacts.filter((contact) => contact.selected).length ?? 0;
   const contactsWithEmail = useMemo(() => preview?.contacts.filter((contact) => contactEmails(contact).length > 0) ?? [], [preview]);
   const contactsWithoutEmail = useMemo(() => preview?.contacts.filter((contact) => contactEmails(contact).length === 0) ?? [], [preview]);
-  const canConfirm = Boolean((preview && selectedCount > 0 && !preview.emailColumnMissing) || pendingEvents.length > 0);
+  const canConfirm = Boolean((preview && selectedCount > 0 && !preview.emailColumnMissing) || pendingEvents.length > 0 || nativeCalendarImport);
 
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
     listGroups().then(setGroups).catch((error) => setMessage(`Gruppen konnten nicht geladen werden: ${error}`));
   }, []);
 
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    listen<CalendarFileImportStatus>("calendar-file-import-progress", (event) => {
+      if (!disposed) setNativeCalendarImport(event.payload);
+    }).then((cleanup) => { unlisten = cleanup; });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (mode !== "calendar" || nativeCalendarImport || !("__TAURI_INTERNALS__" in window)) return;
+    getPendingCalendarFileImport().then((job) => {
+      if (!job) return;
+      setNativeCalendarImport(job);
+      setFileName(job.filePath);
+      setCalendarCategory(job.fallbackCategory || defaultImportCategory);
+      setCalendarColor(job.fallbackColor || defaultCalendarColor);
+      setMessage(job.byteOffset > 0 ? "Ein unterbrochener Kalenderimport kann sicher fortgesetzt werden." : "Kalenderdatei ist für den Import bereit.");
+    }).catch(() => undefined);
+  }, [mode, nativeCalendarImport]);
+
   const resetImport = () => {
     setMode(null);
     setFileName("");
     setPreview(null);
     setPendingEvents([]);
+    setNativeCalendarImport(null);
+    setCalendarImportBusy(false);
     setSelectedGroupId("");
     setShowGroupCard(false);
     setNewGroupName("");
@@ -91,6 +121,7 @@ export function ImportPage({ embedded = false, initialMode }: ImportPageProps) {
       setFileName(path);
       setPreview(null);
       setPendingEvents([]);
+      setNativeCalendarImport(null);
 
       const lower = path.toLowerCase();
       if (lower.endsWith(".pst") || lower.endsWith(".ost")) {
@@ -107,15 +138,15 @@ export function ImportPage({ embedded = false, initialMode }: ImportPageProps) {
         return;
       }
 
-      const bytes = await readFile(path);
       if (mode === "calendar") {
-        setMessage("Kalenderdatei wird im Hintergrund verarbeitet …");
-        const importedEvents = (await parseCalendarFileInWorker(bytes, path)).map(normalizeCalendarEvent);
-        setPendingEvents(importedEvents);
-        setMessage(importedEvents.length ? `${eventsLabel(importedEvents.length)} gefunden. Bitte bestätigen.` : "Keine Kalendertermine gefunden.");
+        setMessage("Kalenderdatei wird für den sicheren Import vorbereitet …");
+        const job = await prepareCalendarFileImport(path, calendarCategory.trim() || defaultImportCategory, calendarColor);
+        setNativeCalendarImport(job);
+        setMessage(job.byteOffset > 0 ? "Der frühere Importstand wurde gefunden und kann fortgesetzt werden." : "Datei ist bereit. Der Import erfolgt speicherschonend in sicheren Blöcken.");
         return;
       }
 
+      const bytes = await readFile(path);
       setMessage("Kontaktdatei wird im Hintergrund verarbeitet …");
       const result = await parseContactFileInWorker(bytes, lower.endsWith(".xlsx"));
       setPreview(result);
@@ -127,6 +158,7 @@ export function ImportPage({ embedded = false, initialMode }: ImportPageProps) {
     } catch (error) {
       setPreview(null);
       setPendingEvents([]);
+      setNativeCalendarImport(null);
       setMessage(`Import fehlgeschlagen: ${error}`);
     }
   };
@@ -176,13 +208,32 @@ export function ImportPage({ embedded = false, initialMode }: ImportPageProps) {
       setMessage("Bitte wählen Sie zuerst eine Datei mit importierbaren Daten aus.");
       return;
     }
-    if (preview?.emailColumnMissing && pendingEvents.length === 0) {
+    if (preview?.emailColumnMissing && pendingEvents.length === 0 && !nativeCalendarImport) {
       setMessage("Keine E-Mail-Spalte gefunden. Der Import wurde nicht gestartet.");
       return;
     }
 
     try {
-      const calendarResult = await savePendingEvents();
+      setCalendarImportBusy(Boolean(nativeCalendarImport));
+      let calendarResult = await savePendingEvents();
+      if (nativeCalendarImport) {
+        const result = await runCalendarFileImport(
+          nativeCalendarImport.jobId,
+          calendarCategory.trim() || defaultImportCategory,
+          calendarColor
+        );
+        setNativeCalendarImport(result);
+        if (result.status !== "completed") {
+          setMessage("Import wurde sicher pausiert. Sie können ihn später an derselben Stelle fortsetzen.");
+          return;
+        }
+        const categoryResult = mergeImportedCalendarCategoryDefinitions(result.categories);
+        calendarResult = {
+          imported: result.imported,
+          skipped: result.skippedSameId + result.skippedExactDuplicates + result.skippedInvalid,
+          categories: categoryResult.added + categoryResult.updated
+        };
+      }
       let importedContacts = 0;
       let skippedContactDuplicates = 0;
 
@@ -216,10 +267,26 @@ export function ImportPage({ embedded = false, initialMode }: ImportPageProps) {
         tone: "error",
         details: ["Bereits vorhandene Daten wurden nicht gelöscht.", "Sie können den Import nach der Prüfung erneut starten."]
       });
+    } finally {
+      setCalendarImportBusy(false);
     }
   };
 
-  const cancelPreview = () => {
+  const pauseNativeImport = async () => {
+    if (!nativeCalendarImport) return;
+    await cancelCalendarFileImport(nativeCalendarImport.jobId);
+    setMessage("Der Import wird nach dem aktuellen sicheren Block pausiert …");
+  };
+
+  const cancelPreview = async () => {
+    if (nativeCalendarImport) {
+      try {
+        await discardCalendarFileImport(nativeCalendarImport.jobId);
+      } catch (error) {
+        setMessage(String(error));
+        return;
+      }
+    }
     resetImport();
     setMessage("Import abgebrochen.");
   };
@@ -263,7 +330,7 @@ export function ImportPage({ embedded = false, initialMode }: ImportPageProps) {
               <h3>{mode === "calendar" ? "Agenda importieren" : "Kontakte importieren"}</h3>
               <p className="import-step-text">1. Datei auswählen · 2. {mode === "calendar" ? "Ersatzkategorie prüfen" : "Ziel wählen"} · 3. Vorschau prüfen · 4. Import bestätigen</p>
             </div>
-            <button type="button" onClick={resetImport}>Andere Importart</button>
+            <button type="button" onClick={resetImport} disabled={calendarImportBusy}>Andere Importart</button>
           </div>
 
           <div className="import-wizard-grid">
@@ -271,7 +338,7 @@ export function ImportPage({ embedded = false, initialMode }: ImportPageProps) {
               <span className="import-step-number">1</span>
               <h4>Datei auswählen</h4>
               <p>{mode === "calendar" ? "ICS, EML, PST oder OST" : "CSV oder Excel-Datei"}</p>
-              <button className="primary large" type="button" onClick={chooseFile}>
+              <button className="primary large" type="button" onClick={chooseFile} disabled={calendarImportBusy}>
                 <FileSpreadsheet size={24} /> Datei auswählen
               </button>
               {fileName && <small className="import-file-name">{fileName}</small>}
@@ -285,14 +352,14 @@ export function ImportPage({ embedded = false, initialMode }: ImportPageProps) {
                   <p>Vorhandene Kategorien und Farben bleiben erhalten. Diese Auswahl gilt nur für Termine, bei denen die Quelldatei keine Kategorie oder Farbe enthält.</p>
                   <label className="field">
                     <span>Kategorie</span>
-                    <input value={calendarCategory} onChange={(event) => setCalendarCategory(event.target.value)} list="calendar-import-categories" />
+                    <input value={calendarCategory} onChange={(event) => setCalendarCategory(event.target.value)} list="calendar-import-categories" disabled={calendarImportBusy || Boolean(nativeCalendarImport?.byteOffset)} />
                   </label>
                   <datalist id="calendar-import-categories">
                     {suggestedCalendarCategories.map((category) => <option value={category} key={category} />)}
                   </datalist>
                   <label className="field">
                     <span>Farbe</span>
-                    <select value={calendarColor} onChange={(event) => setCalendarColor(event.target.value)}>
+                    <select value={calendarColor} onChange={(event) => setCalendarColor(event.target.value)} disabled={calendarImportBusy || Boolean(nativeCalendarImport?.byteOffset)}>
                       {calendarColorOptions.map((color) => <option value={color.value} key={color.value}>{color.label}</option>)}
                     </select>
                   </label>
@@ -343,13 +410,42 @@ export function ImportPage({ embedded = false, initialMode }: ImportPageProps) {
         </div>
       )}
 
-      {(preview || pendingEvents.length > 0) && (
+      {nativeCalendarImport && (
+        <section className="form-panel calendar-native-import" aria-live="polite">
+          <div className="panel-heading">
+            <div>
+              <h3>{calendarImportBusy ? "Kalender wird importiert" : nativeCalendarImport.status === "paused" ? "Import pausiert" : "Sicherer Kalenderimport"}</h3>
+              <p>{nativeCalendarImport.fileName}</p>
+            </div>
+            <strong>{nativeCalendarImport.progressPercent.toLocaleString("de-DE", { maximumFractionDigits: 1 })} %</strong>
+          </div>
+          <div className="calendar-native-import-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={nativeCalendarImport.progressPercent}>
+            <span style={{ width: `${nativeCalendarImport.progressPercent}%` }} />
+          </div>
+          <div className="calendar-native-import-stats">
+            <span><strong>{nativeCalendarImport.processed.toLocaleString("de-DE")}</strong> geprüft</span>
+            <span><strong>{nativeCalendarImport.imported.toLocaleString("de-DE")}</strong> importiert</span>
+            <span><strong>{(nativeCalendarImport.skippedSameId + nativeCalendarImport.skippedExactDuplicates).toLocaleString("de-DE")}</strong> Duplikate ausgelassen</span>
+            <span><strong>{nativeCalendarImport.skippedInvalid.toLocaleString("de-DE")}</strong> ungültig</span>
+          </div>
+          {nativeCalendarImport.lastError && <p className="import-warning">{nativeCalendarImport.lastError}</p>}
+          {calendarImportBusy && (
+            <button type="button" onClick={pauseNativeImport}>
+              <Pause size={20} /> Sicher pausieren
+            </button>
+          )}
+        </section>
+      )}
+
+      {(preview || pendingEvents.length > 0 || nativeCalendarImport) && (
         <section className="form-panel">
           <h3>Import prüfen</h3>
           <div className="import-summary">
             {preview && <strong>{preview.mapping.email ? `E-Mail-Spalte erkannt: ${preview.mapping.email}` : "Keine E-Mail-Spalte gefunden"}</strong>}
             {pendingEvents.length > 0 && <span>{pendingEvents.length} Kalendertermine erkannt</span>}
             {pendingEvents.length > 0 && <span>Ersatzkategorie: {calendarCategory.trim() || defaultImportCategory}</span>}
+            {nativeCalendarImport && <span>Die Datei wird direkt vom Datenträger gelesen; Termine werden nicht vollständig in den Arbeitsspeicher geladen.</span>}
+            {nativeCalendarImport && <span>Ersatzkategorie: {calendarCategory.trim() || defaultImportCategory}</span>}
             {preview && <span>{contactsWithEmail.length} Kontakte mit E-Mail erkannt</span>}
             {preview && <span>{contactsWithoutEmail.length} Kontakte ohne E-Mail erkannt</span>}
             {preview && <span>Ziel: {selectedGroupId === "" ? ungroupedLabel : groups.find((group) => group.id === selectedGroupId)?.name ?? "Gruppe"}</span>}
@@ -434,12 +530,12 @@ export function ImportPage({ embedded = false, initialMode }: ImportPageProps) {
         </section>
       )}
 
-      {(preview || pendingEvents.length > 0) && (
+      {(preview || pendingEvents.length > 0 || nativeCalendarImport) && (
         <section className="import-confirm-panel">
-          <button className="primary large" type="button" onClick={submit} disabled={!canConfirm}>
-            Importieren
+          <button className="primary large" type="button" onClick={submit} disabled={!canConfirm || calendarImportBusy}>
+            {nativeCalendarImport?.byteOffset ? "Import fortsetzen" : "Importieren"}
           </button>
-          <button className="large" type="button" onClick={cancelPreview}>
+          <button className="large" type="button" onClick={cancelPreview} disabled={calendarImportBusy}>
             <X size={20} /> Abbrechen
           </button>
         </section>

@@ -5,7 +5,6 @@ import {
   ChevronLeft,
   ChevronRight,
   ContactRound,
-  DatabaseBackup,
   FolderTree,
   HardDrive,
   History,
@@ -38,7 +37,10 @@ const emptyRecoveryStatus: RecoveryArchiveStatus = {
   calendarEvents: 0,
   totalCheckpoints: 0,
   totalSizeBytes: 0,
-  checkpoints: []
+  checkpoints: [],
+  internalLocation: "Geschützter App-Bereich",
+  externalLocation: "Geschützter App-Bereich",
+  externalEncrypted: false
 };
 
 function formatDate(value: string | null): string {
@@ -50,12 +52,13 @@ function formatDate(value: string | null): string {
 }
 
 function sourceTitle(source: RecoveryArchiveSource): string {
-  return source === "closing" ? "Abschlussarchiv" : "Laufender Schutz";
+  void source;
+  return "Lokaler Sicherungsverlauf";
 }
 
 export function RecoveryPage() {
   const [status, setStatus] = useState<RecoveryArchiveStatus | null>(null);
-  const [source, setSource] = useState<RecoveryArchiveSource>("background");
+  const source: RecoveryArchiveSource = "background";
   const [selectedCheckpointId, setSelectedCheckpointId] = useState<string | null>(null);
   const [preview, setPreview] = useState<RecoveryArchivePreview | null>(null);
   const [previewBusy, setPreviewBusy] = useState(false);
@@ -124,13 +127,6 @@ export function RecoveryPage() {
     };
   }, [source, selectedCheckpointId, query, offset]);
 
-  const selectSource = (nextSource: RecoveryArchiveSource) => {
-    setSource(nextSource);
-    setOffset(0);
-    setQuery("");
-    setMessage("");
-  };
-
   const selectCheckpoint = (checkpoint: RecoveryCheckpointSummary) => {
     setSelectedCheckpointId(checkpoint.id);
     setOffset(0);
@@ -174,29 +170,24 @@ export function RecoveryPage() {
         <div>
           <span className="recovery-eyebrow"><ShieldCheck size={16} /> Lokaler Datenschutz</span>
           <h2>Backups wiederherstellen</h2>
-          <p>Zwei voneinander unabhängige Sicherungen prüfen und fehlende Daten ohne Überschreiben zurückholen.</p>
+          <p>Einen lokalen, fortlaufenden Sicherungsverlauf prüfen und fehlende Daten ohne Überschreiben zurückholen.</p>
         </div>
         <span className="feature-development-badge"><ShieldCheck size={17} /> Nur EDV</span>
       </header>
 
       <StatusMessage message={message} type={messageType} />
 
-      <section className="recovery-source-grid" aria-label="Backup auswählen">
-        <button className={source === "closing" ? "recovery-source-card selected" : "recovery-source-card"} type="button" onClick={() => selectSource("closing")}>
-          <span className="recovery-source-icon"><DatabaseBackup size={28} /></span>
-          <span><strong>1. Abschlussarchiv</strong><small>Wird beim Schließen fortgeschrieben. Neue Kontakte und Termine kommen hinzu; normale Löschungen entfernen nichts aus dem Archiv.</small></span>
-          <i aria-hidden="true" />
-        </button>
-        <button className={source === "background" ? "recovery-source-card selected" : "recovery-source-card"} type="button" onClick={() => selectSource("background")}>
+      <section className="recovery-source-grid single" aria-label="Lokale Sicherung">
+        <div className="recovery-source-card selected">
           <span className="recovery-source-icon"><ShieldCheck size={28} /></span>
-          <span><strong>2. Laufender Schutz</strong><small>Speichert Änderungen automatisch im Hintergrund. Frühere aktive Daten bleiben unabhängig erhalten.</small></span>
+          <span><strong>Lokaler Sicherungsverlauf</strong><small>Speichert nur geänderte Kontakte, Gruppen und Termine. Gelöschte Elemente bleiben mit ihren vollständigen Daten wiederherstellbar.</small></span>
           <i aria-hidden="true" />
-        </button>
+        </div>
       </section>
 
-      {source === "background" && status?.checkpoints.length ? (
+      {status?.checkpoints.length ? (
         <section className="form-panel recovery-checkpoint-picker">
-          <header><History size={21} /><div><h3>Zeitpunkt wählen</h3><p>Der neueste Stand ist bereits ausgewählt.</p></div></header>
+          <header><History size={21} /><div><h3>Sicherungszeitpunkt wählen</h3><p>Nur Zeitpunkte mit tatsächlichen Änderungen werden angelegt.</p></div></header>
           <div className="recovery-checkpoint-chips">
             {status.checkpoints.slice(0, 24).map((checkpoint, index) => (
               <button className={checkpoint.id === selectedCheckpointId ? "selected" : ""} key={checkpoint.id} type="button" onClick={() => selectCheckpoint(checkpoint)}>
@@ -260,7 +251,16 @@ export function RecoveryPage() {
         <button className="primary large" type="button" onClick={restore} disabled={restoreBusy || previewBusy || !preview?.totalItems}>{restoreBusy ? <LoaderCircle className="spin" size={22} /> : <ArchiveRestore size={22} />}{restoreBusy ? "Wird wiederhergestellt …" : "Vorschau wiederherstellen"}</button>
       </section>
 
-      <section className="form-panel recovery-note"><HardDrive size={22} aria-hidden="true" /><p><strong>Wichtig:</strong> Weder normales Löschen noch das Leeren des Papierkorbs entfernt Kontakte, Gruppen oder Termine aus diesen beiden Archiven. Dadurch bleibt auch nach einer versehentlichen Massenlöschung eine Rückkehr möglich.</p></section>
+      <section className="form-panel recovery-storage-locations">
+        <HardDrive size={22} aria-hidden="true" />
+        <div>
+          <strong>Speicherort des Sicherungsverlaufs</strong>
+          <span><b>Lokal:</b> <code>{status?.internalLocation ?? emptyRecoveryStatus.internalLocation}</code></span>
+          <span>Für diese Sicherung ist weder ein Microsoft-Konto noch eine Internetverbindung erforderlich.</span>
+        </div>
+      </section>
+
+      <section className="form-panel recovery-note"><HardDrive size={22} aria-hidden="true" /><p><strong>Wichtig:</strong> Weder normales Löschen noch das Leeren des Papierkorbs entfernt Kontakte, Gruppen oder Termine aus dem Verlauf. Beim Wiederherstellen landen historisch gelöschte Elemente zuerst sicher im Papierkorb.</p></section>
     </div>
   );
 }

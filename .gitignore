@@ -1,10 +1,22 @@
 node_modules
 dist
+coverage
+playwright-report
+test-results
 src-tauri/target
+src-tauri/target-dev
 outlook-profile-reader/target
 src-tauri/resources/*.exe
 *.log
 .DS_Store
+
+# A chave de assinatura interna e seus backups ficam apenas na estação segura.
+certificates/private/
+certificates/**/*.pfx
+certificates/**/*.p12
+certificates/**/*.pvk
+certificates/**/*.key
+certificates/**/*.pem
 
 # O pacote distribuído é Windows-only; o Tauri usa somente este ícone.
 src-tauri/icons/android/

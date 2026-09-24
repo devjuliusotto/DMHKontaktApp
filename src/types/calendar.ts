@@ -50,6 +50,36 @@ export interface CalendarEventMergeResult {
   total: number;
 }
 
+export type CalendarFileImportJobState = "prepared" | "running" | "paused" | "failed" | "completed";
+
+export interface CalendarFileImportStatus {
+  jobId: string;
+  filePath: string;
+  fileName: string;
+  fileSize: number;
+  byteOffset: number;
+  processed: number;
+  imported: number;
+  skippedSameId: number;
+  skippedExactDuplicates: number;
+  skippedInvalid: number;
+  status: CalendarFileImportJobState;
+  progressPercent: number;
+  fallbackCategory: string;
+  fallbackColor: string;
+  resumable: boolean;
+  lastError: string | null;
+}
+
+export interface CalendarImportCategory {
+  name: string;
+  color: string;
+}
+
+export interface CalendarFileImportResult extends CalendarFileImportStatus {
+  categories: CalendarImportCategory[];
+}
+
 export interface CalendarOverview {
   total: number;
   sources: string[];

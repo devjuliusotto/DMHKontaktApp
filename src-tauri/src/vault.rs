@@ -11,7 +11,6 @@ use argon2::{
     Argon2,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use chrono::Utc;
 use rand::{rngs::OsRng, Rng, RngCore};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -408,7 +407,18 @@ fn decrypt_entry(
 }
 
 fn automatic_password_backup_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
-    Ok(crate::automatic_backup_dir(app)?.join(AUTOMATIC_PASSWORD_BACKUP_LATEST))
+    let documents = app
+        .path()
+        .document_dir()
+        .map_err(|error| format!("Dokumente-Ordner konnte nicht ermittelt werden: {error}"))?;
+    let folder = if option_env!("DMH_RELEASE_CHANNEL") == Some("admin-test") {
+        "DMH Kontakte und Kalender Admin Test\\Automatische Sicherung"
+    } else {
+        "DMH Kontakte und Kalender\\Automatische Sicherung"
+    };
+    Ok(documents
+        .join(folder)
+        .join(AUTOMATIC_PASSWORD_BACKUP_LATEST))
 }
 
 fn automatic_password_backup_app_data_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
@@ -688,9 +698,8 @@ pub(crate) fn validate_automatic_password_backup(app: &AppHandle) -> Result<bool
 
 pub(crate) fn write_automatic_password_backup(
     app: &AppHandle,
-    snapshot: bool,
+    _snapshot: bool,
 ) -> Result<(), String> {
-    let app_data_directory = crate::automatic_backup_app_data_dir(&app)?;
     let app_data_latest_path = automatic_password_backup_app_data_path(&app)?;
     let previous = read_automatic_password_backup(&app)?;
     let conn = open_db(&app)?;
@@ -699,38 +708,6 @@ pub(crate) fn write_automatic_password_backup(
     let json = serde_json::to_string_pretty(&merged).map_err(|error| error.to_string())?;
     crate::replace_json_file(&app_data_latest_path, &json)?;
 
-    if snapshot {
-        let stamp = Utc::now().format("%Y%m%d-%H%M%S-%f");
-        let app_data_snapshots = app_data_directory.join("Snapshots");
-        std::fs::create_dir_all(&app_data_snapshots).map_err(|error| error.to_string())?;
-        crate::replace_json_file(
-            &app_data_snapshots.join(format!("auto-password-backup-{stamp}.json")),
-            &json,
-        )?;
-    }
-
-    if let Ok(directory) = crate::automatic_backup_dir(&app) {
-        crate::write_external_backup_best_effort(
-            &directory.join(AUTOMATIC_PASSWORD_BACKUP_LATEST),
-            &json,
-            "Externe automatische Kennwort-Sicherung",
-        );
-        if snapshot {
-            let snapshots = directory.join("Snapshots");
-            if let Err(error) = std::fs::create_dir_all(&snapshots) {
-                eprintln!(
-                    "Externer Kennwort-Snapshot-Ordner konnte nicht erstellt werden: {error}"
-                );
-            } else {
-                let stamp = Utc::now().format("%Y%m%d-%H%M%S-%f");
-                crate::write_external_backup_best_effort(
-                    &snapshots.join(format!("auto-password-backup-{stamp}.json")),
-                    &json,
-                    "Externer automatischer Kennwort-Snapshot",
-                );
-            }
-        }
-    }
     Ok(())
 }
 

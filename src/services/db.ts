@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CalendarDirectImportResult, CalendarEvent, CalendarEventMergeResult, CalendarOverview, DetectedCalendarSourcesResult, OutlookCalendarExportResult, OutlookCalendarPreview, OutlookOneTimeCalendarImportResult, ThunderbirdCalendarImportResult } from "../types/calendar";
+import type { CalendarDirectImportResult, CalendarEvent, CalendarEventMergeResult, CalendarFileImportResult, CalendarFileImportStatus, CalendarOverview, DetectedCalendarSourcesResult, OutlookCalendarExportResult, OutlookCalendarPreview, OutlookOneTimeCalendarImportResult, ThunderbirdCalendarImportResult } from "../types/calendar";
 import type {
   BackupData,
   AutomaticBackupRestoreResult,
@@ -218,14 +218,6 @@ export function restoreBackup(backup: BackupData): Promise<void> {
   return invoke("restore_backup", { backup });
 }
 
-export function createAutomaticBackup(backup: BackupData, snapshot = false): Promise<void> {
-  return invoke("create_automatic_backup", { backup, snapshot });
-}
-
-export function createRecoveryCheckpoint(backup: BackupData): Promise<void> {
-  return invoke("create_recovery_checkpoint", { backup });
-}
-
 export function createAutomaticSafetyBackup(snapshot = false, browserStorage: Record<string, string> = {}): Promise<void> {
   return invoke("create_automatic_safety_backup", { snapshot, browserStorage });
 }
@@ -259,10 +251,6 @@ export function restoreRecoveryArchive(
 
 export function restoreRecoveryCheckpoint(currentBackup: BackupData, checkpointId?: string): Promise<import("../types/contact").RecoveryRestoreResult> {
   return invoke("restore_recovery_checkpoint", { currentBackup, checkpointId: checkpointId ?? null });
-}
-
-export function createAutomaticPasswordBackup(snapshot = false): Promise<void> {
-  return invoke("create_automatic_password_backup", { snapshot });
 }
 
 export function restoreAutomaticBackup(authorization: string): Promise<AutomaticBackupRestoreResult> {
@@ -517,6 +505,26 @@ export function getDocumentsLocalRoot(): Promise<string> {
 
 export function importOutlookStore(path: string): Promise<{ contacts: ContactInput[]; events: CalendarEvent[] }> {
   return invoke("import_outlook_store", { path });
+}
+
+export function prepareCalendarFileImport(path: string, fallbackCategory: string, fallbackColor: string): Promise<CalendarFileImportStatus> {
+  return invoke("prepare_calendar_file_import", { path, fallbackCategory, fallbackColor });
+}
+
+export function getPendingCalendarFileImport(): Promise<CalendarFileImportStatus | null> {
+  return invoke("get_pending_calendar_file_import");
+}
+
+export function runCalendarFileImport(jobId: string, fallbackCategory: string, fallbackColor: string): Promise<CalendarFileImportResult> {
+  return invoke("run_calendar_file_import", { jobId, fallbackCategory, fallbackColor });
+}
+
+export function cancelCalendarFileImport(jobId: string): Promise<void> {
+  return invoke("cancel_calendar_file_import", { jobId });
+}
+
+export function discardCalendarFileImport(jobId: string): Promise<void> {
+  return invoke("discard_calendar_file_import", { jobId });
 }
 
 export function previewOutlookClassicContacts(cleanImportedNames = true): Promise<OutlookContactImportPreview> {

@@ -15,14 +15,20 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.55.1",
     "@tauri-apps/cli": "^2.5.0",
+    "@testing-library/jest-dom": "^6.8.0",
+    "@testing-library/react": "^16.3.0",
+    "@testing-library/user-event": "^14.6.1",
     "@types/papaparse": "^5.3.14",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
+    "jsdom": "^25.0.1",
     "typescript": "^5.5.3",
-    "vite": "^5.4.2"
+    "vite": "^5.4.2",
+    "vitest": "^2.1.9"
   },
   "name": "agendakontakte",
   "private": true,
@@ -33,15 +39,20 @@
     "prepare:outlook-helper": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-outlook-helpers.ps1 -Configuration debug",
     "preview": "vite preview",
     "tauri": "tauri",
-    "tauri:build": "set CARGO_TARGET_DIR=%TEMP%\\agendakontakte-cargo-target&& tauri build",
+    "tauri:build": "set \"CARGO_TARGET_DIR=%CD%\\src-tauri\\target-dev\"&& tauri build",
+    "tauri:build:signed": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-tauri-signed.ps1",
     "tauri:build:admin-test": "set CARGO_TARGET_DIR=%TEMP%\\agendakontakte-admin-test-cargo-target&& set VITE_APP_CHANNEL=admin-test&& set VITE_FEATURE_AUTHENTICATOR_DEFAULT=false&& set VITE_FEATURE_SERVICES_DEFAULT=false&& set VITE_SOURCE_COMMIT=local&& set DMH_RELEASE_CHANNEL=admin-test&& tauri build --config src-tauri/tauri.admin-test.conf.json",
-    "tauri:dev": "set CARGO_TARGET_DIR=%TEMP%\\agendakontakte-cargo-target&& tauri dev",
+    "tauri:dev": "set \"CARGO_TARGET_DIR=%CD%\\src-tauri\\target-dev\"&& tauri dev",
     "tauri:dev:admin-test": "set CARGO_TARGET_DIR=%TEMP%\\agendakontakte-admin-test-cargo-target&& set VITE_APP_CHANNEL=admin-test&& set VITE_FEATURE_AUTHENTICATOR_DEFAULT=false&& set VITE_FEATURE_SERVICES_DEFAULT=false&& set VITE_SOURCE_COMMIT=local&& set DMH_RELEASE_CHANNEL=admin-test&& tauri dev --config src-tauri/tauri.admin-test.conf.json",
     "tauri:open": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/open-tauri-dev.ps1",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "test:frontend": "npm run test && npm run test:e2e",
     "theme:check": "node scripts/check-theme-css.mjs",
     "version:check": "node scripts/check-version.mjs",
     "version:set": "node scripts/set-version.mjs"
   },
   "type": "module",
-  "version": "0.0.25"
+  "version": "0.1.1"
 }

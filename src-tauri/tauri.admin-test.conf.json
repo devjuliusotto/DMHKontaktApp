@@ -23,7 +23,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/devjuliusotto/DMHKontaktApp/releases/download/admin-test/latest.json"
+        "https://github.com/Diakonissenmutterhaus/DMHKontaktApp/releases/download/admin-test/latest.json"
       ]
     }
   },

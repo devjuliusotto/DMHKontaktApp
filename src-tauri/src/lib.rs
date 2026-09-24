@@ -10,16 +10,18 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Mutex;
+use std::sync::{atomic::AtomicBool, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager,
 };
 use uuid::Uuid;
+use zeroize::Zeroize;
 
+mod calendar_import;
 mod documents;
 mod file_icons;
 mod m365;
@@ -28,6 +30,7 @@ mod outlook_autocomplete;
 mod outlook_calendar_export;
 mod phone_transfer;
 mod printers;
+mod recovery_history;
 mod thunderbird;
 mod vault;
 
@@ -84,6 +87,8 @@ struct AppState {
     vault: Mutex<vault::VaultRuntime>,
     outlook_contact_cache: Mutex<Option<CachedOutlookContacts>>,
     m365: m365::Microsoft365Runtime,
+    calendar_import_running: AtomicBool,
+    calendar_import_cancel_requested: AtomicBool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -948,12 +953,124 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
             updated_at TEXT NOT NULL,
             deleted_at TEXT
         );
+        CREATE TABLE IF NOT EXISTS backup_change_log (
+            entity_kind TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            changed_at TEXT NOT NULL,
+            PRIMARY KEY (entity_kind, entity_id)
+        );
+        CREATE TRIGGER IF NOT EXISTS backup_contacts_insert AFTER INSERT ON contacts BEGIN
+          INSERT INTO backup_change_log(entity_kind, entity_id, changed_at)
+          VALUES('contact', CAST(NEW.id AS TEXT), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+          ON CONFLICT(entity_kind, entity_id) DO UPDATE SET changed_at = excluded.changed_at;
+        END;
+        CREATE TRIGGER IF NOT EXISTS backup_contacts_update AFTER UPDATE ON contacts BEGIN
+          INSERT INTO backup_change_log(entity_kind, entity_id, changed_at)
+          VALUES('contact', CAST(NEW.id AS TEXT), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+          ON CONFLICT(entity_kind, entity_id) DO UPDATE SET changed_at = excluded.changed_at;
+        END;
+        CREATE TRIGGER IF NOT EXISTS backup_contacts_delete BEFORE DELETE ON contacts BEGIN
+          INSERT INTO backup_change_log(entity_kind, entity_id, changed_at)
+          VALUES('contact', CAST(OLD.id AS TEXT), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+          ON CONFLICT(entity_kind, entity_id) DO UPDATE SET changed_at = excluded.changed_at;
+        END;
+        CREATE TRIGGER IF NOT EXISTS backup_groups_insert AFTER INSERT ON groups BEGIN
+          INSERT INTO backup_change_log(entity_kind, entity_id, changed_at)
+          VALUES('group', CAST(NEW.id AS TEXT), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+          ON CONFLICT(entity_kind, entity_id) DO UPDATE SET changed_at = excluded.changed_at;
+        END;
+        CREATE TRIGGER IF NOT EXISTS backup_groups_update AFTER UPDATE ON groups BEGIN
+          INSERT INTO backup_change_log(entity_kind, entity_id, changed_at)
+          VALUES('group', CAST(NEW.id AS TEXT), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+          ON CONFLICT(entity_kind, entity_id) DO UPDATE SET changed_at = excluded.changed_at;
+        END;
+        CREATE TRIGGER IF NOT EXISTS backup_groups_delete BEFORE DELETE ON groups BEGIN
+          INSERT INTO backup_change_log(entity_kind, entity_id, changed_at)
+          VALUES('group', CAST(OLD.id AS TEXT), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+          ON CONFLICT(entity_kind, entity_id) DO UPDATE SET changed_at = excluded.changed_at;
+        END;
+        CREATE TRIGGER IF NOT EXISTS backup_calendar_insert AFTER INSERT ON calendar_events BEGIN
+          INSERT INTO backup_change_log(entity_kind, entity_id, changed_at)
+          VALUES('calendar', NEW.id, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+          ON CONFLICT(entity_kind, entity_id) DO UPDATE SET changed_at = excluded.changed_at;
+        END;
+        CREATE TRIGGER IF NOT EXISTS backup_calendar_update AFTER UPDATE ON calendar_events BEGIN
+          INSERT INTO backup_change_log(entity_kind, entity_id, changed_at)
+          VALUES('calendar', NEW.id, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+          ON CONFLICT(entity_kind, entity_id) DO UPDATE SET changed_at = excluded.changed_at;
+        END;
+        CREATE TRIGGER IF NOT EXISTS backup_calendar_delete BEFORE DELETE ON calendar_events BEGIN
+          INSERT INTO backup_change_log(entity_kind, entity_id, changed_at)
+          VALUES('calendar', OLD.id, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+          ON CONFLICT(entity_kind, entity_id) DO UPDATE SET changed_at = excluded.changed_at;
+        END;
+        CREATE TRIGGER IF NOT EXISTS backup_settings_insert AFTER INSERT ON app_settings BEGIN
+          INSERT INTO backup_change_log(entity_kind, entity_id, changed_at)
+          VALUES('setting', NEW.key, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+          ON CONFLICT(entity_kind, entity_id) DO UPDATE SET changed_at = excluded.changed_at;
+        END;
+        CREATE TRIGGER IF NOT EXISTS backup_settings_update AFTER UPDATE ON app_settings BEGIN
+          INSERT INTO backup_change_log(entity_kind, entity_id, changed_at)
+          VALUES('setting', NEW.key, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+          ON CONFLICT(entity_kind, entity_id) DO UPDATE SET changed_at = excluded.changed_at;
+        END;
+        CREATE TRIGGER IF NOT EXISTS backup_membership_insert AFTER INSERT ON contact_groups BEGIN
+          INSERT INTO backup_change_log(entity_kind, entity_id, changed_at)
+          VALUES('contact', CAST(NEW.contact_id AS TEXT), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+          ON CONFLICT(entity_kind, entity_id) DO UPDATE SET changed_at = excluded.changed_at;
+        END;
+        CREATE TRIGGER IF NOT EXISTS backup_membership_delete AFTER DELETE ON contact_groups BEGIN
+          INSERT INTO backup_change_log(entity_kind, entity_id, changed_at)
+          VALUES('contact', CAST(OLD.contact_id AS TEXT), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+          ON CONFLICT(entity_kind, entity_id) DO UPDATE SET changed_at = excluded.changed_at;
+        END;
         CREATE TABLE IF NOT EXISTS calendar_sync_outbox (
             event_id TEXT PRIMARY KEY,
             action TEXT NOT NULL,
             queued_at TEXT NOT NULL,
             attempts INTEGER NOT NULL DEFAULT 0,
             last_error TEXT
+        );
+        CREATE TABLE IF NOT EXISTS calendar_file_import_jobs (
+            id TEXT PRIMARY KEY,
+            file_path TEXT NOT NULL,
+            file_name TEXT NOT NULL,
+            file_size INTEGER NOT NULL,
+            file_modified_ms INTEGER NOT NULL,
+            fallback_category TEXT NOT NULL,
+            fallback_color TEXT NOT NULL,
+            byte_offset INTEGER NOT NULL DEFAULT 0,
+            processed INTEGER NOT NULL DEFAULT 0,
+            imported INTEGER NOT NULL DEFAULT 0,
+            skipped_same_id INTEGER NOT NULL DEFAULT 0,
+            skipped_exact_duplicates INTEGER NOT NULL DEFAULT 0,
+            skipped_invalid INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL,
+            last_error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS calendar_file_import_categories (
+            job_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            color TEXT NOT NULL,
+            PRIMARY KEY (job_id, name),
+            FOREIGN KEY (job_id) REFERENCES calendar_file_import_jobs(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS m365_calendar_delta_state (
+            source_id TEXT PRIMARY KEY,
+            delta_link TEXT NOT NULL,
+            window_start TEXT NOT NULL,
+            window_end TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS m365_calendar_delta_changes (
+            source_id TEXT NOT NULL,
+            remote_id TEXT NOT NULL,
+            change_kind TEXT NOT NULL,
+            payload_json TEXT,
+            received_at TEXT NOT NULL,
+            PRIMARY KEY (source_id, remote_id)
         );
         CREATE TABLE IF NOT EXISTS mail_accounts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1070,6 +1187,10 @@ fn init_db(app: &AppHandle) -> Result<(), String> {
             ON calendar_events(deleted_at, duplicate_key);
         CREATE INDEX IF NOT EXISTS idx_calendar_sync_outbox_queued
             ON calendar_sync_outbox(queued_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_calendar_file_import_jobs_status
+            ON calendar_file_import_jobs(status, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_m365_calendar_delta_changes_received
+            ON m365_calendar_delta_changes(source_id, received_at, remote_id);
         ",
     )
     .map_err(|err| err.to_string())?;
@@ -1906,12 +2027,20 @@ const AUTOMATIC_BACKUP_FOLDER: &str = "DMH Kontakte und Kalender\\Automatische S
 const AUTOMATIC_BACKUP_ADMIN_TEST_FOLDER: &str =
     "DMH Kontakte und Kalender Admin Test\\Automatische Sicherung";
 const AUTOMATIC_BACKUP_LATEST: &str = "DMH-Kontakte-Kalender-Auto-Backup.json";
+const AUTOMATIC_BACKUP_EXTERNAL_LATEST: &str = "DMH-Kontakte-Kalender-Auto-Backup.dmhbackup";
 const AUTOMATIC_BACKUP_SNAPSHOT_PREFIX: &str = "auto-backup-";
+const AUTOMATIC_BACKUP_FINGERPRINT: &str = "latest.sha256";
+const AUTOMATIC_BACKUP_SNAPSHOT_LIMIT: usize = 2;
+const AUTOMATIC_BACKUP_SNAPSHOT_MAX_BYTES: u64 = 128 * 1024 * 1024;
+const AUTOMATIC_BACKUP_SNAPSHOT_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+const BACKUP_ENCRYPTED_MAGIC: &[u8] = b"DMHBACKUP1\0";
+const BACKUP_DPAPI_ENTROPY: &[u8] = b"de.dmh.agendakontakte.backup.v1";
 const RECOVERY_CHECKPOINT_FOLDER: &str = "recovery";
 const RECOVERY_CHECKPOINT_PREFIX: &str = "checkpoint-";
-const RECOVERY_CHECKPOINT_LIMIT: usize = 240;
-const RECOVERY_CHECKPOINT_MINIMUM: usize = 12;
+const RECOVERY_CHECKPOINT_LIMIT: usize = 24;
+const RECOVERY_CHECKPOINT_MINIMUM: usize = 1;
 const RECOVERY_CHECKPOINT_MAX_BYTES: u64 = 64 * 1024 * 1024;
+const RECOVERY_CHECKPOINT_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 const CALENDAR_ACTIVE_STORAGE_KEY: &str = "agendakontakte.calendarEvents";
 const CALENDAR_DELETED_STORAGE_KEY: &str = "agendakontakte.deletedCalendarEvents";
 const COLLECTED_ADDRESSES_HIDDEN_SETTING: &str = "collected_addresses_hidden";
@@ -1976,6 +2105,12 @@ pub(crate) fn automatic_backup_file_paths(
         if latest.is_file() {
             paths.insert(latest);
         }
+        if latest_name == AUTOMATIC_BACKUP_LATEST {
+            let encrypted_latest = directory.join(AUTOMATIC_BACKUP_EXTERNAL_LATEST);
+            if encrypted_latest.is_file() {
+                paths.insert(encrypted_latest);
+            }
+        }
         let snapshots = directory.join("Snapshots");
         if !snapshots.is_dir() {
             continue;
@@ -1986,10 +2121,13 @@ pub(crate) fn automatic_backup_file_paths(
             let path = entry
                 .map_err(|error| format!("Backup-Snapshot konnte nicht gelesen werden: {error}"))?
                 .path();
-            let is_matching_snapshot = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with(snapshot_prefix) && name.ends_with(".json"));
+            let is_matching_snapshot =
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with(snapshot_prefix)
+                            && (name.ends_with(".json") || name.ends_with(".dmhbackup"))
+                    });
             if path.is_file() && is_matching_snapshot {
                 paths.insert(path);
             }
@@ -2247,6 +2385,232 @@ pub(crate) fn write_external_backup_best_effort(path: &Path, json: &str, label: 
     }
 }
 
+#[cfg(target_os = "windows")]
+fn protect_backup_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    use windows::{
+        core::PCWSTR,
+        Win32::{
+            Foundation::{LocalFree, HLOCAL},
+            Security::Cryptography::{
+                CryptProtectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
+            },
+        },
+    };
+    let length = u32::try_from(bytes.len())
+        .map_err(|_| "Die Sicherung ist für die Windows-Verschlüsselung zu groß.".to_string())?;
+    let input = CRYPT_INTEGER_BLOB {
+        cbData: length,
+        pbData: bytes.as_ptr() as *mut u8,
+    };
+    let entropy = CRYPT_INTEGER_BLOB {
+        cbData: BACKUP_DPAPI_ENTROPY.len() as u32,
+        pbData: BACKUP_DPAPI_ENTROPY.as_ptr() as *mut u8,
+    };
+    let mut output = CRYPT_INTEGER_BLOB::default();
+    unsafe {
+        CryptProtectData(
+            &input,
+            PCWSTR::null(),
+            Some(&entropy),
+            None,
+            None,
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        )
+    }
+    .map_err(|error| format!("Windows konnte die Sicherung nicht verschlüsseln: {error}"))?;
+    if output.pbData.is_null() || output.cbData == 0 {
+        return Err("Windows hat keine verschlüsselte Sicherung geliefert.".to_string());
+    }
+    let protected =
+        unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
+    unsafe {
+        LocalFree(Some(HLOCAL(output.pbData.cast())));
+    }
+    Ok(protected)
+}
+
+#[cfg(target_os = "windows")]
+fn unprotect_backup_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    use windows::Win32::{
+        Foundation::{LocalFree, HLOCAL},
+        Security::Cryptography::{
+            CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
+        },
+    };
+    let length = u32::try_from(bytes.len())
+        .map_err(|_| "Die verschlüsselte Sicherung ist ungültig.".to_string())?;
+    let input = CRYPT_INTEGER_BLOB {
+        cbData: length,
+        pbData: bytes.as_ptr() as *mut u8,
+    };
+    let entropy = CRYPT_INTEGER_BLOB {
+        cbData: BACKUP_DPAPI_ENTROPY.len() as u32,
+        pbData: BACKUP_DPAPI_ENTROPY.as_ptr() as *mut u8,
+    };
+    let mut output = CRYPT_INTEGER_BLOB::default();
+    unsafe {
+        CryptUnprotectData(
+            &input,
+            None,
+            Some(&entropy),
+            None,
+            None,
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        )
+    }
+    .map_err(|_| {
+        "Die Sicherung gehört zu einem anderen Windows-Benutzer oder Computer.".to_string()
+    })?;
+    if output.pbData.is_null() || output.cbData == 0 {
+        return Err("Die verschlüsselte Sicherung ist beschädigt.".to_string());
+    }
+    let unprotected = unsafe {
+        let source = std::slice::from_raw_parts_mut(output.pbData, output.cbData as usize);
+        let value = source.to_vec();
+        source.zeroize();
+        LocalFree(Some(HLOCAL(output.pbData.cast())));
+        value
+    };
+    Ok(unprotected)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn protect_backup_bytes(_bytes: &[u8]) -> Result<Vec<u8>, String> {
+    Err(
+        "Verschlüsselte automatische Sicherungen werden derzeit nur unter Windows unterstützt."
+            .to_string(),
+    )
+}
+
+#[cfg(not(target_os = "windows"))]
+fn unprotect_backup_bytes(_bytes: &[u8]) -> Result<Vec<u8>, String> {
+    Err(
+        "Verschlüsselte automatische Sicherungen werden derzeit nur unter Windows unterstützt."
+            .to_string(),
+    )
+}
+
+fn encrypted_backup_bytes(json: &str) -> Result<Vec<u8>, String> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+    encoder
+        .write_all(json.as_bytes())
+        .map_err(|error| error.to_string())?;
+    let mut compressed = encoder.finish().map_err(|error| error.to_string())?;
+    let protected = protect_backup_bytes(&compressed)?;
+    compressed.zeroize();
+    let mut output = Vec::with_capacity(BACKUP_ENCRYPTED_MAGIC.len() + protected.len());
+    output.extend_from_slice(BACKUP_ENCRYPTED_MAGIC);
+    output.extend_from_slice(&protected);
+    Ok(output)
+}
+
+fn decrypt_backup_bytes(bytes: &[u8]) -> Result<String, String> {
+    let protected = bytes
+        .strip_prefix(BACKUP_ENCRYPTED_MAGIC)
+        .ok_or_else(|| "Die verschlüsselte Sicherung hat ein unbekanntes Format.".to_string())?;
+    let mut compressed = unprotect_backup_bytes(protected)?;
+    let mut decoder = GzDecoder::new(compressed.as_slice());
+    let mut json = String::new();
+    decoder
+        .read_to_string(&mut json)
+        .map_err(|error| format!("Die verschlüsselte Sicherung ist beschädigt: {error}"))?;
+    compressed.zeroize();
+    Ok(json)
+}
+
+fn read_backup_data_file(path: &Path) -> Result<BackupData, String> {
+    let bytes = fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let content = if bytes.starts_with(BACKUP_ENCRYPTED_MAGIC) {
+        decrypt_backup_bytes(&bytes)?
+    } else {
+        String::from_utf8(bytes)
+            .map_err(|_| format!("Die Sicherung {} ist keine gültige Datei.", path.display()))?
+    };
+    serde_json::from_str(&content)
+        .map_err(|error| format!("Die Sicherung {} ist beschädigt: {error}", path.display()))
+}
+
+fn write_encrypted_backup_file(path: &Path, json: &str) -> Result<(), String> {
+    replace_file_contents(path, &encrypted_backup_bytes(json)?)
+}
+
+fn prune_backup_snapshots(directory: &Path) -> Result<(), String> {
+    let snapshots = directory.join("Snapshots");
+    if !snapshots.is_dir() {
+        return Ok(());
+    }
+    let mut paths = fs::read_dir(&snapshots)
+        .map_err(|error| error.to_string())?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with(AUTOMATIC_BACKUP_SNAPSHOT_PREFIX)
+                            && (name.ends_with(".json") || name.ends_with(".dmhbackup"))
+                    })
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    let mut total_bytes = paths
+        .iter()
+        .filter_map(|path| path.metadata().ok())
+        .map(|metadata| metadata.len())
+        .sum::<u64>();
+    let mut remove_count = 0usize;
+    while paths.len().saturating_sub(remove_count) > 1 {
+        let oldest_is_expired = paths
+            .get(remove_count)
+            .and_then(|path| path.metadata().ok())
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+            .is_some_and(|age| age > AUTOMATIC_BACKUP_SNAPSHOT_MAX_AGE);
+        if paths.len().saturating_sub(remove_count) <= AUTOMATIC_BACKUP_SNAPSHOT_LIMIT
+            && total_bytes <= AUTOMATIC_BACKUP_SNAPSHOT_MAX_BYTES
+            && !oldest_is_expired
+        {
+            break;
+        }
+        total_bytes = total_bytes.saturating_sub(
+            paths[remove_count]
+                .metadata()
+                .map(|metadata| metadata.len())
+                .unwrap_or(0),
+        );
+        remove_count += 1;
+    }
+    for path in paths.into_iter().take(remove_count) {
+        fs::remove_file(path).map_err(|error| {
+            format!("Alter automatischer Snapshot konnte nicht entfernt werden: {error}")
+        })?;
+    }
+    Ok(())
+}
+
+fn remove_legacy_plaintext_snapshots(directory: &Path) {
+    let snapshots = directory.join("Snapshots");
+    let Ok(entries) = fs::read_dir(snapshots) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_legacy_snapshot =
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name.starts_with(AUTOMATIC_BACKUP_SNAPSHOT_PREFIX) && name.ends_with(".json")
+                });
+        if path.is_file() && is_legacy_snapshot {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
 fn write_automatic_backup(
     app: &AppHandle,
     current: BackupData,
@@ -2254,31 +2618,52 @@ fn write_automatic_backup(
 ) -> Result<(), String> {
     let app_data_directory = automatic_backup_app_data_dir(app)?;
     let app_data_latest_path = app_data_directory.join(AUTOMATIC_BACKUP_LATEST);
+    let external_directory = automatic_backup_dir(app).ok();
     let previous_path = if app_data_latest_path.is_file() {
         Some(app_data_latest_path.clone())
     } else {
-        automatic_backup_dir(app)
-            .ok()
-            .map(|directory| directory.join(AUTOMATIC_BACKUP_LATEST))
-            .filter(|path| path.is_file())
+        external_directory.as_ref().and_then(|directory| {
+            let encrypted = directory.join(AUTOMATIC_BACKUP_EXTERNAL_LATEST);
+            let legacy = directory.join(AUTOMATIC_BACKUP_LATEST);
+            encrypted
+                .is_file()
+                .then_some(encrypted)
+                .or_else(|| legacy.is_file().then_some(legacy))
+        })
     };
     let previous = if let Some(previous_path) = previous_path {
-        let content = fs::read_to_string(&previous_path).map_err(|error| {
+        Some(read_backup_data_file(&previous_path).map_err(|error| {
             format!("Automatischer Backup konnte nicht gelesen werden: {error}")
-        })?;
-        Some(
-            serde_json::from_str::<BackupData>(&content).map_err(|error| {
-                format!("Automatischer Backup konnte nicht gelesen werden: {error}")
-            })?,
-        )
+        })?)
     } else {
         None
     };
     let merged = merge_automatic_backup(previous, current)?;
-    let json = serde_json::to_string_pretty(&merged).map_err(|error| error.to_string())?;
+    let fingerprint = recovery_fingerprint(&merged)?;
+    let fingerprint_path = app_data_directory.join(AUTOMATIC_BACKUP_FINGERPRINT);
+    let unchanged = fs::read_to_string(&fingerprint_path)
+        .ok()
+        .is_some_and(|stored| stored.trim() == fingerprint);
+    let external_missing = external_directory
+        .as_ref()
+        .is_some_and(|directory| !directory.join(AUTOMATIC_BACKUP_EXTERNAL_LATEST).is_file());
+    if unchanged && app_data_latest_path.is_file() && !external_missing {
+        prune_backup_snapshots(&app_data_directory)?;
+        if let Some(directory) = external_directory.as_ref() {
+            let legacy_plaintext = directory.join(AUTOMATIC_BACKUP_LATEST);
+            if legacy_plaintext.is_file() {
+                let _ = fs::remove_file(legacy_plaintext);
+            }
+            remove_legacy_plaintext_snapshots(directory);
+            prune_backup_snapshots(directory)?;
+        }
+        return Ok(());
+    }
+    let json = serde_json::to_string(&merged).map_err(|error| error.to_string())?;
     replace_json_file(&app_data_latest_path, &json)?;
+    replace_file_contents(&fingerprint_path, fingerprint.as_bytes())?;
 
-    if snapshot {
+    if snapshot && !unchanged {
         let stamp = Utc::now().format("%Y%m%d-%H%M%S-%f");
         let app_data_snapshots = app_data_directory.join("Snapshots");
         fs::create_dir_all(&app_data_snapshots).map_err(|error| error.to_string())?;
@@ -2286,25 +2671,37 @@ fn write_automatic_backup(
             &app_data_snapshots.join(format!("auto-backup-{stamp}.json")),
             &json,
         )?;
+        prune_backup_snapshots(&app_data_directory)?;
     }
 
-    if let Ok(directory) = automatic_backup_dir(app) {
-        write_external_backup_best_effort(
-            &directory.join(AUTOMATIC_BACKUP_LATEST),
-            &json,
-            "Externe automatische Sicherung",
-        );
-        if snapshot {
+    if let Some(directory) = external_directory {
+        let encrypted_latest = directory.join(AUTOMATIC_BACKUP_EXTERNAL_LATEST);
+        if let Err(error) = write_encrypted_backup_file(&encrypted_latest, &json) {
+            eprintln!("Externe verschlüsselte Sicherung konnte nicht aktualisiert werden: {error}");
+        } else {
+            let legacy_plaintext = directory.join(AUTOMATIC_BACKUP_LATEST);
+            if legacy_plaintext.is_file() {
+                let _ = fs::remove_file(legacy_plaintext);
+            }
+            remove_legacy_plaintext_snapshots(&directory);
+        }
+        if snapshot && !unchanged {
             let snapshots = directory.join("Snapshots");
             if let Err(error) = fs::create_dir_all(&snapshots) {
                 eprintln!("Externer Snapshot-Ordner konnte nicht erstellt werden: {error}");
             } else {
                 let stamp = Utc::now().format("%Y%m%d-%H%M%S-%f");
-                write_external_backup_best_effort(
-                    &snapshots.join(format!("auto-backup-{stamp}.json")),
+                if let Err(error) = write_encrypted_backup_file(
+                    &snapshots.join(format!("auto-backup-{stamp}.dmhbackup")),
                     &json,
-                    "Externer automatischer Snapshot",
-                );
+                ) {
+                    eprintln!(
+                        "Externer verschlüsselter Snapshot konnte nicht erstellt werden: {error}"
+                    );
+                }
+                if let Err(error) = prune_backup_snapshots(&directory) {
+                    eprintln!("Alte externe Snapshots konnten nicht bereinigt werden: {error}");
+                }
             }
         }
     }
@@ -2324,6 +2721,18 @@ struct RecoveryCheckpoint {
 struct StoredRecoveryCheckpoint {
     id: String,
     checkpoint: RecoveryCheckpoint,
+    size_bytes: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RecoveryCheckpointMetadata {
+    id: String,
+    created_at: String,
+    fingerprint: String,
+    contacts: usize,
+    groups: usize,
+    calendar_events: usize,
     size_bytes: u64,
 }
 
@@ -2349,6 +2758,9 @@ pub struct RecoveryArchiveStatus {
     pub total_checkpoints: usize,
     pub total_size_bytes: u64,
     pub checkpoints: Vec<RecoveryCheckpointSummary>,
+    pub internal_location: String,
+    pub external_location: String,
+    pub external_encrypted: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -2460,6 +2872,7 @@ fn recovery_checkpoint_paths(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
                     .is_some_and(|name| {
                         name.starts_with(RECOVERY_CHECKPOINT_PREFIX)
                             && (name.ends_with(".json") || name.ends_with(".json.gz"))
+                            && !name.ends_with(".meta.json")
                     })
         })
         .collect::<Vec<_>>();
@@ -2475,39 +2888,56 @@ fn calendar_event_count(backup: &BackupData) -> usize {
 }
 
 fn recovery_fingerprint(backup: &BackupData) -> Result<String, String> {
-    let mut stable = backup.clone();
-    stable.contacts.sort_by(|left, right| {
+    struct DigestWriter<'a>(&'a mut Sha256);
+    impl Write for DigestWriter<'_> {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            self.0.update(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    // Calendar JSON can contain hundreds of thousands of events. Keep it
+    // borrowed and stream the canonical representation into SHA-256 instead
+    // of cloning and serializing the complete archive a second time.
+    let mut contacts = backup.contacts.clone();
+    contacts.sort_by(|left, right| {
         left.id
             .cmp(&right.id)
             .then_with(|| left.email.cmp(&right.email))
             .then_with(|| left.display_name.cmp(&right.display_name))
     });
-    for contact in &mut stable.contacts {
+    for contact in &mut contacts {
         contact.groups.sort_by(|left, right| {
             left.id
                 .cmp(&right.id)
                 .then_with(|| left.name.cmp(&right.name))
         });
     }
-    stable.groups.sort_by(|left, right| {
+    let mut groups = backup.groups.clone();
+    groups.sort_by(|left, right| {
         left.id
             .cmp(&right.id)
             .then_with(|| left.name.cmp(&right.name))
     });
-    stable
-        .settings
-        .sort_by(|left, right| left.key.cmp(&right.key));
-    let browser_storage = stable.browser_storage.iter().collect::<BTreeMap<_, _>>();
-    let serialized = serde_json::to_vec(&(
-        &stable.version,
-        &stable.contacts,
-        &stable.groups,
-        &stable.settings,
-        browser_storage,
-    ))
-    .map_err(|error| error.to_string())?;
+    let mut settings = backup.settings.clone();
+    settings.sort_by(|left, right| left.key.cmp(&right.key));
+    let browser_storage = backup.browser_storage.iter().collect::<BTreeMap<_, _>>();
     let mut hasher = Sha256::new();
-    hasher.update(serialized);
+    serde_json::to_writer(
+        DigestWriter(&mut hasher),
+        &(
+            &backup.version,
+            &contacts,
+            &groups,
+            &settings,
+            browser_storage,
+        ),
+    )
+    .map_err(|error| error.to_string())?;
     Ok(format!("{:x}", hasher.finalize()))
 }
 
@@ -2533,6 +2963,120 @@ fn recovery_checkpoint_summary(stored: &StoredRecoveryCheckpoint) -> RecoveryChe
     }
 }
 
+fn recovery_checkpoint_metadata_path(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("checkpoint");
+    path.with_file_name(format!("{name}.meta.json"))
+}
+
+fn recovery_checkpoint_metadata(stored: &StoredRecoveryCheckpoint) -> RecoveryCheckpointMetadata {
+    let summary = recovery_checkpoint_summary(stored);
+    RecoveryCheckpointMetadata {
+        id: summary.id,
+        created_at: summary.created_at,
+        fingerprint: stored.checkpoint.fingerprint.clone(),
+        contacts: summary.contacts,
+        groups: summary.groups,
+        calendar_events: summary.calendar_events,
+        size_bytes: summary.size_bytes,
+    }
+}
+
+fn write_recovery_checkpoint_metadata(
+    checkpoint_path: &Path,
+    metadata: &RecoveryCheckpointMetadata,
+) -> Result<(), String> {
+    let json = serde_json::to_string(metadata).map_err(|error| error.to_string())?;
+    replace_json_file(&recovery_checkpoint_metadata_path(checkpoint_path), &json)
+}
+
+fn read_recovery_checkpoint_metadata(
+    checkpoint_path: &Path,
+) -> Result<RecoveryCheckpointMetadata, String> {
+    let metadata_path = recovery_checkpoint_metadata_path(checkpoint_path);
+    if metadata_path.is_file() {
+        let content = fs::read_to_string(&metadata_path).map_err(|error| error.to_string())?;
+        return serde_json::from_str(&content).map_err(|error| error.to_string());
+    }
+    let checkpoint = read_recovery_checkpoint(checkpoint_path)?;
+    let stored = StoredRecoveryCheckpoint {
+        id: checkpoint_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_string(),
+        checkpoint,
+        size_bytes: checkpoint_path
+            .metadata()
+            .map(|metadata| metadata.len())
+            .unwrap_or(0),
+    };
+    let metadata = recovery_checkpoint_metadata(&stored);
+    write_recovery_checkpoint_metadata(checkpoint_path, &metadata)?;
+    Ok(metadata)
+}
+
+fn read_recovery_checkpoint_summaries(
+    app: &AppHandle,
+) -> Result<Vec<RecoveryCheckpointMetadata>, String> {
+    let mut summaries = recovery_checkpoint_paths(app)?
+        .into_iter()
+        .filter_map(|path| read_recovery_checkpoint_metadata(&path).ok())
+        .collect::<Vec<_>>();
+    summaries.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(summaries)
+}
+
+fn read_latest_recovery_checkpoint(
+    app: &AppHandle,
+) -> Result<Option<StoredRecoveryCheckpoint>, String> {
+    let Some(path) = recovery_checkpoint_paths(app)?.into_iter().last() else {
+        return Ok(None);
+    };
+    let checkpoint = read_recovery_checkpoint(&path)?;
+    Ok(Some(StoredRecoveryCheckpoint {
+        id: path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_string(),
+        checkpoint,
+        size_bytes: path.metadata().map(|metadata| metadata.len()).unwrap_or(0),
+    }))
+}
+
+fn read_recovery_checkpoint_by_id(
+    app: &AppHandle,
+    checkpoint_id: Option<&str>,
+) -> Result<Option<StoredRecoveryCheckpoint>, String> {
+    let paths = recovery_checkpoint_paths(app)?;
+    let path = match checkpoint_id {
+        Some(id) => paths
+            .into_iter()
+            .find(|path| path.file_name().and_then(|name| name.to_str()) == Some(id)),
+        None => paths.into_iter().last(),
+    };
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let checkpoint = read_recovery_checkpoint(&path)?;
+    Ok(Some(StoredRecoveryCheckpoint {
+        id: path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_string(),
+        checkpoint,
+        size_bytes: path.metadata().map(|metadata| metadata.len()).unwrap_or(0),
+    }))
+}
+
 fn read_recovery_checkpoint(path: &Path) -> Result<RecoveryCheckpoint, String> {
     let bytes = fs::read(path).map_err(|error| error.to_string())?;
     let content = if path.extension().and_then(|value| value.to_str()) == Some("gz") {
@@ -2546,33 +3090,6 @@ fn read_recovery_checkpoint(path: &Path) -> Result<RecoveryCheckpoint, String> {
         String::from_utf8(bytes).map_err(|error| error.to_string())?
     };
     serde_json::from_str(&content).map_err(|error| error.to_string())
-}
-
-fn read_recovery_checkpoints(app: &AppHandle) -> Result<Vec<StoredRecoveryCheckpoint>, String> {
-    let mut checkpoints = Vec::new();
-    for path in recovery_checkpoint_paths(app)? {
-        let Ok(checkpoint) = read_recovery_checkpoint(&path) else {
-            continue;
-        };
-        let id = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default()
-            .to_string();
-        let size_bytes = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
-        checkpoints.push(StoredRecoveryCheckpoint {
-            id,
-            checkpoint,
-            size_bytes,
-        });
-    }
-    checkpoints.sort_by(|left, right| {
-        left.checkpoint
-            .created_at
-            .cmp(&right.checkpoint.created_at)
-            .then_with(|| left.id.cmp(&right.id))
-    });
-    Ok(checkpoints)
 }
 
 fn merge_recovery_backup(
@@ -2720,10 +3237,19 @@ fn prune_recovery_checkpoints(app: &AppHandle) -> Result<(), String> {
         .map(|metadata| metadata.len())
         .sum::<u64>();
     let mut remove_count = 0usize;
-    while paths.len().saturating_sub(remove_count) > RECOVERY_CHECKPOINT_MINIMUM
-        && (paths.len().saturating_sub(remove_count) > RECOVERY_CHECKPOINT_LIMIT
-            || total_bytes > RECOVERY_CHECKPOINT_MAX_BYTES)
-    {
+    while paths.len().saturating_sub(remove_count) > RECOVERY_CHECKPOINT_MINIMUM {
+        let oldest_is_expired = paths
+            .get(remove_count)
+            .and_then(|path| path.metadata().ok())
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+            .is_some_and(|age| age > RECOVERY_CHECKPOINT_MAX_AGE);
+        if paths.len().saturating_sub(remove_count) <= RECOVERY_CHECKPOINT_LIMIT
+            && total_bytes <= RECOVERY_CHECKPOINT_MAX_BYTES
+            && !oldest_is_expired
+        {
+            break;
+        }
         total_bytes = total_bytes.saturating_sub(
             paths[remove_count]
                 .metadata()
@@ -2733,21 +3259,28 @@ fn prune_recovery_checkpoints(app: &AppHandle) -> Result<(), String> {
         remove_count += 1;
     }
     for path in paths.iter().take(remove_count) {
+        let metadata_path = recovery_checkpoint_metadata_path(path);
         fs::remove_file(path).map_err(|error| {
             format!("Alter Wiederherstellungspunkt konnte nicht entfernt werden: {error}")
         })?;
+        if metadata_path.is_file() {
+            let _ = fs::remove_file(metadata_path);
+        }
     }
     Ok(())
 }
 
 fn write_recovery_checkpoint(app: &AppHandle, backup: BackupData) -> Result<(), String> {
-    let checkpoints = read_recovery_checkpoints(app)?;
+    let checkpoints = read_latest_recovery_checkpoint(app)?
+        .into_iter()
+        .collect::<Vec<_>>();
     let backup = safe_recovery_backup(&checkpoints, backup)?;
     let fingerprint = recovery_fingerprint(&backup)?;
     if checkpoints
         .last()
         .is_some_and(|stored| stored.checkpoint.fingerprint == fingerprint)
     {
+        prune_recovery_checkpoints(app)?;
         return Ok(());
     }
 
@@ -2767,14 +3300,27 @@ fn write_recovery_checkpoint(app: &AppHandle, backup: BackupData) -> Result<(), 
     let path =
         recovery_checkpoint_dir(app)?.join(format!("{RECOVERY_CHECKPOINT_PREFIX}{stamp}.json.gz"));
     replace_file_contents(&path, &compressed)?;
+    let stored = StoredRecoveryCheckpoint {
+        id: path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_string(),
+        checkpoint,
+        size_bytes: compressed.len() as u64,
+    };
+    write_recovery_checkpoint_metadata(&path, &recovery_checkpoint_metadata(&stored))?;
     prune_recovery_checkpoints(app)
 }
 
-fn recovery_status_from_checkpoints(
-    checkpoints: &[StoredRecoveryCheckpoint],
-) -> RecoveryArchiveStatus {
+fn recovery_status_from_summaries(
+    app: &AppHandle,
+    checkpoints: &[RecoveryCheckpointMetadata],
+) -> Result<RecoveryArchiveStatus, String> {
+    let internal_location = recovery_history::history_path(app)?.display().to_string();
+    let external_location = internal_location.clone();
     let Some(latest) = checkpoints.last() else {
-        return RecoveryArchiveStatus {
+        return Ok(RecoveryArchiveStatus {
             available: false,
             latest_at: None,
             contacts: 0,
@@ -2783,70 +3329,56 @@ fn recovery_status_from_checkpoints(
             total_checkpoints: 0,
             total_size_bytes: 0,
             checkpoints: Vec::new(),
-        };
+            internal_location,
+            external_location,
+            external_encrypted: false,
+        });
     };
-    let latest_summary = recovery_checkpoint_summary(latest);
     let mut summaries = checkpoints
         .iter()
         .rev()
-        .map(recovery_checkpoint_summary)
+        .map(|checkpoint| RecoveryCheckpointSummary {
+            id: checkpoint.id.clone(),
+            created_at: checkpoint.created_at.clone(),
+            contacts: checkpoint.contacts,
+            groups: checkpoint.groups,
+            calendar_events: checkpoint.calendar_events,
+            size_bytes: checkpoint.size_bytes,
+        })
         .collect::<Vec<_>>();
     summaries.truncate(RECOVERY_CHECKPOINT_LIMIT);
-    RecoveryArchiveStatus {
+    Ok(RecoveryArchiveStatus {
         available: true,
-        latest_at: Some(latest_summary.created_at.clone()),
-        contacts: latest_summary.contacts,
-        groups: latest_summary.groups,
-        calendar_events: latest_summary.calendar_events,
+        latest_at: Some(latest.created_at.clone()),
+        contacts: latest.contacts,
+        groups: latest.groups,
+        calendar_events: latest.calendar_events,
         total_checkpoints: checkpoints.len(),
         total_size_bytes: checkpoints.iter().map(|stored| stored.size_bytes).sum(),
         checkpoints: summaries,
-    }
-}
-
-fn recovery_checkpoint_for_restore(
-    checkpoints: &[StoredRecoveryCheckpoint],
-    current_backup: &BackupData,
-    checkpoint_id: Option<&str>,
-) -> Option<RecoveryCheckpoint> {
-    if let Some(checkpoint_id) = checkpoint_id {
-        return checkpoints
-            .iter()
-            .find(|stored| stored.id == checkpoint_id)
-            .map(|stored| stored.checkpoint.clone());
-    }
-    let current_calendar_events = calendar_event_count(current_backup);
-    let current_contacts = current_backup
-        .contacts
-        .iter()
-        .filter(|contact| contact.deleted_at.is_none())
-        .count();
-    checkpoints
-        .iter()
-        .rev()
-        .find(|stored| {
-            calendar_event_count(&stored.checkpoint.backup) > current_calendar_events
-                || stored
-                    .checkpoint
-                    .backup
-                    .contacts
-                    .iter()
-                    .filter(|contact| contact.deleted_at.is_none())
-                    .count()
-                    > current_contacts
-        })
-        .map(|stored| stored.checkpoint.clone())
-        .or_else(|| checkpoints.last().map(|stored| stored.checkpoint.clone()))
+        internal_location,
+        external_location,
+        external_encrypted: false,
+    })
 }
 
 fn read_automatic_recovery_backup(app: &AppHandle) -> Result<BackupData, String> {
     let app_data_path = automatic_backup_app_data_dir(app)?.join(AUTOMATIC_BACKUP_LATEST);
-    let documents_path = automatic_backup_dir(app)?.join(AUTOMATIC_BACKUP_LATEST);
-    let content = fs::read_to_string(&app_data_path)
-        .or_else(|_| fs::read_to_string(&documents_path))
-        .map_err(|error| format!("Das Abschlussarchiv konnte nicht gelesen werden: {error}"))?;
-    serde_json::from_str(&content)
-        .map_err(|error| format!("Das Abschlussarchiv ist beschädigt: {error}"))
+    let mut paths = vec![app_data_path];
+    // Read old Document archives for migration, but never create or update that
+    // directory in the new local-only backup design.
+    if let Ok(documents) = app.path().document_dir() {
+        let directory = documents.join(automatic_backup_folder(option_env!("DMH_RELEASE_CHANNEL")));
+        paths.push(directory.join(AUTOMATIC_BACKUP_EXTERNAL_LATEST));
+        paths.push(directory.join(AUTOMATIC_BACKUP_LATEST));
+    }
+    for path in paths {
+        if path.is_file() {
+            return read_backup_data_file(&path)
+                .map_err(|error| format!("Das Abschlussarchiv ist beschädigt: {error}"));
+        }
+    }
+    Err("Es ist noch kein Abschlussarchiv vorhanden.".to_string())
 }
 
 fn read_recovery_source(
@@ -2854,6 +3386,16 @@ fn read_recovery_source(
     source: &str,
     checkpoint_id: Option<&str>,
 ) -> Result<(BackupData, String, String), String> {
+    if recovery_history::status(app)?.available {
+        let requested_run = if source == "background" {
+            checkpoint_id
+        } else {
+            None
+        };
+        let backup = recovery_history::load_backup(app, requested_run)?;
+        let created_at = backup.exported_at.clone();
+        return Ok((backup, "Lokaler Sicherungsverlauf".to_string(), created_at));
+    }
     match source {
         "closing" => {
             let backup = read_automatic_recovery_backup(app)?;
@@ -2861,17 +3403,12 @@ fn read_recovery_source(
             Ok((backup, "Abschlussarchiv".to_string(), created_at))
         }
         "background" => {
-            let checkpoints = read_recovery_checkpoints(app)?;
-            let stored = if let Some(id) = checkpoint_id {
-                checkpoints.iter().find(|stored| stored.id == id)
-            } else {
-                checkpoints.last()
-            }
-            .ok_or_else(|| "Noch kein Hintergrund-Backup vorhanden.".to_string())?;
+            let stored = read_recovery_checkpoint_by_id(app, checkpoint_id)?
+                .ok_or_else(|| "Noch kein Hintergrund-Backup vorhanden.".to_string())?;
             Ok((
-                stored.checkpoint.backup.clone(),
+                stored.checkpoint.backup,
                 "Laufender Schutz".to_string(),
-                stored.checkpoint.created_at.clone(),
+                stored.checkpoint.created_at,
             ))
         }
         _ => Err("Unbekannte Backup-Quelle.".to_string()),
@@ -3536,9 +4073,7 @@ fn restore_recovery_archive_blocking(
     }
     tx.commit().map_err(|error| error.to_string())?;
 
-    let refreshed = load_backup_data(&conn)?;
-    write_automatic_backup(&app, refreshed.clone(), true)?;
-    write_recovery_checkpoint(&app, refreshed)?;
+    recovery_history::sync_from_app_database(&app, &conn, HashMap::new())?;
 
     Ok(RecoveryArchiveRestoreResult {
         source: candidates.source,
@@ -3565,8 +4100,11 @@ async fn restore_recovery_archive(
 }
 
 fn checkpoint_before_destructive_change(app: &AppHandle, conn: &Connection) -> Result<(), String> {
-    write_recovery_checkpoint(app, load_backup_data(conn)?)
-        .map_err(|error| format!("Sicherheits-Checkpoint konnte nicht erstellt werden: {error}"))
+    recovery_history::sync_from_app_database(app, conn, HashMap::new())
+        .map(|_| ())
+        .map_err(|error| {
+            format!("Lokaler Sicherungsverlauf konnte nicht aktualisiert werden: {error}")
+        })
 }
 
 fn read_groups_for_contact(conn: &Connection, contact_id: i64) -> Result<Vec<Group>, String> {
@@ -4404,21 +4942,14 @@ fn purge_targets_from_automatic_backups(
         AUTOMATIC_BACKUP_LATEST,
         AUTOMATIC_BACKUP_SNAPSHOT_PREFIX,
     )? {
-        let content = fs::read_to_string(&path).map_err(|error| {
-            format!(
-                "Automatischer Backup konnte nicht gelesen werden ({}): {error}",
-                path.display()
-            )
-        })?;
-        let mut backup = serde_json::from_str::<BackupData>(&content).map_err(|error| {
-            format!(
-                "Automatischer Backup ist beschädigt ({}): {error}",
-                path.display()
-            )
-        })?;
+        let mut backup = read_backup_data_file(&path)?;
         if purge_targets_from_backup_data(&mut backup, targets)? {
-            let json = serde_json::to_string_pretty(&backup).map_err(|error| error.to_string())?;
-            replace_json_file(&path, &json)?;
+            let json = serde_json::to_string(&backup).map_err(|error| error.to_string())?;
+            if path.extension().and_then(|extension| extension.to_str()) == Some("dmhbackup") {
+                write_encrypted_backup_file(&path, &json)?;
+            } else {
+                replace_json_file(&path, &json)?;
+            }
         }
     }
     Ok(())
@@ -4505,6 +5036,9 @@ fn purge_deleted_items(
         &category,
         vault_entry_ids.clone(),
     )?;
+    // Persist the complete deleted rows before the irreversible database purge.
+    // The history database deliberately keeps them as tombstones with payload.
+    recovery_history::sync_from_app_database(&app, &conn, HashMap::new())?;
     // Contacts, groups and calendar events intentionally remain in both data
     // archives even when the user empties the app trash. The recovery copy is
     // the last line of defence against an accidental mass deletion. Password
@@ -4861,38 +5395,29 @@ fn get_sync_backup_data(app: AppHandle) -> Result<BackupData, String> {
 }
 
 #[tauri::command]
-fn create_automatic_backup(
-    app: AppHandle,
-    backup: BackupData,
-    snapshot: Option<bool>,
-) -> Result<(), String> {
-    write_automatic_backup(&app, backup, snapshot.unwrap_or(false))
-}
-
-#[tauri::command]
-fn create_recovery_checkpoint(app: AppHandle, backup: BackupData) -> Result<(), String> {
-    write_recovery_checkpoint(&app, backup)
-}
-
-#[tauri::command]
 async fn create_automatic_safety_backup(
     app: AppHandle,
-    snapshot: Option<bool>,
+    _snapshot: Option<bool>,
     browser_storage: HashMap<String, String>,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let conn = open_db(&app)?;
-        let mut backup = load_backup_data(&conn)?;
-        for (key, value) in browser_storage {
-            if key != CALENDAR_ACTIVE_STORAGE_KEY && key != CALENDAR_DELETED_STORAGE_KEY {
-                backup.browser_storage.insert(key, value);
+        // One-time migration keeps data which may only exist in the previous
+        // cumulative archive (for example an item removed from the app trash).
+        if !recovery_history::status(&app)?.available {
+            let legacy = read_automatic_recovery_backup(&app).ok().or_else(|| {
+                read_latest_recovery_checkpoint(&app)
+                    .ok()
+                    .flatten()
+                    .map(|stored| stored.checkpoint.backup)
+            });
+            if let Some(legacy) = legacy {
+                recovery_history::import_legacy_backup(&app, &legacy)?;
             }
         }
-        // Both archives use the same consistent database read and run in one
-        // background job, so they never compete for CPU, memory or disk I/O.
-        write_automatic_backup(&app, backup.clone(), snapshot.unwrap_or(false))?;
-        write_recovery_checkpoint(&app, backup)?;
-        vault::write_automatic_password_backup(&app, snapshot.unwrap_or(false))?;
+        recovery_history::sync_from_app_database(&app, &conn, browser_storage)?;
+        // Secrets stay in their separately encrypted local vault backup.
+        vault::write_automatic_password_backup(&app, false)?;
         Ok(())
     })
     .await
@@ -4901,8 +5426,35 @@ async fn create_automatic_safety_backup(
 
 #[tauri::command]
 fn get_recovery_archive_status(app: AppHandle) -> Result<RecoveryArchiveStatus, String> {
-    let checkpoints = read_recovery_checkpoints(&app)?;
-    Ok(recovery_status_from_checkpoints(&checkpoints))
+    let history = recovery_history::status(&app)?;
+    if history.available {
+        return Ok(RecoveryArchiveStatus {
+            available: true,
+            latest_at: history.latest_at,
+            contacts: history.contacts,
+            groups: history.groups,
+            calendar_events: history.calendar_events,
+            total_checkpoints: history.total_versions,
+            total_size_bytes: history.size_bytes,
+            checkpoints: history
+                .runs
+                .into_iter()
+                .map(|run| RecoveryCheckpointSummary {
+                    id: run.id,
+                    created_at: run.created_at,
+                    contacts: run.contacts,
+                    groups: run.groups,
+                    calendar_events: run.calendar_events,
+                    size_bytes: run.size_bytes,
+                })
+                .collect(),
+            internal_location: history.location.clone(),
+            external_location: history.location,
+            external_encrypted: false,
+        });
+    }
+    let checkpoints = read_recovery_checkpoint_summaries(&app)?;
+    recovery_status_from_summaries(&app, &checkpoints)
 }
 
 #[tauri::command]
@@ -4911,13 +5463,14 @@ fn restore_recovery_checkpoint(
     current_backup: BackupData,
     checkpoint_id: Option<String>,
 ) -> Result<RecoveryRestoreResult, String> {
+    // Resolve the requested checkpoint before creating the safety snapshot, so
+    // an omitted id still means the newest pre-existing recovery point.
+    let checkpoint = read_recovery_checkpoint_by_id(&app, checkpoint_id.as_deref())?
+        .map(|stored| stored.checkpoint)
+        .ok_or_else(|| "Es ist noch kein Wiederherstellungspunkt vorhanden.".to_string())?;
     // Preserve the exact state that is about to be replaced, including the
     // browser-held calendar, before selecting a previous safe checkpoint.
-    write_recovery_checkpoint(&app, current_backup.clone())?;
-    let checkpoints = read_recovery_checkpoints(&app)?;
-    let checkpoint =
-        recovery_checkpoint_for_restore(&checkpoints, &current_backup, checkpoint_id.as_deref())
-            .ok_or_else(|| "Es ist noch kein Wiederherstellungspunkt vorhanden.".to_string())?;
+    write_recovery_checkpoint(&app, current_backup)?;
 
     let passwords_restored = vault::validate_automatic_password_backup(&app)?;
     let browser_storage = checkpoint.backup.browser_storage.clone();
@@ -4971,19 +5524,17 @@ fn restore_automatic_backup(
         );
     }
 
-    let directory = automatic_backup_dir(&app)?;
     let app_data_directory = automatic_backup_app_data_dir(&app)?;
-    let latest_path = directory.join(AUTOMATIC_BACKUP_LATEST);
     let app_data_latest_path = app_data_directory.join(AUTOMATIC_BACKUP_LATEST);
-    let content = fs::read_to_string(&latest_path)
-        .or_else(|_| fs::read_to_string(&app_data_latest_path))
-        .map_err(|error| {
-            format!("Die automatische Sicherung konnte nicht gelesen werden: {error}")
-        })?;
-    let backup = serde_json::from_str::<BackupData>(&content).map_err(|error| {
-        format!(
-            "Die automatische Sicherung ist beschädigt oder stammt aus einer unbekannten Version: {error}"
-        )
+    let directory = automatic_backup_dir(&app)?;
+    let encrypted_path = directory.join(AUTOMATIC_BACKUP_EXTERNAL_LATEST);
+    let legacy_path = directory.join(AUTOMATIC_BACKUP_LATEST);
+    let backup_path = [app_data_latest_path, encrypted_path, legacy_path]
+        .into_iter()
+        .find(|path| path.is_file())
+        .ok_or_else(|| "Es ist noch keine automatische Sicherung vorhanden.".to_string())?;
+    let backup = read_backup_data_file(&backup_path).map_err(|error| {
+        format!("Die automatische Sicherung ist beschädigt oder stammt aus einer unbekannten Version: {error}")
     })?;
 
     // Validate the encrypted password archive before replacing contacts and
@@ -5263,22 +5814,6 @@ fn clear_local_database(conn: &mut Connection) -> Result<(), String> {
     Ok(())
 }
 
-fn remove_known_app_subdirectory(app_dir: &PathBuf, name: &str) -> Result<(), String> {
-    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\\') {
-        return Err("Ungültiges lokales Reset-Ziel.".to_string());
-    }
-    let target = app_dir.join(name);
-    if target.parent() != Some(app_dir.as_path()) {
-        return Err("Lokales Reset-Ziel liegt außerhalb des App-Verzeichnisses.".to_string());
-    }
-    if target.exists() {
-        fs::remove_dir_all(&target).map_err(|error| {
-            format!("Lokale {name}-Daten konnten nicht gelöscht werden: {error}")
-        })?;
-    }
-    Ok(())
-}
-
 #[tauri::command]
 fn reset_local_app_data(app: AppHandle) -> Result<(), String> {
     mail_accounts::remove_all_mail_credentials(&app).map_err(|error| {
@@ -5287,19 +5822,13 @@ fn reset_local_app_data(app: AppHandle) -> Result<(), String> {
         )
     })?;
 
-    let app_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("App-Datenverzeichnis konnte nicht ermittelt werden: {error}"))?;
     mail_accounts::clear_migration_diagnostics(&app)?;
 
     let mut conn = open_db(&app)?;
-    // Preserve the state immediately before a destructive reset in the
-    // external archive. The archive intentionally lives outside app_data_dir
-    // and is therefore not removed by this reset operation.
-    write_automatic_backup(&app, load_backup_data(&conn)?, true)?;
-    vault::write_automatic_password_backup(&app, true)?;
-    remove_known_app_subdirectory(&app_dir, "backups")?;
+    // Preserve the state immediately before a destructive reset. The local
+    // history is intentionally retained so EDV can undo an accidental reset.
+    recovery_history::sync_from_app_database(&app, &conn, HashMap::new())?;
+    vault::write_automatic_password_backup(&app, false)?;
     clear_local_database(&mut conn)?;
     drop(conn);
 
@@ -5395,6 +5924,12 @@ fn add_contact_to_group(app: AppHandle, contact_id: i64, group_id: i64) -> Resul
             params![contact_id, group_id],
         )
         .map_err(|err| err.to_string())?;
+    transaction
+        .execute(
+            "UPDATE contacts SET updated_at = ?1 WHERE id = ?2",
+            params![now(), contact_id],
+        )
+        .map_err(|err| err.to_string())?;
     queue_contact_sync_in_transaction(&transaction, contact_id, "upsert")?;
     transaction.commit().map_err(|err| err.to_string())
 }
@@ -5433,6 +5968,11 @@ fn move_contact_to_group(app: AppHandle, contact_id: i64, group_id: i64) -> Resu
     )
     .map_err(|err| err.to_string())?;
     tx.execute(
+        "UPDATE contacts SET updated_at = ?1 WHERE id = ?2",
+        params![now(), contact_id],
+    )
+    .map_err(|err| err.to_string())?;
+    tx.execute(
         "INSERT OR IGNORE INTO contact_groups (contact_id, group_id) VALUES (?, ?)",
         params![contact_id, group_id],
     )
@@ -5464,6 +6004,12 @@ fn clear_contact_groups(app: AppHandle, contact_id: i64) -> Result<(), String> {
         .execute(
             "DELETE FROM contact_groups WHERE contact_id = ?",
             params![contact_id],
+        )
+        .map_err(|err| err.to_string())?;
+    transaction
+        .execute(
+            "UPDATE contacts SET updated_at = ?1 WHERE id = ?2",
+            params![now(), contact_id],
         )
         .map_err(|err| err.to_string())?;
     queue_contact_sync_in_transaction(&transaction, contact_id, "upsert")?;
@@ -9292,19 +9838,25 @@ fn show_main_window(app: &AppHandle) {
 }
 
 fn create_shutdown_safety_backup(app: &AppHandle) -> Result<(), String> {
-    let backup = load_backup_data(&open_db(app)?)?;
-    write_automatic_backup(app, backup.clone(), true)?;
-    write_recovery_checkpoint(app, backup)?;
-    vault::write_automatic_password_backup(app, true)
+    let conn = open_db(app)?;
+    recovery_history::sync_from_app_database(app, &conn, HashMap::new())?;
+    vault::write_automatic_password_backup(app, false)
 }
 
 pub fn run() {
     tauri::Builder::default()
+        // This must remain the first registered plugin. A second launch is
+        // terminated and the already-running window is brought back instead.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main_window(app);
+        }))
         .manage(AppState {
             db_path: Mutex::new(PathBuf::new()),
             vault: Mutex::new(vault::VaultRuntime::default()),
             outlook_contact_cache: Mutex::new(None),
             m365: m365::Microsoft365Runtime::default(),
+            calendar_import_running: AtomicBool::new(false),
+            calendar_import_cancel_requested: AtomicBool::new(false),
         })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -9376,6 +9928,11 @@ pub fn run() {
             list_deleted_calendar_events,
             get_welcome_data_counts,
             merge_calendar_events,
+            calendar_import::prepare_calendar_file_import,
+            calendar_import::get_pending_calendar_file_import,
+            calendar_import::run_calendar_file_import,
+            calendar_import::cancel_calendar_file_import,
+            calendar_import::discard_calendar_file_import,
             save_calendar_events,
             save_calendar_events_from_m365,
             move_calendar_events_to_trash,
@@ -9387,8 +9944,6 @@ pub fn run() {
             undo_last_outlook_contact_import,
             get_backup_data,
             get_sync_backup_data,
-            create_automatic_backup,
-            create_recovery_checkpoint,
             create_automatic_safety_backup,
             get_recovery_archive_status,
             preview_recovery_archive,
@@ -10799,6 +11354,37 @@ mod tests {
         assert!(
             parse_calendar_events(&merged.browser_storage, CALENDAR_DELETED_STORAGE_KEY).is_empty()
         );
+    }
+
+    #[test]
+    fn automatic_backup_snapshots_are_bounded() {
+        let directory = std::env::temp_dir().join(format!("dmh-backup-test-{}", Uuid::new_v4()));
+        let snapshots = directory.join("Snapshots");
+        fs::create_dir_all(&snapshots).unwrap();
+        for index in 1..=4 {
+            fs::write(
+                snapshots.join(format!("auto-backup-20260924-00000{index}.json")),
+                format!("snapshot-{index}"),
+            )
+            .unwrap();
+        }
+
+        prune_backup_snapshots(&directory).unwrap();
+
+        let remaining = fs::read_dir(&snapshots).unwrap().count();
+        assert_eq!(remaining, AUTOMATIC_BACKUP_SNAPSHOT_LIMIT);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn external_automatic_backup_is_encrypted_and_round_trips() {
+        let json = r#"{"contact":"Erika Muster","event":"Arzttermin"}"#;
+        let encrypted = encrypted_backup_bytes(json).unwrap();
+
+        assert!(encrypted.starts_with(BACKUP_ENCRYPTED_MAGIC));
+        assert!(!String::from_utf8_lossy(&encrypted).contains("Erika Muster"));
+        assert_eq!(decrypt_backup_bytes(&encrypted).unwrap(), json);
     }
 
     #[test]

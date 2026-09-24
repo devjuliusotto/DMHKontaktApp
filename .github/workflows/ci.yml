@@ -48,6 +48,15 @@ jobs:
       - name: Frontend bauen
         run: npm run build
 
+      - name: Frontend-Komponententests
+        run: npm test
+
+      - name: Chromium für Ende-zu-Ende-Tests installieren
+        run: npx playwright install chromium
+
+      - name: Kritische Bedienabläufe testen
+        run: npm run test:e2e
+
       - name: Rust formatieren prüfen
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 

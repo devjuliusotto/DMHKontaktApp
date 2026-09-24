@@ -79,6 +79,7 @@ export default function App() {
   const [pendingEdvNavigation, setPendingEdvNavigation] = useState<{ page: Page; section?: SettingsSection } | null>(null);
   const safetyBackupPromise = useRef<Promise<void> | null>(null);
   const backupDirty = useRef(true);
+  const backupGeneration = useRef(0);
   const documentSyncPromise = useRef<Promise<void> | null>(null);
   const calendarSyncPromise = useRef<Promise<void> | null>(null);
   const queuedCalendarSyncTrigger = useRef<"open" | "change" | "poll" | null>(null);
@@ -162,11 +163,12 @@ export default function App() {
     }
     if (!snapshot && !backupDirty.current) return;
 
+    const generation = backupGeneration.current;
     const promise = createAutomaticSafetyBackup(snapshot, captureBrowserStorage());
     safetyBackupPromise.current = promise;
     try {
       await promise;
-      backupDirty.current = false;
+      if (backupGeneration.current === generation) backupDirty.current = false;
     } finally {
       if (safetyBackupPromise.current === promise) safetyBackupPromise.current = null;
     }
@@ -273,7 +275,7 @@ export default function App() {
     if (!("__TAURI_INTERNALS__" in window)) return;
 
     const interval = window.setInterval(() => {
-      void runSafetyBackup().catch(() => {
+      void runSafetyBackup(true).catch(() => {
         // Backup failures must not interrupt normal contact/calendar work.
       });
     }, 5 * 60_000);
@@ -283,7 +285,7 @@ export default function App() {
       });
     }, 45_000);
     const startupBackupTimer = window.setTimeout(() => {
-      void runSafetyBackup().catch(() => {
+      void runSafetyBackup(true).catch(() => {
         // The next interval or the close handler will retry automatically.
       });
     }, 8_000);
@@ -291,7 +293,19 @@ export default function App() {
       // A missing connection is expected while the device is offline.
     });
 
-    const markBackupDirty = () => { backupDirty.current = true; };
+    let backupDebounceTimer: number | undefined;
+    const markBackupDirty = () => {
+      backupDirty.current = true;
+      backupGeneration.current += 1;
+      if (backupDebounceTimer !== undefined) window.clearTimeout(backupDebounceTimer);
+      // The native history is incremental, so recording a change shortly after
+      // it happens is cheap even for very large calendars/address books.
+      backupDebounceTimer = window.setTimeout(() => {
+        void runSafetyBackup().catch(() => {
+          // Keep the dirty flag; the periodic pass will retry.
+        });
+      }, 3_000);
+    };
     window.addEventListener(calendarChangedEventName, markBackupDirty);
     window.addEventListener(calendarStorageUpdatedEventName, markBackupDirty);
     window.addEventListener(m365DataUpdatedEventName, markBackupDirty);
@@ -320,6 +334,7 @@ export default function App() {
       window.clearInterval(interval);
       window.clearInterval(documentSyncInterval);
       window.clearTimeout(startupBackupTimer);
+      if (backupDebounceTimer !== undefined) window.clearTimeout(backupDebounceTimer);
       window.removeEventListener(calendarChangedEventName, markBackupDirty);
       window.removeEventListener(calendarStorageUpdatedEventName, markBackupDirty);
       window.removeEventListener(m365DataUpdatedEventName, markBackupDirty);

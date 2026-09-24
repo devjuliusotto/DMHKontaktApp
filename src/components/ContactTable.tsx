@@ -23,17 +23,32 @@ interface ContactTableProps {
   managementView?: boolean;
   activeContactId?: number;
   onSelect?: (contact: Contact) => void;
+  sort?: ContactSort;
+  onSortChange?: (sort: ContactSort) => void;
+  nameDisplay?: ContactNameDisplay;
 }
 
-type ContactSortKey = "name" | "email";
-type SortDirection = "asc" | "desc";
+export type ContactSortKey = "name" | "email";
+export type SortDirection = "asc" | "desc";
+export type ContactNameDisplay = "first-last" | "last-first";
+export type ContactSort = { key: ContactSortKey; direction: SortDirection };
 type ContactRowMenuPosition = { left: number; top: number };
 
 const contactCollator = new Intl.Collator("de", { numeric: true, sensitivity: "base" });
 const contactsPerPage = 100;
 
-function contactInitials(contact: Contact): string {
-  const source = displayName(contact).trim();
+function formattedContactName(contact: Contact, nameDisplay: ContactNameDisplay): string {
+  const firstName = contact.firstName.trim();
+  const lastName = contact.lastName.trim();
+  if (nameDisplay === "last-first" && (firstName || lastName)) {
+    return [lastName, firstName].filter(Boolean).join(", ");
+  }
+  if (firstName || lastName) return [firstName, lastName].filter(Boolean).join(" ");
+  return displayName(contact);
+}
+
+function contactInitials(contact: Contact, nameDisplay: ContactNameDisplay): string {
+  const source = formattedContactName(contact, nameDisplay).trim();
   if (!source) return "?";
   const parts = source.split(/\s+/).filter(Boolean);
   return (parts.length > 1 ? `${parts[0][0]}${parts[parts.length - 1][0]}` : source.slice(0, 2)).toUpperCase();
@@ -55,17 +70,21 @@ export function ContactTable({
   dragEnabled = true,
   managementView = false,
   activeContactId,
-  onSelect
+  onSelect,
+  sort: controlledSort,
+  onSortChange,
+  nameDisplay = "first-last"
 }: ContactTableProps) {
   const tableWrapRef = useRef<HTMLDivElement>(null);
   const selectionAnchorIdRef = useRef<number | undefined>();
   const [selectedContactId, setSelectedContactId] = useState<number | undefined>();
   const [openActionsContactId, setOpenActionsContactId] = useState<number | undefined>();
   const [actionMenuPosition, setActionMenuPosition] = useState<ContactRowMenuPosition | null>(null);
-  const [sort, setSort] = useState<{ key: ContactSortKey; direction: SortDirection }>({
+  const [internalSort, setInternalSort] = useState<ContactSort>({
     key: "name",
     direction: "asc"
   });
+  const sort = controlledSort ?? internalSort;
   const [page, setPage] = useState(1);
   const currentSelectedContactId = activeContactId ?? selectedContactId;
 
@@ -73,24 +92,25 @@ export function ContactTable({
     return contacts
       .map((contact, originalIndex) => ({ contact, originalIndex }))
       .sort((left, right) => {
-        const leftValue = sort.key === "name" ? displayName(left.contact).trim() : primaryContactEmail(left.contact);
-        const rightValue = sort.key === "name" ? displayName(right.contact).trim() : primaryContactEmail(right.contact);
+        const leftName = formattedContactName(left.contact, nameDisplay);
+        const rightName = formattedContactName(right.contact, nameDisplay);
+        const leftValue = sort.key === "name" ? leftName : primaryContactEmail(left.contact);
+        const rightValue = sort.key === "name" ? rightName : primaryContactEmail(right.contact);
         const leftMissing = leftValue.length === 0;
         const rightMissing = rightValue.length === 0;
 
         if (leftMissing !== rightMissing) {
-          if (sort.key === "email") return sort.direction === "asc" ? (leftMissing ? -1 : 1) : (leftMissing ? 1 : -1);
           return leftMissing ? 1 : -1;
         }
 
         const comparison = contactCollator.compare(leftValue, rightValue);
         if (comparison !== 0) return sort.direction === "asc" ? comparison : -comparison;
 
-        const nameComparison = contactCollator.compare(displayName(left.contact), displayName(right.contact));
+        const nameComparison = contactCollator.compare(leftName, rightName);
         return nameComparison || left.originalIndex - right.originalIndex;
       })
       .map(({ contact }) => contact);
-  }, [contacts, sort]);
+  }, [contacts, nameDisplay, sort]);
   const totalPages = Math.max(1, Math.ceil(sortedContacts.length / contactsPerPage));
   const visibleContacts = sortedContacts.slice((page - 1) * contactsPerPage, page * contactsPerPage);
 
@@ -156,10 +176,12 @@ export function ContactTable({
   };
 
   const toggleSort = (key: ContactSortKey) => {
-    setSort((current) => ({
+    const next: ContactSort = {
       key,
-      direction: current.key === key && current.direction === "asc" ? "desc" : "asc"
-    }));
+      direction: sort.key === key && sort.direction === "asc" ? "desc" : "asc"
+    };
+    if (onSortChange) onSortChange(next);
+    else setInternalSort(next);
   };
 
   const sortIcon = (key: ContactSortKey) => {
@@ -230,9 +252,11 @@ export function ContactTable({
       <section className="contacts-list-panel management-contact-table">
         <div className="contact-compact-list" ref={tableWrapRef} role="listbox" aria-label="Kontakte">
           {visibleContacts.map((contact) => {
+            const shownName = formattedContactName(contact, nameDisplay);
             const isMultiSelected = Boolean(contact.id && selectedContactIds.has(contact.id));
             const isActive = currentSelectedContactId === contact.id;
             const preferredEmail = primaryContactEmail(contact);
+            const preferredPhone = contact.phone || contact.mobilePhone || contact.privatePhone || contact.secondPrivatePhone;
             const actionsOpen = openActionsContactId === contact.id;
             return (
               <div
@@ -259,19 +283,20 @@ export function ContactTable({
                   </span>
                 ) : (
                   <span className={`contact-avatar avatar-${(contact.id ?? 0) % 6}`} aria-hidden="true">
-                    {contactInitials(contact)}
+                    {contactInitials(contact, nameDisplay)}
                   </span>
                 )}
                 <span className="contact-compact-copy">
-                  <strong title={displayName(contact)}>{displayName(contact)}</strong>
+                  <strong title={shownName}>{shownName}</strong>
                   <small title={preferredEmail || contact.company}>{preferredEmail || contact.company || "Keine E-Mail-Adresse"}</small>
                 </span>
+                <span className="contact-compact-phone" title={preferredPhone}>{preferredPhone || "–"}</span>
                 {!selectionActive && (
                   <span className="contact-row-actions">
                     <button
                       className="contact-row-menu-button"
                       type="button"
-                      aria-label={`Aktionen für ${displayName(contact)}`}
+                      aria-label={`Aktionen für ${shownName}`}
                       aria-expanded={actionsOpen}
                       aria-haspopup="menu"
                       onPointerDown={(event) => event.stopPropagation()}
@@ -347,6 +372,7 @@ export function ContactTable({
           </thead>
           <tbody>
             {visibleContacts.map((contact) => {
+              const shownName = formattedContactName(contact, nameDisplay);
               const isMultiSelected = Boolean(contact.id && selectedContactIds.has(contact.id));
               const preferredEmail = primaryContactEmail(contact);
               return (
@@ -367,7 +393,7 @@ export function ContactTable({
                   }}
                   onPointerDown={(event) => startPointerDrag(event, contact)}
                 >
-                  <td className="contact-primary" title={displayName(contact)}>
+                  <td className="contact-primary" title={shownName}>
                     <div className="contact-name-content">
                       {selectionActive && (
                         <span className={isMultiSelected ? "selection-dot checked" : "selection-dot"} aria-hidden="true">
@@ -375,12 +401,12 @@ export function ContactTable({
                         </span>
                       )}
                       {managementView && (
-                        <span className={`contact-avatar avatar-${(contact.id ?? 0) % 6}`} aria-hidden="true">
-                          {contactInitials(contact)}
+                          <span className={`contact-avatar avatar-${(contact.id ?? 0) % 6}`} aria-hidden="true">
+                            {contactInitials(contact, nameDisplay)}
                         </span>
                       )}
                       <span className="contact-name-text">
-                        <strong>{displayName(contact)}</strong>
+                        <strong>{shownName}</strong>
                         {contact.shortInfo && <small>{contact.shortInfo}</small>}
                       </span>
                     </div>
